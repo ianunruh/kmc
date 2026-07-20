@@ -1,87 +1,54 @@
-# Welcome to React Router!
+# kmc — multi-cluster KubeVirt console
 
-A modern, production-ready template for building full-stack React applications using React Router.
+Local web console for listing and managing KubeVirt virtual machines across Kubernetes clusters. Single React Router app (loaders, actions, resource routes) talking to your kubeconfig contexts.
 
-[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/github/remix-run/react-router-templates/tree/main/default)
+## Stack
 
-## Features
+- React Router 8 (framework mode, SSR)
+- TypeScript + Vite
+- Mantine (dark) + Geist Mono
+- `@kubernetes/client-node` (server-only)
 
-- 🚀 Server-side rendering
-- ⚡️ Hot Module Replacement (HMR)
-- 📦 Asset bundling and optimization
-- 🔄 Data loading and mutations
-- 🔒 TypeScript by default
-- 🎉 TailwindCSS for styling
-- 📖 [React Router docs](https://reactrouter.com/)
+## Prerequisites
 
-## Getting Started
+- Node 22+
+- pnpm
+- Working `kubectl` against your clusters (OIDC/exec auth is fine)
 
-### Installation
+Default contexts: `prod-sjc1`, `homelab`.
 
-Install the dependencies:
-
-```bash
-npm install
-```
-
-### Development
-
-Start the development server with HMR:
+## Setup
 
 ```bash
-npm run dev
+pnpm install
+pnpm dev
 ```
 
-Your application will be available at `http://localhost:5173`.
+Open [http://localhost:5173](http://localhost:5173).
 
-## Building for Production
+## Config
 
-Create a production build:
+| Env | Default | Description |
+|---|---|---|
+| `KMC_CONTEXTS` | `prod-sjc1,homelab` | Comma-separated kube contexts |
+| `KMC_IMAGE_NAMESPACE` | `vm-images` | Namespace scanned for golden image PVCs |
+
+## Features (MVP)
+
+- List VMs across clusters (poll every 10s)
+- Create VM (full page) — clone PVC image, size, network, SSH key
+- Stop / start / delete with confirmation on delete
+- Namespace required on create (no default)
+
+## Safety
+
+This binds as a local console with **no authentication**. Do not expose it beyond localhost. Prefer smoke-test VMs over long-lived production workloads when exercising delete/stop.
+
+## Scripts
 
 ```bash
-npm run build
+pnpm dev        # dev server
+pnpm build      # production build
+pnpm start      # serve build
+pnpm typecheck  # typegen + tsc
 ```
-
-## Deployment
-
-### Docker Deployment
-
-To build and run using Docker:
-
-```bash
-docker build -t my-app .
-
-# Run the container
-docker run -p 3000:3000 my-app
-```
-
-The containerized application can be deployed to any platform that supports Docker, including:
-
-- AWS ECS
-- Google Cloud Run
-- Azure Container Apps
-- Digital Ocean App Platform
-- Fly.io
-- Railway
-
-### DIY Deployment
-
-If you're familiar with deploying Node applications, the built-in app server is production-ready.
-
-Make sure to deploy the output of `npm run build`
-
-```
-├── package.json
-├── package-lock.json (or pnpm-lock.yaml, or bun.lockb)
-├── build/
-│   ├── client/    # Static assets
-│   └── server/    # Server-side code
-```
-
-## Styling
-
-This template comes with [Tailwind CSS](https://tailwindcss.com/) already configured for a simple default starting experience. You can use whatever CSS framework you prefer.
-
----
-
-Built with ❤️ using React Router.

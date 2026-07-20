@@ -5,35 +5,55 @@ import {
   Outlet,
   Scripts,
   ScrollRestoration,
+  useRouteLoaderData,
 } from "react-router";
+import {
+  ColorSchemeScript,
+  MantineProvider,
+  mantineHtmlProps,
+} from "@mantine/core";
+import { Notifications } from "@mantine/notifications";
 
 import type { Route } from "./+types/root";
+import { theme } from "./theme";
+import { AppChrome } from "./components/AppChrome";
+import { listClusters } from "./lib/k8s/vms.server";
+import type { ClusterInfo } from "./lib/types";
+
+import "@fontsource/geist-mono/400.css";
+import "@fontsource/geist-mono/500.css";
+import "@fontsource/geist-mono/600.css";
+import "@fontsource/geist-mono/700.css";
+import "@mantine/core/styles.css";
+import "@mantine/notifications/styles.css";
 import "./app.css";
 
-export const links: Route.LinksFunction = () => [
-  { rel: "preconnect", href: "https://fonts.googleapis.com" },
-  {
-    rel: "preconnect",
-    href: "https://fonts.gstatic.com",
-    crossOrigin: "anonymous",
-  },
-  {
-    rel: "stylesheet",
-    href: "https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap",
-  },
-];
+export const links: Route.LinksFunction = () => [];
+
+export async function loader() {
+  try {
+    const clusters = await listClusters();
+    return { clusters };
+  } catch {
+    return { clusters: [] as ClusterInfo[] };
+  }
+}
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" {...mantineHtmlProps} data-mantine-color-scheme="dark">
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <ColorSchemeScript forceColorScheme="dark" defaultColorScheme="dark" />
         <Meta />
         <Links />
       </head>
       <body>
-        {children}
+        <MantineProvider theme={theme} forceColorScheme="dark" defaultColorScheme="dark">
+          <Notifications position="top-right" />
+          {children}
+        </MantineProvider>
         <ScrollRestoration />
         <Scripts />
       </body>
@@ -42,7 +62,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  return <Outlet />;
+  const data = useRouteLoaderData("root") as
+    | { clusters: ClusterInfo[] }
+    | undefined;
+
+  return (
+    <AppChrome clusters={data?.clusters ?? []}>
+      <Outlet />
+    </AppChrome>
+  );
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
@@ -62,11 +90,11 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
   }
 
   return (
-    <main className="pt-16 p-4 container mx-auto">
+    <main style={{ padding: 24, fontFamily: "Geist Mono, monospace" }}>
       <h1>{message}</h1>
       <p>{details}</p>
       {stack && (
-        <pre className="w-full p-4 overflow-x-auto">
+        <pre style={{ overflow: "auto", padding: 16 }}>
           <code>{stack}</code>
         </pre>
       )}
