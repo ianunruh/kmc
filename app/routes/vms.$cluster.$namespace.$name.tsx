@@ -1,0 +1,430 @@
+import {
+  Alert,
+  Anchor,
+  Badge,
+  Button,
+  Code,
+  Group,
+  Paper,
+  SimpleGrid,
+  Stack,
+  Table,
+  Text,
+  Title,
+} from "@mantine/core";
+import { notifications } from "@mantine/notifications";
+import {
+  IconArrowLeft,
+  IconPlayerPlay,
+  IconPlayerStop,
+  IconTrash,
+} from "@tabler/icons-react";
+import { useEffect, useState } from "react";
+import {
+  Link,
+  redirect,
+  useFetcher,
+  useRevalidator,
+} from "react-router";
+import type { Route } from "./+types/vms.$cluster.$namespace.$name";
+import { ConfirmDeleteModal } from "~/components/ConfirmDeleteModal";
+import { StatusBadge } from "~/components/StatusBadge";
+import {
+  canStart,
+  canStop,
+  formatAge,
+  formatDateTime,
+  sizeLabel,
+} from "~/lib/format";
+import {
+  deleteVm,
+  getVm,
+  startVm,
+  stopVm,
+} from "~/lib/k8s/vms.server";
+export function meta({ params }: Route.MetaArgs) {
+  return [{ title: `${params.name ?? "VM"} · kmc` }];
+}
+
+export async function loader({ params }: Route.LoaderArgs) {
+  const { cluster, namespace, name } = params;
+  if (!cluster || !namespace || !name) {
+    throw new Response("Missing path params", { status: 400 });
+  }
+  const vm = await getVm(cluster, namespace, name);
+  return { vm };
+}
+
+export async function action({ request, params }: Route.ActionArgs) {
+  const { cluster, namespace, name } = params;
+  if (!cluster || !namespace || !name) {
+    return { ok: false, error: "Missing path params" };
+  }
+
+  const form = await request.formData();
+  const intent = String(form.get("intent") ?? "");
+
+  try {
+    if (intent === "stop") {
+      await stopVm(cluster, namespace, name);
+      return { ok: true, intent };
+    }
+    if (intent === "start") {
+      await startVm(cluster, namespace, name);
+      return { ok: true, intent };
+    }
+    if (intent === "delete") {
+      await deleteVm(cluster, namespace, name);
+      return redirect("/");
+    }
+    return { ok: false, error: `Unknown intent: ${intent}`, intent };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+      intent,
+    };
+  }
+}
+
+function DetailCard({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Paper
+      p="md"
+      radius="sm"
+      style={{ background: "#12151a", border: "1px solid #1e242c" }}
+    >
+      <Text size="xs" c="dimmed" tt="uppercase" fw={600} mb="sm">
+        {title}
+      </Text>
+      {children}
+    </Paper>
+  );
+}
+
+function Field({ label, value }: { label: string; value?: React.ReactNode }) {
+  return (
+    <div>
+      <Text size="xs" c="dimmed" mb={2}>
+        {label}
+      </Text>
+      <Text size="sm" style={{ wordBreak: "break-word" }}>
+        {value ?? "—"}
+      </Text>
+    </div>
+  );
+}
+
+export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
+  const { vm } = loaderData;
+  const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
+  const revalidator = useRevalidator();
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const busy = fetcher.state !== "idle";
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (revalidator.state === "idle") revalidator.revalidate();
+    }, 10_000);
+    return () => window.clearInterval(id);
+  }, [revalidator]);
+
+  useEffect(() => {
+    if (fetcher.state !== "idle" || !fetcher.data) return;
+    if (fetcher.data.error) {
+      notifications.show({
+        color: "red",
+        title: "Action failed",
+        message: fetcher.data.error,
+      });
+    } else if (fetcher.data.ok) {
+      notifications.show({
+        color: "teal",
+        title: "Done",
+        message: `VM ${fetcher.data.intent ?? "action"} requested`,
+      });
+      revalidator.revalidate();
+    }
+  }, [fetcher.state, fetcher.data, revalidator]);
+
+  function submitIntent(intent: "stop" | "start" | "delete") {
+    fetcher.submit({ intent }, { method: "post" });
+  }
+
+  const interestingAnnotations = Object.entries(vm.annotations).filter(
+    ([k]) =>
+      !k.startsWith("kubectl.kubernetes.io/") &&
+      !k.startsWith("kubevirt.io/latest") &&
+      !k.startsWith("kubevirt.io/storage"),
+  );
+
+  return (
+    <Stack gap="md">
+      <Group justify="space-between" align="flex-start">
+        <div>
+          <Anchor component={Link} to="/" size="sm" c="dimmed">
+            <Group gap={4}>
+              <IconArrowLeft size={14} />
+              Virtual Machines
+            </Group>
+          </Anchor>
+          <Group gap="sm" mt={6} align="center">
+            <Title order={2} size="h3">
+              {vm.name}
+            </Title>
+            <StatusBadge status={vm.status} />
+            {vm.ready && (
+              <Badge size="sm" variant="outline" color="teal">
+                ready
+              </Badge>
+            )}
+          </Group>
+          <Text size="sm" c="dimmed" mt={4}>
+            {vm.cluster} / {vm.namespace}
+          </Text>
+        </div>
+        <Group>
+          <Button
+            variant="default"
+            leftSection={<IconPlayerStop size={16} />}
+            disabled={!canStop(vm) || busy}
+            loading={busy && fetcher.formData?.get("intent") === "stop"}
+            onClick={() => submitIntent("stop")}
+          >
+            Stop
+          </Button>
+          <Button
+            variant="default"
+            leftSection={<IconPlayerPlay size={16} />}
+            disabled={!canStart(vm) || busy}
+            loading={busy && fetcher.formData?.get("intent") === "start"}
+            onClick={() => submitIntent("start")}
+          >
+            Start
+          </Button>
+          <Button
+            color="red"
+            variant="light"
+            leftSection={<IconTrash size={16} />}
+            disabled={busy}
+            onClick={() => setDeleteOpen(true)}
+          >
+            Delete
+          </Button>
+        </Group>
+      </Group>
+
+      {vm.message && (
+        <Alert color="yellow" variant="light" title="Status message">
+          {vm.message}
+        </Alert>
+      )}
+
+      <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
+        <DetailCard title="Overview">
+          <SimpleGrid cols={2} spacing="sm">
+            <Field label="Status" value={<StatusBadge status={vm.status} />} />
+            <Field label="Age" value={formatAge(vm.age)} />
+            <Field label="Created" value={formatDateTime(vm.age)} />
+            <Field label="Cluster" value={vm.cluster} />
+            <Field label="Namespace" value={vm.namespace} />
+            <Field label="Node" value={vm.nodeName} />
+            <Field label="Size" value={sizeLabel(vm)} />
+            <Field label="Disk" value={vm.disk} />
+            <Field label="Instance type" value={vm.instanceType} />
+            <Field label="Preference" value={vm.preference} />
+            <Field label="Run strategy" value={vm.runStrategy} />
+            <Field label="Machine" value={vm.machineType} />
+            <Field label="Architecture" value={vm.architecture} />
+            <Field label="VMI phase" value={vm.vmiPhase ?? (vm.hasVmi ? "—" : "none")} />
+            <Field label="IPv4" value={vm.ipv4Address} />
+            <Field label="UID" value={vm.uid ? <Code>{vm.uid}</Code> : undefined} />
+          </SimpleGrid>
+        </DetailCard>
+
+        <DetailCard title="Networks">
+          {vm.networks.length === 0 ? (
+            <Text size="sm" c="dimmed">
+              No networks configured
+            </Text>
+          ) : (
+            <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Name</Table.Th>
+                  <Table.Th>Attachment</Table.Th>
+                  <Table.Th>MAC</Table.Th>
+                  <Table.Th>IPs</Table.Th>
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {vm.networks.map((net) => (
+                  <Table.Tr key={net.name}>
+                    <Table.Td>{net.name}</Table.Td>
+                    <Table.Td>
+                      {net.multusNetworkName
+                        ? `multus:${net.multusNetworkName}`
+                        : net.pod
+                          ? "pod"
+                          : "—"}
+                    </Table.Td>
+                    <Table.Td>
+                      <Text size="sm" c="dimmed">
+                        {net.mac ?? "—"}
+                      </Text>
+                    </Table.Td>
+                    <Table.Td>
+                      {net.ipAddresses?.length
+                        ? net.ipAddresses.join(", ")
+                        : "—"}
+                    </Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          )}
+        </DetailCard>
+      </SimpleGrid>
+
+      <DetailCard title="Volumes">
+        {vm.volumes.length === 0 ? (
+          <Text size="sm" c="dimmed">
+            No volumes
+          </Text>
+        ) : (
+          <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Name</Table.Th>
+                <Table.Th>Kind</Table.Th>
+                <Table.Th>Detail</Table.Th>
+                <Table.Th>Size</Table.Th>
+                <Table.Th>Storage class</Table.Th>
+                <Table.Th>Bus</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {vm.volumes.map((vol) => (
+                <Table.Tr key={vol.name}>
+                  <Table.Td>{vol.name}</Table.Td>
+                  <Table.Td>{vol.kind}</Table.Td>
+                  <Table.Td>
+                    <Text size="sm" c="dimmed" lineClamp={2}>
+                      {vol.detail ?? "—"}
+                    </Text>
+                  </Table.Td>
+                  <Table.Td>{vol.size ?? "—"}</Table.Td>
+                  <Table.Td>{vol.storageClass ?? "—"}</Table.Td>
+                  <Table.Td>{vol.diskBus ?? "—"}</Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        )}
+      </DetailCard>
+
+      <DetailCard title="Conditions">
+        {vm.conditions.length === 0 ? (
+          <Text size="sm" c="dimmed">
+            No conditions
+          </Text>
+        ) : (
+          <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th>Type</Table.Th>
+                <Table.Th>Status</Table.Th>
+                <Table.Th>Reason</Table.Th>
+                <Table.Th>Message</Table.Th>
+                <Table.Th>Last transition</Table.Th>
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {vm.conditions.map((c) => (
+                <Table.Tr key={c.type}>
+                  <Table.Td>{c.type}</Table.Td>
+                  <Table.Td>
+                    <Badge
+                      size="sm"
+                      variant="light"
+                      color={
+                        c.status === "True"
+                          ? "teal"
+                          : c.status === "False"
+                            ? "gray"
+                            : "yellow"
+                      }
+                    >
+                      {c.status}
+                    </Badge>
+                  </Table.Td>
+                  <Table.Td>{c.reason ?? "—"}</Table.Td>
+                  <Table.Td>
+                    <Text size="sm" c="dimmed" maw={420} lineClamp={3}>
+                      {c.message ?? "—"}
+                    </Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="sm" c="dimmed">
+                      {formatDateTime(c.lastTransitionTime)}
+                    </Text>
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        )}
+      </DetailCard>
+
+      {(Object.keys(vm.labels).length > 0 || interestingAnnotations.length > 0) && (
+        <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
+          {Object.keys(vm.labels).length > 0 && (
+            <DetailCard title="Labels">
+              <Stack gap={6}>
+                {Object.entries(vm.labels).map(([k, v]) => (
+                  <Group key={k} gap="xs" wrap="nowrap" align="flex-start">
+                    <Code>{k}</Code>
+                    <Text size="sm" c="dimmed">
+                      {v}
+                    </Text>
+                  </Group>
+                ))}
+              </Stack>
+            </DetailCard>
+          )}
+          {interestingAnnotations.length > 0 && (
+            <DetailCard title="Annotations">
+              <Stack gap={6}>
+                {interestingAnnotations.map(([k, v]) => (
+                  <div key={k}>
+                    <Code>{k}</Code>
+                    <Text size="sm" c="dimmed" mt={2} style={{ wordBreak: "break-all" }}>
+                      {v}
+                    </Text>
+                  </div>
+                ))}
+              </Stack>
+            </DetailCard>
+          )}
+        </SimpleGrid>
+      )}
+
+      <ConfirmDeleteModal
+        vm={vm}
+        opened={deleteOpen}
+        loading={busy}
+        onClose={() => setDeleteOpen(false)}
+        onConfirm={() => {
+          setDeleteOpen(false);
+          submitIntent("delete");
+        }}
+      />
+    </Stack>
+  );
+}

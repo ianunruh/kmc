@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Anchor,
   Menu,
   Table,
   Text,
@@ -11,42 +12,19 @@ import {
   IconPlayerStop,
   IconTrash,
 } from "@tabler/icons-react";
-import { useFetcher } from "react-router";
+import { notifications } from "@mantine/notifications";
 import { useEffect, useState } from "react";
+import { Link, useFetcher } from "react-router";
 import type { VmSummary } from "~/lib/types";
+import {
+  canStart,
+  canStop,
+  formatAge,
+  sizeLabel,
+  vmPath,
+} from "~/lib/format";
 import { StatusBadge } from "./StatusBadge";
 import { ConfirmDeleteModal } from "./ConfirmDeleteModal";
-import { notifications } from "@mantine/notifications";
-
-function formatAge(iso: string): string {
-  if (!iso) return "—";
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return iso;
-  const seconds = Math.floor((Date.now() - then) / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 48) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  if (days < 365) return `${days}d`;
-  return `${Math.floor(days / 365)}y`;
-}
-
-function sizeLabel(vm: VmSummary): string {
-  if (vm.cpu && vm.memory) return `${vm.cpu} / ${vm.memory}`;
-  if (vm.cpu) return vm.cpu;
-  if (vm.memory) return vm.memory;
-  return "—";
-}
-
-function canStop(vm: VmSummary): boolean {
-  return ["Running", "Starting", "Paused", "Migrating"].includes(vm.status);
-}
-
-function canStart(vm: VmSummary): boolean {
-  return ["Stopped", "Error"].includes(vm.status);
-}
 
 export function VmTable({ vms }: { vms: VmSummary[] }) {
   const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
@@ -121,9 +99,15 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
             return (
               <Table.Tr key={key}>
                 <Table.Td>
-                  <Text fw={600} size="sm">
+                  <Anchor
+                    component={Link}
+                    to={vmPath(vm)}
+                    fw={600}
+                    size="sm"
+                    c="accent.4"
+                  >
                     {vm.name}
-                  </Text>
+                  </Anchor>
                   {vm.message && (
                     <Text size="xs" c="dimmed" lineClamp={1} maw={280}>
                       {vm.message}

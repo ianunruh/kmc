@@ -36,6 +36,7 @@ Open [http://localhost:5173](http://localhost:5173).
 ## Features (MVP)
 
 - List VMs across clusters (poll every 10s)
+- VM detail page (`/vms/:cluster/:namespace/:name`) — overview, networks, volumes, conditions
 - Create VM (full page) — clone PVC image, size, network, SSH key
 - Stop / start / delete with confirmation on delete
 - Namespace required on create (no default)

@@ -23,6 +23,49 @@ export interface VmSummary {
   message?: string;
 }
 
+export interface VmCondition {
+  type: string;
+  status: string;
+  reason?: string;
+  message?: string;
+  lastTransitionTime?: string;
+}
+
+export interface VmVolumeInfo {
+  name: string;
+  kind: string;
+  detail?: string;
+  diskBus?: string;
+  size?: string;
+  storageClass?: string;
+}
+
+export interface VmNetworkInfo {
+  name: string;
+  model?: string;
+  multusNetworkName?: string;
+  pod?: boolean;
+  mac?: string;
+  ipAddresses?: string[];
+}
+
+export interface VmDetail extends VmSummary {
+  uid?: string;
+  runStrategy?: string;
+  instanceType?: string;
+  preference?: string;
+  machineType?: string;
+  architecture?: string;
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
+  conditions: VmCondition[];
+  volumes: VmVolumeInfo[];
+  networks: VmNetworkInfo[];
+  ipv4Address?: string;
+  vmiPhase?: string;
+  hasVmi: boolean;
+}
+
 export interface CreateVmRequest {
   cluster: ClusterId;
   namespace: string;
