@@ -12,10 +12,13 @@ import {
   IconPlayerStop,
   IconTrash,
 } from "@tabler/icons-react";
-import { notifications } from "@mantine/notifications";
 import { useEffect, useState } from "react";
 import { Link, useFetcher } from "react-router";
 import type { VmSummary } from "~/lib/types";
+import {
+  notifyActionError,
+  notifyActionSuccess,
+} from "~/lib/action-feedback";
 import {
   canStart,
   canStop,
@@ -33,17 +36,14 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
   useEffect(() => {
     if (fetcher.state !== "idle" || !fetcher.data) return;
     if (fetcher.data.error) {
-      notifications.show({
-        color: "red",
-        title: "Action failed",
-        message: fetcher.data.error,
+      notifyActionError("Action failed", fetcher.data.error, {
+        intent: fetcher.data.intent,
       });
     } else if (fetcher.data.ok) {
-      notifications.show({
-        color: "teal",
-        title: "Done",
-        message: `VM ${fetcher.data.intent ?? "action"} requested`,
-      });
+      notifyActionSuccess(
+        "Done",
+        `VM ${fetcher.data.intent ?? "action"} requested`,
+      );
     }
   }, [fetcher.state, fetcher.data]);
 

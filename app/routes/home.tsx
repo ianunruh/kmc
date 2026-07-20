@@ -14,6 +14,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useRevalidator } from "react-router";
 import type { Route } from "./+types/home";
 import { VmTable } from "~/components/VmTable";
+import { actionFailure } from "~/lib/errors";
 import {
   deleteVm,
   listVms,
@@ -57,11 +58,12 @@ export async function action({ request }: Route.ActionArgs) {
     }
     return { ok: true, intent };
   } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
+    return actionFailure(`vm.${intent}`, err, {
       intent,
-    };
+      cluster,
+      namespace,
+      name,
+    });
   }
 }
 

@@ -13,10 +13,12 @@ import {
   Title,
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
-import { notifications } from "@mantine/notifications";
 import { useEffect, useMemo } from "react";
 import { Link, redirect, useFetcher, useNavigation, useSubmit } from "react-router";
 import type { Route } from "./+types/vms.create";
+import { notifyActionError } from "~/lib/action-feedback";
+import { logServerError } from "~/lib/errors";
+import { vmPath } from "~/lib/format";
 import { createVm, listClusters } from "~/lib/k8s/vms.server";
 import type { ClusterCatalog, CreateVmRequest, NetworkInfo } from "~/lib/types";
 
@@ -94,10 +96,20 @@ export async function action({ request }: Route.ActionArgs) {
 
   try {
     await createVm(payload);
-    return redirect("/");
+    return redirect(
+      vmPath({
+        cluster: payload.cluster,
+        namespace: payload.namespace,
+        name: payload.name,
+      }),
+    );
   } catch (err) {
     return {
-      error: err instanceof Error ? err.message : String(err),
+      error: logServerError("vm.create", err, {
+        cluster: payload.cluster,
+        namespace: payload.namespace,
+        name: payload.name,
+      }),
     };
   }
 }
@@ -229,11 +241,7 @@ export default function CreateVmPage({
 
   useEffect(() => {
     if (actionData && "error" in actionData && actionData.error) {
-      notifications.show({
-        color: "red",
-        title: "Create failed",
-        message: actionData.error,
-      });
+      notifyActionError("Create failed", actionData.error);
     }
   }, [actionData]);
 

@@ -1,3 +1,4 @@
+import { formatError } from "~/lib/errors";
 import type {
   ClusterId,
   ClusterInfo,
@@ -485,8 +486,7 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
     })) as KubeVm;
     return mapVm(input.cluster, created);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(message);
+    throw new Error(formatError(err), { cause: err });
   }
 }
 

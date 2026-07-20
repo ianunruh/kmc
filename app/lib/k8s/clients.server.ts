@@ -1,3 +1,5 @@
+import * as http from "node:http";
+import * as https from "node:https";
 import * as k8s from "@kubernetes/client-node";
 import type { ClusterId } from "~/lib/types";
 
@@ -50,6 +52,13 @@ export function getClusterClients(context: ClusterId): ClusterClients {
   };
 }
 
+/**
+ * Authenticated request against the current kubeconfig cluster.
+ *
+ * Uses Node's http(s) stack + applyToHTTPSOptions so cluster CA certs and
+ * client certs from kubeconfig work. Global fetch/undici ignores the
+ * legacy `agent` option and fails TLS verification for private CAs.
+ */
 export async function k8sFetch(
   kc: k8s.KubeConfig,
   path: string,
@@ -65,22 +74,94 @@ export async function k8sFetch(
     : `${cluster.server}/`;
   const url = new URL(path.replace(/^\//, ""), base);
 
-  const authOpts = await kc.applyToFetchOptions({});
-  const headers = new Headers(authOpts.headers as HeadersInit | undefined);
-  const initHeaders = new Headers(init.headers);
-  initHeaders.forEach((value, key) => headers.set(key, value));
+  const opts: https.RequestOptions = {
+    method: (init.method ?? "GET").toUpperCase(),
+    headers: {},
+  };
+  await kc.applyToHTTPSOptions(opts);
 
+  const headers = new Headers();
+  // applyToHTTPSOptions may set headers as a plain object
+  const existing = opts.headers;
+  if (existing && typeof existing === "object" && !Array.isArray(existing)) {
+    for (const [key, value] of Object.entries(existing)) {
+      if (value == null) continue;
+      if (Array.isArray(value)) {
+        for (const v of value) headers.append(key, v);
+      } else {
+        headers.set(key, String(value));
+      }
+    }
+  }
+  if (init.headers) {
+    new Headers(init.headers).forEach((value, key) => {
+      headers.set(key, value);
+    });
+  }
   if (init.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
 
-  // applyToFetchOptions returns node-fetch-ish types; cast for undici fetch.
-  return fetch(url, {
-    method: init.method ?? (authOpts.method as string | undefined) ?? "GET",
-    headers,
-    body: init.body,
-    // @ts-expect-error node undici agent from kubeconfig
-    agent: (authOpts as { agent?: unknown }).agent,
+  const headerObject: http.OutgoingHttpHeaders = {};
+  headers.forEach((value, key) => {
+    headerObject[key] = value;
+  });
+  opts.headers = headerObject;
+
+  const body =
+    init.body == null
+      ? undefined
+      : typeof init.body === "string"
+        ? init.body
+        : Buffer.isBuffer(init.body)
+          ? init.body
+          : String(init.body);
+
+  const transport = url.protocol === "https:" ? https : http;
+
+  return new Promise((resolve, reject) => {
+    const req = transport.request(url, opts, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("end", () => {
+        const buf = Buffer.concat(chunks);
+        const responseHeaders = new Headers();
+        for (const [key, value] of Object.entries(res.headers)) {
+          if (value == null) continue;
+          if (Array.isArray(value)) {
+            for (const v of value) responseHeaders.append(key, v);
+          } else {
+            responseHeaders.set(key, value);
+          }
+        }
+        resolve(
+          new Response(buf, {
+            status: res.statusCode ?? 0,
+            statusText: res.statusMessage,
+            headers: responseHeaders,
+          }),
+        );
+      });
+    });
+
+    req.on("error", (err) => {
+      const cause =
+        err instanceof Error && "cause" in err
+          ? (err as Error & { cause?: unknown }).cause
+          : undefined;
+      const detail =
+        cause instanceof Error
+          ? cause.message
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      reject(new Error(`Kubernetes request failed: ${detail}`, { cause: err }));
+    });
+
+    if (body != null) {
+      req.write(body);
+    }
+    req.end();
   });
 }
 

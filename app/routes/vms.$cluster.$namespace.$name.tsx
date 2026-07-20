@@ -12,7 +12,6 @@ import {
   Text,
   Title,
 } from "@mantine/core";
-import { notifications } from "@mantine/notifications";
 import {
   IconArrowLeft,
   IconPlayerPlay,
@@ -29,6 +28,11 @@ import {
 import type { Route } from "./+types/vms.$cluster.$namespace.$name";
 import { ConfirmDeleteModal } from "~/components/ConfirmDeleteModal";
 import { StatusBadge } from "~/components/StatusBadge";
+import {
+  notifyActionError,
+  notifyActionSuccess,
+} from "~/lib/action-feedback";
+import { actionFailure } from "~/lib/errors";
 import {
   canStart,
   canStop,
@@ -79,11 +83,12 @@ export async function action({ request, params }: Route.ActionArgs) {
     }
     return { ok: false, error: `Unknown intent: ${intent}`, intent };
   } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
+    return actionFailure(`vm.${intent}`, err, {
       intent,
-    };
+      cluster,
+      namespace,
+      name,
+    });
   }
 }
 
@@ -114,7 +119,8 @@ function Field({ label, value }: { label: string; value?: React.ReactNode }) {
       <Text size="xs" c="dimmed" mb={2}>
         {label}
       </Text>
-      <Text size="sm" style={{ wordBreak: "break-word" }}>
+      {/* component="div" — Text defaults to <p>, which cannot wrap Badge/divs */}
+      <Text component="div" size="sm" style={{ wordBreak: "break-word" }}>
         {value ?? "—"}
       </Text>
     </div>
@@ -138,20 +144,20 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
   useEffect(() => {
     if (fetcher.state !== "idle" || !fetcher.data) return;
     if (fetcher.data.error) {
-      notifications.show({
-        color: "red",
-        title: "Action failed",
-        message: fetcher.data.error,
+      notifyActionError("Action failed", fetcher.data.error, {
+        intent: fetcher.data.intent,
+        cluster: vm.cluster,
+        namespace: vm.namespace,
+        name: vm.name,
       });
     } else if (fetcher.data.ok) {
-      notifications.show({
-        color: "teal",
-        title: "Done",
-        message: `VM ${fetcher.data.intent ?? "action"} requested`,
-      });
+      notifyActionSuccess(
+        "Done",
+        `VM ${fetcher.data.intent ?? "action"} requested`,
+      );
       revalidator.revalidate();
     }
-  }, [fetcher.state, fetcher.data, revalidator]);
+  }, [fetcher.state, fetcher.data, revalidator, vm.cluster, vm.namespace, vm.name]);
 
   function submitIntent(intent: "stop" | "start" | "delete") {
     fetcher.submit({ intent }, { method: "post" });
