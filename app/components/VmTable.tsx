@@ -12,7 +12,7 @@ import {
   IconPlayerStop,
   IconTrash,
 } from "@tabler/icons-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, useFetcher } from "react-router";
 import type { VmSummary } from "~/lib/types";
 import {
@@ -26,26 +26,24 @@ import {
   sizeLabel,
   vmPath,
 } from "~/lib/format";
+import { useRefresh } from "~/lib/refresh";
+import { useFetcherResult } from "~/lib/use-fetcher-result";
 import { StatusBadge } from "./StatusBadge";
 import { ConfirmDeleteModal } from "./ConfirmDeleteModal";
 
 export function VmTable({ vms }: { vms: VmSummary[] }) {
   const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
+  const { refreshNow } = useRefresh();
   const [deleteTarget, setDeleteTarget] = useState<VmSummary | null>(null);
 
-  useEffect(() => {
-    if (fetcher.state !== "idle" || !fetcher.data) return;
-    if (fetcher.data.error) {
-      notifyActionError("Action failed", fetcher.data.error, {
-        intent: fetcher.data.intent,
-      });
-    } else if (fetcher.data.ok) {
-      notifyActionSuccess(
-        "Done",
-        `VM ${fetcher.data.intent ?? "action"} requested`,
-      );
+  useFetcherResult(fetcher, (data) => {
+    if (data.error) {
+      notifyActionError("Action failed", data.error, { intent: data.intent });
+    } else if (data.ok) {
+      notifyActionSuccess("Done", `VM ${data.intent ?? "action"} requested`);
+      refreshNow();
     }
-  }, [fetcher.state, fetcher.data]);
+  });
 
   const busy = fetcher.state !== "idle";
 

@@ -13,6 +13,8 @@ import { Link, useLocation } from "react-router";
 import type { ReactNode } from "react";
 import type { ClusterInfo } from "~/lib/types";
 import { ClusterHealth } from "./ClusterHealth";
+import { RefreshControl } from "./RefreshControl";
+import { TopLoadingBar } from "./TopLoadingBar";
 
 export function AppChrome({
   children,
@@ -45,9 +47,10 @@ export function AppChrome({
         },
       }}
     >
+      <TopLoadingBar />
       <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
-          <Group>
+        <Group h="100%" px="md" justify="space-between" wrap="nowrap">
+          <Group wrap="nowrap">
             <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" />
             <UnstyledButton component={Link} to="/">
               <Group gap={8}>
@@ -60,7 +63,10 @@ export function AppChrome({
               </Group>
             </UnstyledButton>
           </Group>
-          <ClusterHealth clusters={clusters} />
+          <Group gap="md" wrap="nowrap">
+            <ClusterHealth clusters={clusters} />
+            <RefreshControl />
+          </Group>
         </Group>
       </AppShell.Header>
 

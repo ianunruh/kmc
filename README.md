@@ -35,7 +35,8 @@ Open [http://localhost:5173](http://localhost:5173).
 
 ## Features (MVP)
 
-- List VMs across clusters (poll every 10s)
+- List VMs across clusters
+- Global auto-refresh control in the header (10s countdown, toggle, manual refresh; preference in `localStorage`)
 - VM detail page (`/vms/:cluster/:namespace/:name`) — overview, networks, volumes, conditions
 - Create VM (full page) — clone PVC image, size, network, SSH key
 - Stop / start / delete with confirmation on delete

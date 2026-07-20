@@ -18,6 +18,7 @@ import type { Route } from "./+types/root";
 import { theme } from "./theme";
 import { AppChrome } from "./components/AppChrome";
 import { listClusters } from "./lib/k8s/vms.server";
+import { RefreshProvider } from "./lib/refresh";
 import type { ClusterInfo } from "./lib/types";
 
 import "@fontsource/geist-mono/400.css";
@@ -67,9 +68,11 @@ export default function App() {
     | undefined;
 
   return (
-    <AppChrome clusters={data?.clusters ?? []}>
-      <Outlet />
-    </AppChrome>
+    <RefreshProvider>
+      <AppChrome clusters={data?.clusters ?? []}>
+        <Outlet />
+      </AppChrome>
+    </RefreshProvider>
   );
 }
 

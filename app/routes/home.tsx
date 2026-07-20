@@ -9,9 +9,9 @@ import {
   TextInput,
   Title,
 } from "@mantine/core";
-import { IconPlus, IconRefresh, IconSearch } from "@tabler/icons-react";
-import { useEffect, useMemo, useState } from "react";
-import { Link, useRevalidator } from "react-router";
+import { IconPlus, IconSearch } from "@tabler/icons-react";
+import { useMemo, useState } from "react";
+import { Link } from "react-router";
 import type { Route } from "./+types/home";
 import { VmTable } from "~/components/VmTable";
 import { actionFailure } from "~/lib/errors";
@@ -69,19 +69,9 @@ export async function action({ request }: Route.ActionArgs) {
 
 export default function Home({ loaderData }: Route.ComponentProps) {
   const { items, clusters } = loaderData;
-  const revalidator = useRevalidator();
   const [search, setSearch] = useState("");
   const [clusterFilter, setClusterFilter] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
-
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      if (revalidator.state === "idle") {
-        revalidator.revalidate();
-      }
-    }, 10_000);
-    return () => window.clearInterval(id);
-  }, [revalidator]);
 
   const statuses = useMemo(() => {
     const set = new Set(items.map((v) => v.status));
@@ -117,23 +107,13 @@ export default function Home({ loaderData }: Route.ComponentProps) {
             {clusters.filter((c) => c.reachable).length === 1 ? "" : "s"}
           </Text>
         </div>
-        <Group>
-          <Button
-            variant="default"
-            leftSection={<IconRefresh size={16} />}
-            onClick={() => revalidator.revalidate()}
-            loading={revalidator.state === "loading"}
-          >
-            Refresh
-          </Button>
-          <Button
-            component={Link}
-            to="/vms/create"
-            leftSection={<IconPlus size={16} />}
-          >
-            Create VM
-          </Button>
-        </Group>
+        <Button
+          component={Link}
+          to="/vms/create"
+          leftSection={<IconPlus size={16} />}
+        >
+          Create VM
+        </Button>
       </Group>
 
       {unreachable.map((c) => (

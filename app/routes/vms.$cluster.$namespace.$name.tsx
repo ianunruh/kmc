@@ -18,13 +18,8 @@ import {
   IconPlayerStop,
   IconTrash,
 } from "@tabler/icons-react";
-import { useEffect, useState } from "react";
-import {
-  Link,
-  redirect,
-  useFetcher,
-  useRevalidator,
-} from "react-router";
+import { useState } from "react";
+import { Link, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/vms.$cluster.$namespace.$name";
 import { ConfirmDeleteModal } from "~/components/ConfirmDeleteModal";
 import { StatusBadge } from "~/components/StatusBadge";
@@ -46,6 +41,8 @@ import {
   startVm,
   stopVm,
 } from "~/lib/k8s/vms.server";
+import { useRefresh } from "~/lib/refresh";
+import { useFetcherResult } from "~/lib/use-fetcher-result";
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `${params.name ?? "VM"} · kmc` }];
 }
@@ -130,34 +127,28 @@ function Field({ label, value }: { label: string; value?: React.ReactNode }) {
 export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
   const { vm } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
-  const revalidator = useRevalidator();
+  const { refreshNow } = useRefresh();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const busy = fetcher.state !== "idle";
 
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      if (revalidator.state === "idle") revalidator.revalidate();
-    }, 10_000);
-    return () => window.clearInterval(id);
-  }, [revalidator]);
-
-  useEffect(() => {
-    if (fetcher.state !== "idle" || !fetcher.data) return;
-    if (fetcher.data.error) {
-      notifyActionError("Action failed", fetcher.data.error, {
-        intent: fetcher.data.intent,
+  useFetcherResult(fetcher, (data) => {
+    if (data.error) {
+      notifyActionError("Action failed", data.error, {
+        intent: data.intent,
         cluster: vm.cluster,
         namespace: vm.namespace,
         name: vm.name,
       });
-    } else if (fetcher.data.ok) {
+      return;
+    }
+    if (data.ok) {
       notifyActionSuccess(
         "Done",
-        `VM ${fetcher.data.intent ?? "action"} requested`,
+        `VM ${data.intent ?? "action"} requested`,
       );
-      revalidator.revalidate();
+      refreshNow();
     }
-  }, [fetcher.state, fetcher.data, revalidator, vm.cluster, vm.namespace, vm.name]);
+  });
 
   function submitIntent(intent: "stop" | "start" | "delete") {
     fetcher.submit({ intent }, { method: "post" });
