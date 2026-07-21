@@ -29,7 +29,11 @@ import "@mantine/core/styles.css";
 import "@mantine/notifications/styles.css";
 import "./app.css";
 
-export const links: Route.LinksFunction = () => [];
+export const links: Route.LinksFunction = () => [
+  { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
+  { rel: "icon", href: "/favicon.ico", sizes: "32x32" },
+  { rel: "apple-touch-icon", href: "/apple-touch-icon.png" },
+];
 
 export const middleware: Route.MiddlewareFunction[] = [
   authMiddleware as Route.MiddlewareFunction,

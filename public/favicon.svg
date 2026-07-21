@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!-- kmc mark: dark console panel + teal geometric K -->
+  <rect width="32" height="32" rx="7" fill="#12151a"/>
+  <rect x="0.5" y="0.5" width="31" height="31" rx="6.5" stroke="#1e242c"/>
+  <!-- geometric K monogram -->
+  <path
+    fill="#38d9a9"
+    d="M9.5 7.5h4v6.6L20.2 7.5H25l-7.2 8.2L25.2 24.5H20.3l-6.8-7.8v7.8h-4V7.5z"
+  />
+</svg>
