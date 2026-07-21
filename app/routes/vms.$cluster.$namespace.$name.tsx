@@ -22,10 +22,12 @@ import { useState } from "react";
 import { Link, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/vms.$cluster.$namespace.$name";
 import { StatusBadge } from "~/ui/status-badge";
-import { ConfirmDeleteModal } from "~/ui";
+import { ConfirmDeleteModal, EventsPanel, YamlPanel } from "~/ui";
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
 import { canStart, canStop, formatAge, formatDateTime, sizeLabel } from "~/lib/format";
+import { listResourceEvents } from "~/lib/k8s/events.server";
+import { getCustomObjectYaml } from "~/lib/k8s/yaml.server";
 import { deleteVm, getVm, startVm, stopVm } from "~/vms/vms.server";
 import { useRefresh } from "~/lib/refresh";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
@@ -38,8 +40,24 @@ export async function loader({ params }: Route.LoaderArgs) {
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
-  const vm = await getVm(cluster, namespace, name);
-  return { vm };
+  const [vm, events, yaml] = await Promise.all([
+    getVm(cluster, namespace, name),
+    listResourceEvents({
+      cluster,
+      namespace,
+      name,
+      kinds: ["VirtualMachine", "VirtualMachineInstance"],
+    }),
+    getCustomObjectYaml({
+      cluster,
+      group: "kubevirt.io",
+      version: "v1",
+      plural: "virtualmachines",
+      namespace,
+      name,
+    }),
+  ]);
+  return { vm, events, yaml };
 }
 
 export async function action({ request, params }: Route.ActionArgs) {
@@ -105,7 +123,7 @@ function Field({ label, value }: { label: string; value?: React.ReactNode }) {
 }
 
 export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
-  const { vm } = loaderData;
+  const { vm, events, yaml } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
   const { refreshNow } = useRefresh();
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -386,6 +404,9 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
           )}
         </SimpleGrid>
       )}
+
+      <EventsPanel events={events} showKind />
+      <YamlPanel yaml={yaml} />
 
       <ConfirmDeleteModal
         opened={deleteOpen}

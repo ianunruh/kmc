@@ -19,12 +19,16 @@ import {
   ConfirmDeleteModal,
   DetailField,
   DetailSection,
+  EventsPanel,
   ResourceTable,
   Table,
+  YamlPanel,
 } from "~/ui";
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
 import { formatAge, formatDateTime } from "~/lib/format";
+import { listResourceEvents } from "~/lib/k8s/events.server";
+import { getCustomObjectYaml } from "~/lib/k8s/yaml.server";
 import { deleteDataVolume, getDataVolume } from "~/datavolumes/datavolumes.server";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 
@@ -37,7 +41,24 @@ export async function loader({ params }: Route.LoaderArgs) {
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
-  return { dv: await getDataVolume(cluster, namespace, name) };
+  const [dv, events, yaml] = await Promise.all([
+    getDataVolume(cluster, namespace, name),
+    listResourceEvents({
+      cluster,
+      namespace,
+      name,
+      kinds: ["DataVolume", "PersistentVolumeClaim"],
+    }),
+    getCustomObjectYaml({
+      cluster,
+      group: "cdi.kubevirt.io",
+      version: "v1beta1",
+      plural: "datavolumes",
+      namespace,
+      name,
+    }),
+  ]);
+  return { dv, events, yaml };
 }
 
 export async function action({ request, params }: Route.ActionArgs) {
@@ -64,7 +85,7 @@ export async function action({ request, params }: Route.ActionArgs) {
 }
 
 export default function DataVolumeDetailPage({ loaderData }: Route.ComponentProps) {
-  const { dv } = loaderData;
+  const { dv, events, yaml } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string }>();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const busy = fetcher.state !== "idle";
@@ -197,6 +218,9 @@ export default function DataVolumeDetailPage({ loaderData }: Route.ComponentProp
           ))}
         </ResourceTable>
       </DetailSection>
+
+      <EventsPanel events={events} showKind />
+      <YamlPanel yaml={yaml} />
 
       <ConfirmDeleteModal
         opened={deleteOpen}

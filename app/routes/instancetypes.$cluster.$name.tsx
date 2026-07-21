@@ -12,10 +12,18 @@ import { IconArrowLeft, IconPencil, IconTrash } from "@tabler/icons-react";
 import { useState } from "react";
 import { Link, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/instancetypes.$cluster.$name";
-import { ConfirmDeleteModal, DetailField, DetailSection } from "~/ui";
+import {
+  ConfirmDeleteModal,
+  DetailField,
+  DetailSection,
+  EventsPanel,
+  YamlPanel,
+} from "~/ui";
 import { notifyActionError } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
 import { formatAge, formatDateTime, instanceTypeEditPath } from "~/lib/format";
+import { listResourceEvents } from "~/lib/k8s/events.server";
+import { getCustomObjectYaml } from "~/lib/k8s/yaml.server";
 import {
   deleteClusterInstanceType,
   getClusterInstanceType,
@@ -31,7 +39,22 @@ export async function loader({ params }: Route.LoaderArgs) {
   if (!cluster || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
-  return { it: await getClusterInstanceType(cluster, name) };
+  const [it, events, yaml] = await Promise.all([
+    getClusterInstanceType(cluster, name),
+    listResourceEvents({
+      cluster,
+      name,
+      kinds: ["VirtualMachineClusterInstancetype"],
+    }),
+    getCustomObjectYaml({
+      cluster,
+      group: "instancetype.kubevirt.io",
+      version: "v1beta1",
+      plural: "virtualmachineclusterinstancetypes",
+      name,
+    }),
+  ]);
+  return { it, events, yaml };
 }
 
 export async function action({ request, params }: Route.ActionArgs) {
@@ -57,7 +80,7 @@ export async function action({ request, params }: Route.ActionArgs) {
 }
 
 export default function InstanceTypeDetailPage({ loaderData }: Route.ComponentProps) {
-  const { it } = loaderData;
+  const { it, events, yaml } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string }>();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const busy = fetcher.state !== "idle";
@@ -140,6 +163,9 @@ export default function InstanceTypeDetailPage({ loaderData }: Route.ComponentPr
           )}
         </DetailSection>
       </SimpleGrid>
+
+      <EventsPanel events={events} />
+      <YamlPanel yaml={yaml} />
 
       <ConfirmDeleteModal
         opened={deleteOpen}

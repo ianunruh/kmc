@@ -8,6 +8,19 @@ export interface ClusterInfo {
   defaultStorageClass?: string;
 }
 
+/** Kubernetes Event (core/v1) projected for detail UIs */
+export interface ResourceEvent {
+  type: string;
+  reason: string;
+  message: string;
+  source?: string;
+  count: number;
+  firstTimestamp?: string;
+  lastTimestamp?: string;
+  involvedKind?: string;
+  involvedName?: string;
+}
+
 export interface VmSummary {
   cluster: ClusterId;
   namespace: string;

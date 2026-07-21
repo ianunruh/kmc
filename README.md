@@ -51,7 +51,8 @@ Open [http://localhost:5173](http://localhost:5173).
 - **Virtual machines** — list, create, detail, stop/start/delete
 - **Data volumes** — list, create (blank / PVC clone / HTTP), detail, delete
 - **Cluster instance types** — list, create, detail, edit, delete
-- Shared list/form UI primitives under `app/components/ui/`
+- **Events + YAML** on detail pages (shared `EventsPanel` / `YamlPanel`)
+- Shared list/form UI primitives under `app/ui/`
 - Global auto-refresh + top loading bar
 - Multi-cluster via kubeconfig contexts (`KMC_CONTEXTS`)
 
