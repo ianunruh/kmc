@@ -14,6 +14,7 @@ import { useDisclosure } from "@mantine/hooks";
 import {
   IconDatabase,
   IconCpu,
+  IconKey,
   IconLogout,
   IconPlus,
   IconServer,
@@ -45,6 +46,12 @@ const NAV = [
     label: "Instance Types",
     icon: IconCpu,
     match: (path: string) => path.startsWith("/instancetypes"),
+  },
+  {
+    to: "/ssh-keys",
+    label: "SSH Keys",
+    icon: IconKey,
+    match: (path: string) => path.startsWith("/ssh-keys"),
   },
 ] as const;
 

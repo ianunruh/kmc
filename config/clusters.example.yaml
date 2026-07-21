@@ -1,4 +1,9 @@
 # Example cluster registry. Copy to config/clusters.yaml and point tokenFile/tokenEnv at SA tokens.
+#
+# Optional: cluster that holds app-level user prefs (SSH public keys as ConfigMaps
+# in kmc-system). Defaults to the first cluster below. Override with env
+# KMC_SETTINGS_CLUSTER.
+# settingsCluster: prod-sjc1
 clusters:
   - id: prod-sjc1
     displayName: prod-sjc1

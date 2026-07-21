@@ -7,6 +7,7 @@ export default [
   route("auth/callback", "routes/auth.callback.ts"),
   route("auth/logout", "routes/auth.logout.ts"),
   route("me", "routes/me.tsx"),
+  route("ssh-keys", "routes/ssh-keys.tsx"),
 
   route("vms/create", "routes/vms.create.tsx"),
   route(

@@ -17,8 +17,10 @@ import { useEffect, useMemo } from "react";
 import { Link, redirect, useFetcher, useNavigation, useSubmit } from "react-router";
 import type { Route } from "./+types/vms.create";
 import { notifyActionError } from "~/lib/action-feedback";
+import { getRequestSession } from "~/lib/auth/middleware.server";
 import { logServerError } from "~/lib/errors";
 import { vmPath } from "~/lib/format";
+import { listSshKeysOrEmpty } from "~/ssh-keys/ssh-keys.server";
 import { createVm, listClusters } from "~/vms/vms.server";
 import type { ClusterCatalog, CreateVmRequest, NetworkInfo } from "~/lib/types";
 
@@ -28,7 +30,21 @@ export function meta(_args: Route.MetaArgs) {
 
 export async function loader() {
   const clusters = await listClusters();
-  return { clusters };
+  const session = getRequestSession();
+  const { keys: sshKeys, error: sshKeysError } = await listSshKeysOrEmpty(
+    session?.user ?? null,
+  );
+  return {
+    clusters,
+    sshKeys: sshKeys.map((k) => ({
+      id: k.id,
+      name: k.name,
+      publicKey: k.publicKey,
+      fingerprint: k.fingerprint,
+    })),
+    sshKeysError: sshKeysError ?? null,
+    signedIn: Boolean(session?.user),
+  };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -46,7 +62,9 @@ export async function action({ request }: Route.ActionArgs) {
   const storageClass = String(form.get("storageClass") ?? "").trim() || undefined;
   const imageValue = String(form.get("image") ?? "").trim();
   const network = String(form.get("network") ?? "").trim() || undefined;
-  const sshPublicKey = String(form.get("sshPublicKey") ?? "").trim();
+  const sshKeyMode = String(form.get("sshKeyMode") ?? "paste").trim();
+  const savedSshKeyId = String(form.get("savedSshKeyId") ?? "").trim();
+  let sshPublicKey = String(form.get("sshPublicKey") ?? "").trim();
   const start = form.get("start") !== "false";
 
   if (!cluster) return { error: "Cluster is required" };
@@ -59,6 +77,20 @@ export async function action({ request }: Route.ActionArgs) {
   }
   if (!diskSize) return { error: "Disk size is required" };
   if (!imageValue) return { error: "Image is required" };
+
+  if (sshKeyMode === "saved") {
+    if (!savedSshKeyId) return { error: "Select an SSH key" };
+    const session = getRequestSession();
+    if (!session?.user) {
+      return { error: "Sign in to use a saved SSH key, or paste a key instead" };
+    }
+    const { keys, error: listErr } = await listSshKeysOrEmpty(session.user);
+    if (listErr) return { error: `Could not load SSH keys: ${listErr}` };
+    const match = keys.find((k) => k.id === savedSshKeyId);
+    if (!match) return { error: "Selected SSH key was not found — pick another or paste" };
+    sshPublicKey = match.publicKey;
+  }
+
   if (!sshPublicKey) return { error: "SSH public key is required" };
 
   const [imageNamespace, imageName] = imageValue.includes("/")
@@ -117,12 +149,13 @@ type CatalogFetcherData = ClusterCatalog;
 type NetworksFetcherData = { networks: NetworkInfo[] };
 
 export default function CreateVmPage({ loaderData, actionData }: Route.ComponentProps) {
-  const { clusters } = loaderData;
+  const { clusters, sshKeys, sshKeysError, signedIn } = loaderData;
   const navigation = useNavigation();
   const submit = useSubmit();
   const submitting = navigation.state === "submitting";
   const catalogFetcher = useFetcher<CatalogFetcherData>();
   const networksFetcher = useFetcher<NetworksFetcherData>();
+  const hasSavedKeys = sshKeys.length > 0;
 
   const form = useForm({
     initialValues: {
@@ -138,6 +171,8 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       storageClass: "",
       image: "",
       network: "",
+      sshKeyMode: (hasSavedKeys ? "saved" : "paste") as "saved" | "paste",
+      savedSshKeyId: hasSavedKeys ? sshKeys[0]!.id : "",
       sshPublicKey: "",
       start: true,
     },
@@ -153,7 +188,10 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       },
       diskSize: (v) => (!v ? "Required" : null),
       image: (v) => (!v ? "Required" : null),
-      sshPublicKey: (v) => (!v ? "Required" : null),
+      savedSshKeyId: (v, values) =>
+        values.sshKeyMode === "saved" && !v ? "Select a key" : null,
+      sshPublicKey: (v, values) =>
+        values.sshKeyMode === "paste" && !v ? "Required" : null,
     },
   });
 
@@ -171,6 +209,8 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       storageClass: values.storageClass,
       image: values.image,
       network: values.network,
+      sshKeyMode: values.sshKeyMode,
+      savedSshKeyId: values.savedSshKeyId,
       sshPublicKey: values.sshPublicKey,
       start: values.start ? "true" : "false",
     };
@@ -466,14 +506,68 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
               <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
                 Access & network
               </Text>
-              <Textarea
-                label="SSH public key"
-                placeholder="ssh-ed25519 AAAA… user@host"
-                minRows={3}
-                required
-                autosize
-                {...form.getInputProps("sshPublicKey")}
-              />
+              {sshKeysError ? (
+                <Alert color="yellow" title="Saved SSH keys unavailable">
+                  {sshKeysError}. You can still paste a one-off public key below.
+                </Alert>
+              ) : null}
+              {hasSavedKeys ? (
+                <Select
+                  label="SSH key source"
+                  data={[
+                    { value: "saved", label: "Saved key" },
+                    { value: "paste", label: "Paste a one-off key" },
+                  ]}
+                  value={form.values.sshKeyMode}
+                  onChange={(v) =>
+                    form.setFieldValue(
+                      "sshKeyMode",
+                      v === "paste" ? "paste" : "saved",
+                    )
+                  }
+                />
+              ) : null}
+              {form.values.sshKeyMode === "saved" && hasSavedKeys ? (
+                <Stack gap={4}>
+                  <Select
+                    label="SSH public key"
+                    description="Managed under SSH Keys in the sidebar"
+                    data={sshKeys.map((k) => ({
+                      value: k.id,
+                      label: `${k.name} · ${k.fingerprint}`,
+                    }))}
+                    required
+                    value={form.values.savedSshKeyId || null}
+                    error={form.errors.savedSshKeyId}
+                    onChange={(v) => form.setFieldValue("savedSshKeyId", v ?? "")}
+                  />
+                  <Text size="xs" c="dimmed">
+                    <Text span component={Link} to="/ssh-keys" c="accent.4">
+                      Manage saved keys
+                    </Text>
+                  </Text>
+                </Stack>
+              ) : (
+                <Stack gap={4}>
+                  <Textarea
+                    label="SSH public key"
+                    placeholder="ssh-ed25519 AAAA… user@host"
+                    minRows={3}
+                    required
+                    autosize
+                    {...form.getInputProps("sshPublicKey")}
+                  />
+                  {signedIn && !hasSavedKeys && !sshKeysError ? (
+                    <Text size="xs" c="dimmed">
+                      Save keys on the{" "}
+                      <Text span component={Link} to="/ssh-keys" c="accent.4">
+                        SSH Keys
+                      </Text>{" "}
+                      page to select them here next time.
+                    </Text>
+                  ) : null}
+                </Stack>
+              )}
               <Select
                 label="Network"
                 description="Multus NAD in the target namespace, or pod network"

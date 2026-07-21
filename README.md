@@ -19,12 +19,12 @@ app/
     k8s/            # clients, cluster registry, catalog, events, yaml
   ui/               # shared UI primitives
   shell/            # app chrome, refresh control, loading bar
-  vms/ datavolumes/ instancetypes/
+  vms/ datavolumes/ instancetypes/ ssh-keys/
 config/
   clusters.example.yaml
   clusters.yaml     # local (gitignored) — apiServer + SA tokens
   secrets/          # local (gitignored) — platform SA tokens
-deploy/impersonator/  # cluster-side SA + impersonate RBAC
+deploy/impersonator/  # cluster-side SA + impersonate + settings RBAC
 ```
 
 ## Prerequisites
@@ -141,6 +141,7 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 | -------------------------- | ----------------------- | ------------------------------------------------------------------ |
 | `KMC_AUTH_MODE`            | `kubeconfig`            | `kubeconfig` \| `impersonate`                                      |
 | `KMC_CLUSTERS_CONFIG`      | `config/clusters.yaml`  | Cluster identity registry                                          |
+| `KMC_SETTINGS_CLUSTER`     | first cluster in YAML   | Cluster for app-level prefs (SSH keys ConfigMaps in `kmc-system`)  |
 | `KMC_CONTEXTS`             | `prod-sjc1,homelab`     | Fallback cluster list when YAML missing (kubeconfig mode)          |
 | `KMC_IMAGE_NAMESPACE`      | `vm-images`             | Namespace scanned for golden image PVCs                            |
 | `KMC_SESSION_SECRET`       | —                       | ≥32 chars; HMAC key for signed session cookies (survives restarts) |
@@ -155,6 +156,7 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 
 - **Virtual machines** — list, create, detail, edit (labels always; size / preference / run strategy when stopped), stop/start/restart/pause/unpause/delete, **serial console** (full-page xterm via app-proxied WebSocket)
 - **IPAM** — optional per-cluster IPv4 pools for Multus NADs; auto-allocate + netplan cloud-init on create
+- **SSH keys** — signed-in users save named public keys (ConfigMap on the settings cluster); select when creating a VM
 
 - **Data volumes** — list, create (blank / PVC clone / HTTP), detail, delete
 - **Cluster instance types** — list, create, detail, edit, delete
@@ -163,6 +165,12 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 - Cross-links between resources
 - Global auto-refresh + top loading bar
 - Multi-cluster via kubeconfig **or** platform SA + impersonation
+
+### User SSH keys
+
+Saved SSH **public** keys are stored as ConfigMaps in `kmc-system` on a single **settings cluster** (`settingsCluster` in `clusters.yaml`, or `KMC_SETTINGS_CLUSTER`, else the first registered cluster). In impersonate mode the platform SA writes these without user impersonation; kmc enforces ownership from the GitHub session.
+
+Apply the updated `deploy/impersonator/rbac.yaml` so SA `kmc` can manage ConfigMaps in `kmc-system` (Role `kmc-settings`). Manage keys at `/ssh-keys`; create VM can select a saved key or still accept a one-off paste.
 
 ## Safety
 

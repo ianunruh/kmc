@@ -45,6 +45,12 @@ export type ClusterIdentity = {
 };
 
 type ClustersFile = {
+  /**
+   * Cluster used for app-level user prefs (SSH keys, etc.).
+   * Defaults to the first entry in `clusters` when omitted.
+   * Override with env `KMC_SETTINGS_CLUSTER`.
+   */
+  settingsCluster?: string;
   clusters?: Array<{
     id: string;
     displayName?: string;
@@ -75,15 +81,20 @@ let cached: {
   path: string;
   mtimeMs: number;
   identities: Map<string, ClusterIdentity>;
+  /** From YAML top-level `settingsCluster`, if set. */
+  settingsCluster?: string;
 } | null = null;
 
 function configPath(): string {
   return resolve(process.env.KMC_CLUSTERS_CONFIG ?? "config/clusters.yaml");
 }
 
-function loadFromYaml(path: string): Map<string, ClusterIdentity> {
+function loadFromYaml(path: string): {
+  identities: Map<string, ClusterIdentity>;
+  settingsCluster?: string;
+} {
   if (!existsSync(path)) {
-    return new Map();
+    return { identities: new Map() };
   }
   const text = readFileSync(path, "utf8");
   const doc = parseYaml(text) as ClustersFile;
@@ -103,7 +114,8 @@ function loadFromYaml(path: string): Map<string, ClusterIdentity> {
       ipPools: parseIpPools(raw.ipPools, raw.id),
     });
   }
-  return map;
+  const settingsCluster = doc.settingsCluster?.trim() || undefined;
+  return { identities: map, settingsCluster };
 }
 
 function parseIpPools(
@@ -164,7 +176,10 @@ export function hasClusterPrometheus(id: ClusterId): boolean {
   return getClusterPrometheusUrl(id) != null;
 }
 
-function getIdentities(): Map<string, ClusterIdentity> {
+function loadRegistry(): {
+  identities: Map<string, ClusterIdentity>;
+  settingsCluster?: string;
+} {
   const path = configPath();
   let mtimeMs = 0;
   try {
@@ -175,11 +190,49 @@ function getIdentities(): Map<string, ClusterIdentity> {
     mtimeMs = 0;
   }
   if (cached && cached.path === path && cached.mtimeMs === mtimeMs) {
-    return cached.identities;
+    return {
+      identities: cached.identities,
+      settingsCluster: cached.settingsCluster,
+    };
   }
-  const identities = loadFromYaml(path);
-  cached = { path, mtimeMs, identities };
-  return identities;
+  const loaded = loadFromYaml(path);
+  cached = {
+    path,
+    mtimeMs,
+    identities: loaded.identities,
+    settingsCluster: loaded.settingsCluster,
+  };
+  return loaded;
+}
+
+function getIdentities(): Map<string, ClusterIdentity> {
+  return loadRegistry().identities;
+}
+
+/**
+ * Cluster used for app-level user prefs (SSH keys ConfigMaps in kmc-system).
+ *
+ * Resolution order:
+ * 1. `KMC_SETTINGS_CLUSTER` env
+ * 2. top-level `settingsCluster` in clusters.yaml
+ * 3. first registered cluster id
+ */
+export function getSettingsClusterId(): ClusterId {
+  const env = process.env.KMC_SETTINGS_CLUSTER?.trim();
+  if (env) return env;
+
+  const { settingsCluster, identities } = loadRegistry();
+  if (settingsCluster) return settingsCluster;
+
+  const fromYaml = [...identities.keys()];
+  if (fromYaml[0]) return fromYaml[0];
+
+  const ids = listClusterIds();
+  if (ids[0]) return ids[0];
+
+  throw new Error(
+    "No settings cluster configured. Set settingsCluster in clusters.yaml or KMC_SETTINGS_CLUSTER.",
+  );
 }
 
 /** Prefer YAML registry; fall back to KMC_CONTEXTS / defaults for kubeconfig mode. */

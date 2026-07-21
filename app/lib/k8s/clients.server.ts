@@ -6,12 +6,13 @@ import { getActor, type Actor } from "~/lib/auth/actor.server";
 import { getAuthMode } from "~/lib/auth/mode.server";
 import {
   getClusterIdentity,
+  getSettingsClusterId,
   listClusterIds,
   requireClusterIdentity,
   resolveClusterToken,
 } from "./cluster-config.server";
 
-export { listClusterIds };
+export { listClusterIds, getSettingsClusterId };
 
 /** @deprecated Use listClusterIds — kept for gradual call-site updates */
 export function getConfiguredContexts(): ClusterId[] {
@@ -217,6 +218,38 @@ export function getClusterClients(cluster: ClusterId): ClusterClients {
       );
     }
     installImpersonation(kc, actor);
+  } else {
+    kc = loadKubeconfigContext(cluster);
+  }
+
+  const apis = makeApiClients(kc);
+  return {
+    id: cluster,
+    kc,
+    ...apis,
+  };
+}
+
+/**
+ * Clients for the settings cluster **without** user impersonation.
+ *
+ * Used for app-level stores (SSH keys) in `kmc-system`. In impersonate mode the
+ * platform SA talks as itself; ownership is enforced in app code. In kubeconfig
+ * mode this is the operator's local context for the settings cluster.
+ */
+export function getSettingsClusterClients(): ClusterClients {
+  const cluster = getSettingsClusterId();
+  const mode = getAuthMode();
+  let kc: k8s.KubeConfig;
+
+  if (mode === "impersonate") {
+    const identity = getClusterIdentity(cluster);
+    if (identity) {
+      kc = loadFromPlatformSa(cluster);
+    } else {
+      kc = loadKubeconfigContext(cluster);
+    }
+    // Deliberately no installImpersonation — platform SA must write kmc-system.
   } else {
     kc = loadKubeconfigContext(cluster);
   }
