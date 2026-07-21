@@ -429,7 +429,15 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
             <Field label="Machine" value={vm.machineType} />
             <Field label="Architecture" value={vm.architecture} />
             <Field label="VMI phase" value={vm.vmiPhase ?? (vm.hasVmi ? "—" : "none")} />
-            <Field label="IPv4" value={vm.ipv4Address} />
+            <Field label="IPv4 (live)" value={vm.ipv4Address} />
+            <Field
+              label="IPv4 (allocated)"
+              value={
+                vm.allocatedIpv4 ? (
+                  <Code>{vm.allocatedIpv4}</Code>
+                ) : undefined
+              }
+            />
             <Field label="UID" value={vm.uid ? <Code>{vm.uid}</Code> : undefined} />
           </SimpleGrid>
         </DetailCard>

@@ -17,6 +17,8 @@ import {
   httpErrorMessage,
   k8sFetch,
 } from "~/lib/k8s/clients.server";
+import { allocateIpv4ForMultus } from "~/lib/ipam/pools.server";
+import { IPAM_ANNOTATION_IPV4 } from "~/lib/ipam/constants";
 import { buildVirtualMachineManifest } from "./template.server";
 
 interface KubeVm {
@@ -340,9 +342,10 @@ function mapVmDetail(
   instanceTypes?: Map<string, InstanceTypeSize>,
 ): VmDetail {
   const summary = mapVm(cluster, vm, instanceTypes);
-  const ipv4 = vmi?.status?.interfaces?.flatMap(
+  const liveIpv4 = vmi?.status?.interfaces?.flatMap(
     (i) => i.ipAddresses ?? (i.ipAddress ? [i.ipAddress] : []),
   )?.[0];
+  const allocatedIpv4 = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
 
   return {
     ...summary,
@@ -364,7 +367,8 @@ function mapVmDetail(
     })),
     volumes: mapVolumes(vm),
     networks: mapNetworks(vm, vmi),
-    ipv4Address: ipv4,
+    ipv4Address: liveIpv4,
+    allocatedIpv4: allocatedIpv4 || undefined,
     vmiPhase: vmi?.status?.phase,
     hasVmi: vmi != null,
   };
@@ -533,7 +537,16 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
   }
 
   const { custom } = getClusterClients(input.cluster);
-  const body = buildVirtualMachineManifest(input);
+
+  let allocation = null;
+  if (input.network?.multusNetworkName) {
+    allocation = await allocateIpv4ForMultus(
+      input.cluster,
+      input.network.multusNetworkName,
+    );
+  }
+
+  const body = buildVirtualMachineManifest(input, allocation);
 
   try {
     const created = (await custom.createNamespacedCustomObject({

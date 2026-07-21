@@ -278,12 +278,25 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
   );
   const networkOptions = useMemo(() => {
     const nets = networksFetcher.data?.networks ?? [];
-    const opts = nets.map((n) => n.name);
     return [
       { value: "", label: "Pod network" },
-      ...opts.map((n) => ({ value: n, label: n })),
+      ...nets.map((n) => {
+        if (n.ipPool) {
+          const { id, cidr, free, total } = n.ipPool;
+          return {
+            value: n.name,
+            label: `${n.name} · IPAM ${id} (${free}/${total} free · ${cidr})`,
+          };
+        }
+        return { value: n.name, label: n.name };
+      }),
     ];
   }, [networksFetcher.data]);
+
+  const selectedNetworkPool = useMemo(() => {
+    const nets = networksFetcher.data?.networks ?? [];
+    return nets.find((n) => n.name === form.values.network)?.ipPool;
+  }, [networksFetcher.data, form.values.network]);
 
   return (
     <Stack gap="md" pb={80}>
@@ -468,6 +481,22 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 value={form.values.network}
                 onChange={(v) => form.setFieldValue("network", v ?? "")}
               />
+              {selectedNetworkPool ? (
+                <Text size="xs" c="dimmed">
+                  Auto-assigns a free address from pool{" "}
+                  <Text span ff="monospace" c="gray.4">
+                    {selectedNetworkPool.id}
+                  </Text>{" "}
+                  ({selectedNetworkPool.cidr}, gateway {selectedNetworkPool.gateway}
+                  ). Configured via cloud-init netplan; released when the VM is
+                  deleted.
+                </Text>
+              ) : form.values.network ? (
+                <Text size="xs" c="dimmed">
+                  No IP pool configured for this Multus network — guest networking
+                  is left unconfigured by kmc.
+                </Text>
+              ) : null}
               <Switch
                 label="Start after create"
                 checked={form.values.start}

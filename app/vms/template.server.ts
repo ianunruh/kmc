@@ -1,6 +1,14 @@
 import type { CreateVmRequest } from "~/lib/types";
+import {
+  buildNetworkData,
+  ipamAnnotations,
+  type AllocatedIp,
+} from "~/lib/ipam/pools.server";
 
-export function buildVirtualMachineManifest(input: CreateVmRequest) {
+export function buildVirtualMachineManifest(
+  input: CreateVmRequest,
+  allocation?: AllocatedIp | null,
+) {
   const start = input.start !== false;
   const imageNs = input.image.namespace || "vm-images";
   const diskName = input.name;
@@ -16,6 +24,18 @@ export function buildVirtualMachineManifest(input: CreateVmRequest) {
     },
   ];
 
+  const cloudInitNoCloud: Record<string, string> = {
+    userData: [
+      "#cloud-config",
+      "ssh_authorized_keys:",
+      `  - ${input.sshPublicKey.trim()}`,
+    ].join("\n"),
+  };
+
+  if (allocation) {
+    cloudInitNoCloud.networkData = buildNetworkData(allocation);
+  }
+
   const volumes: unknown[] = [
     {
       name: "root",
@@ -23,13 +43,7 @@ export function buildVirtualMachineManifest(input: CreateVmRequest) {
     },
     {
       name: "cloudinit",
-      cloudInitNoCloud: {
-        userData: [
-          "#cloud-config",
-          "ssh_authorized_keys:",
-          `  - ${input.sshPublicKey.trim()}`,
-        ].join("\n"),
-      },
+      cloudInitNoCloud,
     },
   ];
 
@@ -133,6 +147,10 @@ export function buildVirtualMachineManifest(input: CreateVmRequest) {
     };
   }
 
+  const annotations: Record<string, string> = allocation
+    ? ipamAnnotations(allocation)
+    : {};
+
   return {
     apiVersion: "kubevirt.io/v1",
     kind: "VirtualMachine",
@@ -143,6 +161,7 @@ export function buildVirtualMachineManifest(input: CreateVmRequest) {
         "kubevirt.io/vm": input.name,
         "app.kubernetes.io/managed-by": "kmc",
       },
+      ...(Object.keys(annotations).length > 0 ? { annotations } : {}),
     },
     spec,
   };

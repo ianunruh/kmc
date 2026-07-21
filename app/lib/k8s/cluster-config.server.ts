@@ -4,6 +4,31 @@ import { parse as parseYaml } from "yaml";
 import type { ClusterId } from "~/lib/types";
 import { getAuthMode } from "~/lib/auth/mode.server";
 
+/** Scan-derived IPv4 pool bound to a Multus NAD (see app/lib/ipam). */
+export type IpPoolConfig = {
+  /** Stable id written to VM annotation kmc.io/ipam-pool */
+  id: string;
+  /**
+   * Multus NetworkAttachmentDefinition name this pool serves.
+   * Accepts `bridge-external` or `namespace/bridge-external`.
+   */
+  multusNetwork: string;
+  /** e.g. 74.82.62.0/24 */
+  cidr: string;
+  gateway: string;
+  dns?: string[];
+  /** Extra addresses never allocated (routers, VIPs, etc.) */
+  exclude?: string[];
+  /** Optional allocation window within the CIDR */
+  start?: string;
+  end?: string;
+  /**
+   * Guest interface name for netplan match (e.g. enp1s0).
+   * When omitted, match virtio_net driver.
+   */
+  interface?: string;
+};
+
 export type ClusterIdentity = {
   id: ClusterId;
   displayName: string;
@@ -15,6 +40,8 @@ export type ClusterIdentity = {
   tokenEnv?: string;
   /** Base URL for Prometheus HTTP API (e.g. https://prometheus.example.com). */
   prometheusUrl?: string;
+  /** Optional IPv4 pools for Multus bridge networks. */
+  ipPools?: IpPoolConfig[];
 };
 
 type ClustersFile = {
@@ -28,6 +55,17 @@ type ClustersFile = {
     tokenFile?: string;
     tokenEnv?: string;
     prometheusUrl?: string;
+    ipPools?: Array<{
+      id?: string;
+      multusNetwork?: string;
+      cidr?: string;
+      gateway?: string;
+      dns?: string[];
+      exclude?: string[];
+      start?: string;
+      end?: string;
+      interface?: string;
+    }>;
   }>;
 };
 
@@ -62,9 +100,58 @@ function loadFromYaml(path: string): Map<string, ClusterIdentity> {
       tokenFile: raw.tokenFile,
       tokenEnv: raw.tokenEnv,
       prometheusUrl: raw.prometheusUrl?.trim() || undefined,
+      ipPools: parseIpPools(raw.ipPools, raw.id),
     });
   }
   return map;
+}
+
+function parseIpPools(
+  raw:
+    | Array<{
+        id?: string;
+        multusNetwork?: string;
+        cidr?: string;
+        gateway?: string;
+        dns?: string[];
+        exclude?: string[];
+        start?: string;
+        end?: string;
+        interface?: string;
+      }>
+    | undefined,
+  clusterId: string,
+): IpPoolConfig[] | undefined {
+  if (!raw?.length) return undefined;
+  const pools: IpPoolConfig[] = [];
+  const seenIds = new Set<string>();
+  for (const p of raw) {
+    const id = p.id?.trim();
+    const multusNetwork = p.multusNetwork?.trim();
+    const cidr = p.cidr?.trim();
+    const gateway = p.gateway?.trim();
+    if (!id || !multusNetwork || !cidr || !gateway) {
+      throw new Error(
+        `Cluster "${clusterId}": each ipPools entry needs id, multusNetwork, cidr, and gateway`,
+      );
+    }
+    if (seenIds.has(id)) {
+      throw new Error(`Cluster "${clusterId}": duplicate ipPools id "${id}"`);
+    }
+    seenIds.add(id);
+    pools.push({
+      id,
+      multusNetwork,
+      cidr,
+      gateway,
+      dns: p.dns?.map((d) => d.trim()).filter(Boolean),
+      exclude: p.exclude?.map((e) => e.trim()).filter(Boolean),
+      start: p.start?.trim() || undefined,
+      end: p.end?.trim() || undefined,
+      interface: p.interface?.trim() || undefined,
+    });
+  }
+  return pools;
 }
 
 /** Prometheus base URL for a cluster, if configured. */

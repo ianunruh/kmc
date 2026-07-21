@@ -8,6 +8,7 @@ import type {
   PreferenceInfo,
   StorageClassInfo,
 } from "~/lib/types";
+import { findIpPoolForMultus, getIpPoolUsage } from "~/lib/ipam/pools.server";
 import { getClusterClients } from "./clients.server";
 
 const IMAGE_NAMESPACE = process.env.KMC_IMAGE_NAMESPACE ?? "vm-images";
@@ -53,13 +54,57 @@ export async function listNetworks(
     })) as {
       items?: Array<{ metadata?: { name?: string; namespace?: string } }>;
     };
-    return (res.items ?? [])
+    const networks = (res.items ?? [])
       .map((item) => ({
         name: item.metadata?.name ?? "",
         namespace: item.metadata?.namespace ?? namespace,
       }))
       .filter((n) => n.name)
       .sort((a, b) => a.name.localeCompare(b.name));
+
+    // Attach scan-derived IP pool usage when a Multus NAD is configured in ipPools.
+    const usageByPoolId = new Map<
+      string,
+      Awaited<ReturnType<typeof getIpPoolUsage>>
+    >();
+
+    return Promise.all(
+      networks.map(async (n) => {
+        const pool = findIpPoolForMultus(cluster, n.name);
+        if (!pool) return n as NetworkInfo;
+        let usage = usageByPoolId.get(pool.id);
+        if (usage === undefined) {
+          try {
+            usage = await getIpPoolUsage(cluster, pool.id);
+          } catch {
+            usage = null;
+          }
+          usageByPoolId.set(pool.id, usage);
+        }
+        if (!usage) {
+          return {
+            ...n,
+            ipPool: {
+              id: pool.id,
+              cidr: pool.cidr,
+              free: 0,
+              total: 0,
+              gateway: pool.gateway,
+            },
+          } satisfies NetworkInfo;
+        }
+        return {
+          ...n,
+          ipPool: {
+            id: usage.pool.id,
+            cidr: usage.cidr,
+            free: usage.free,
+            total: usage.total,
+            gateway: usage.pool.gateway,
+          },
+        } satisfies NetworkInfo;
+      }),
+    );
   } catch {
     return [];
   }

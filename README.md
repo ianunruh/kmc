@@ -96,7 +96,25 @@ clusters:
     tokenFile: config/secrets/homelab.token
     # Optional — enables VM metrics graphs (KubeVirt VMI metrics)
     prometheusUrl: https://prometheus.example.com
+    # Optional — scan-derived IPv4 pools for Multus bridge networks
+    ipPools:
+      - id: public
+        multusNetwork: bridge-external
+        cidr: 74.82.62.0/24
+        gateway: 74.82.62.1
+        dns: [8.8.8.8, 1.1.1.1]
 ```
+
+### IPAM (scan-derived)
+
+When a Multus network on create matches a cluster `ipPools` entry, kmc:
+
+1. Scans cluster VMs for `kmc.io/ipv4` annotations and live VMI interface IPs in the pool CIDR
+2. Picks the first free address (excluding network, broadcast, gateway, and `exclude`)
+3. Annotates the VM (`kmc.io/ipv4`, `kmc.io/ipam-pool`) and injects cloud-init `networkData` (netplan static config)
+4. Frees the address automatically when the VM is deleted (next create re-scans)
+
+No separate IPAM database — the cluster is the source of truth. Concurrent creates in a single kmc process are serialized per pool; multi-replica kmc can still race (use one replica or graduate to explicit leases later).
 
 ### GitHub OAuth App (impersonate mode)
 
@@ -136,6 +154,7 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 ## Features (MVP)
 
 - **Virtual machines** — list, create, detail, edit (labels always; size / preference / run strategy when stopped), stop/start/restart/pause/unpause/delete, **serial console** (full-page xterm via app-proxied WebSocket)
+- **IPAM** — optional per-cluster IPv4 pools for Multus NADs; auto-allocate + netplan cloud-init on create
 
 - **Data volumes** — list, create (blank / PVC clone / HTTP), detail, delete
 - **Cluster instance types** — list, create, detail, edit, delete

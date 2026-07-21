@@ -83,7 +83,10 @@ export interface VmDetail extends VmSummary {
   conditions: VmCondition[];
   volumes: VmVolumeInfo[];
   networks: VmNetworkInfo[];
+  /** Live guest/VMI IPv4 when reported */
   ipv4Address?: string;
+  /** Static IP allocated by kmc IPAM (annotation kmc.io/ipv4) */
+  allocatedIpv4?: string;
   vmiPhase?: string;
   hasVmi: boolean;
 }
@@ -169,9 +172,19 @@ export interface ImageInfo {
   storageClass?: string;
 }
 
+export interface NetworkIpPoolInfo {
+  id: string;
+  cidr: string;
+  free: number;
+  total: number;
+  gateway: string;
+}
+
 export interface NetworkInfo {
   name: string;
   namespace: string;
+  /** Present when this Multus NAD is bound to a configured IP pool */
+  ipPool?: NetworkIpPoolInfo;
 }
 
 export interface ClusterCatalog {
