@@ -54,73 +54,85 @@ export default function MePage({ loaderData }: Route.ComponentProps) {
           ) : (
             <>
               <Title order={5}>GitHub session</Title>
-              <Table withTableBorder withColumnBorders>
-                <Table.Tbody>
-                  <Table.Tr>
-                    <Table.Td w={140}>Login</Table.Td>
-                    <Table.Td>
-                      <Code>{session.githubLogin}</Code>
-                    </Table.Td>
-                  </Table.Tr>
-                  <Table.Tr>
-                    <Table.Td>Email</Table.Td>
-                    <Table.Td>
-                      <Code>{session.email}</Code>
-                    </Table.Td>
-                  </Table.Tr>
-                  <Table.Tr>
-                    <Table.Td>Name</Table.Td>
-                    <Table.Td>{session.name || "—"}</Table.Td>
-                  </Table.Tr>
-                  <Table.Tr>
-                    <Table.Td>Teams</Table.Td>
-                    <Table.Td>
-                      {session.teams.length === 0 ? (
-                        <Text size="sm" c="yellow">
-                          none (check OAuth App org approval / KMC_GITHUB_ORGS)
-                        </Text>
-                      ) : (
-                        session.teams.map((t) => (
-                          <Code key={`${t.org}/${t.slug}`} mr={6}>
-                            {t.org}:{t.slug}
-                          </Code>
-                        ))
-                      )}
-                    </Table.Td>
-                  </Table.Tr>
-                  <Table.Tr>
-                    <Table.Td>Expires</Table.Td>
-                    <Table.Td>
-                      <Code>{new Date(session.exp * 1000).toISOString()}</Code>
-                    </Table.Td>
-                  </Table.Tr>
-                </Table.Tbody>
-              </Table>
+              <Table.ScrollContainer
+                className="kmc-table-scroll"
+                minWidth={320}
+                type="native"
+              >
+                <Table withTableBorder withColumnBorders>
+                  <Table.Tbody>
+                    <Table.Tr>
+                      <Table.Td w={140}>Login</Table.Td>
+                      <Table.Td>
+                        <Code>{session.githubLogin}</Code>
+                      </Table.Td>
+                    </Table.Tr>
+                    <Table.Tr>
+                      <Table.Td>Email</Table.Td>
+                      <Table.Td>
+                        <Code>{session.email}</Code>
+                      </Table.Td>
+                    </Table.Tr>
+                    <Table.Tr>
+                      <Table.Td>Name</Table.Td>
+                      <Table.Td>{session.name || "—"}</Table.Td>
+                    </Table.Tr>
+                    <Table.Tr>
+                      <Table.Td>Teams</Table.Td>
+                      <Table.Td>
+                        {session.teams.length === 0 ? (
+                          <Text size="sm" c="yellow">
+                            none (check OAuth App org approval / KMC_GITHUB_ORGS)
+                          </Text>
+                        ) : (
+                          session.teams.map((t) => (
+                            <Code key={`${t.org}/${t.slug}`} mr={6}>
+                              {t.org}:{t.slug}
+                            </Code>
+                          ))
+                        )}
+                      </Table.Td>
+                    </Table.Tr>
+                    <Table.Tr>
+                      <Table.Td>Expires</Table.Td>
+                      <Table.Td>
+                        <Code>{new Date(session.exp * 1000).toISOString()}</Code>
+                      </Table.Td>
+                    </Table.Tr>
+                  </Table.Tbody>
+                </Table>
+              </Table.ScrollContainer>
 
               <Title order={5} mt="sm">
                 Kubernetes actor
               </Title>
               {actor ? (
-                <Table withTableBorder withColumnBorders>
-                  <Table.Tbody>
-                    <Table.Tr>
-                      <Table.Td w={140}>Impersonate-User</Table.Td>
-                      <Table.Td>
-                        <Code>{actor.user}</Code>
-                      </Table.Td>
-                    </Table.Tr>
-                    <Table.Tr>
-                      <Table.Td>Impersonate-Group</Table.Td>
-                      <Table.Td>
-                        {actor.groups.map((g) => (
-                          <div key={g}>
-                            <Code>{g}</Code>
-                          </div>
-                        ))}
-                      </Table.Td>
-                    </Table.Tr>
-                  </Table.Tbody>
-                </Table>
+                <Table.ScrollContainer
+                  className="kmc-table-scroll"
+                  minWidth={320}
+                  type="native"
+                >
+                  <Table withTableBorder withColumnBorders>
+                    <Table.Tbody>
+                      <Table.Tr>
+                        <Table.Td w={140}>Impersonate-User</Table.Td>
+                        <Table.Td>
+                          <Code>{actor.user}</Code>
+                        </Table.Td>
+                      </Table.Tr>
+                      <Table.Tr>
+                        <Table.Td>Impersonate-Group</Table.Td>
+                        <Table.Td>
+                          {actor.groups.map((g) => (
+                            <div key={g}>
+                              <Code>{g}</Code>
+                            </div>
+                          ))}
+                        </Table.Td>
+                      </Table.Tr>
+                    </Table.Tbody>
+                  </Table>
+                </Table.ScrollContainer>
               ) : (
                 <Text size="sm" c="dimmed">
                   No actor

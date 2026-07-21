@@ -28,6 +28,7 @@ export function EventsPanel({
         isEmpty={events.length === 0}
         emptyMessage={emptyMessage}
         headers={headers}
+        minWidth={showKind ? 900 : 800}
       >
         {events.map((ev, i) => (
           <Table.Tr key={`${ev.reason}-${ev.lastTimestamp ?? ""}-${i}`}>

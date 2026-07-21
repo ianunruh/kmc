@@ -28,8 +28,29 @@ a {
   font-size: 13px;
 }
 
+/* Keep multi-column tables from forcing page-wide horizontal overflow.
+   Scroll containers (Table.ScrollContainer) own horizontal scroll instead. */
+.kmc-table {
+  width: 100%;
+}
+
 .kmc-shell-main {
   background: #0b0d0f;
+  /* Flex/grid children default to min-width:auto and expand to table content. */
+  min-width: 0;
+  overflow-x: clip;
+}
+
+.kmc-shell-main > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Native table scroll: smooth horizontal pan on touch devices */
+.kmc-table-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  max-width: 100%;
 }
 
 @keyframes kmc-pulse {

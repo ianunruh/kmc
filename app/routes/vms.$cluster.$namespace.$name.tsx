@@ -163,7 +163,12 @@ function DetailCard({ title, children }: { title: string; children: React.ReactN
     <Paper
       p="md"
       radius="sm"
-      style={{ background: "#12151a", border: "1px solid #1e242c" }}
+      style={{
+        background: "#12151a",
+        border: "1px solid #1e242c",
+        minWidth: 0,
+        maxWidth: "100%",
+      }}
     >
       <Text size="xs" c="dimmed" tt="uppercase" fw={600} mb="sm">
         {title}
@@ -448,38 +453,44 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
               No networks configured
             </Text>
           ) : (
-            <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>Name</Table.Th>
-                  <Table.Th>Attachment</Table.Th>
-                  <Table.Th>MAC</Table.Th>
-                  <Table.Th>IPs</Table.Th>
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {vm.networks.map((net) => (
-                  <Table.Tr key={net.name}>
-                    <Table.Td>{net.name}</Table.Td>
-                    <Table.Td>
-                      {net.multusNetworkName
-                        ? `multus:${net.multusNetworkName}`
-                        : net.pod
-                          ? "pod"
-                          : "—"}
-                    </Table.Td>
-                    <Table.Td>
-                      <Text size="sm" c="dimmed">
-                        {net.mac ?? "—"}
-                      </Text>
-                    </Table.Td>
-                    <Table.Td>
-                      {net.ipAddresses?.length ? net.ipAddresses.join(", ") : "—"}
-                    </Table.Td>
+            <Table.ScrollContainer
+              className="kmc-table-scroll"
+              minWidth={480}
+              type="native"
+            >
+              <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
+                <Table.Thead>
+                  <Table.Tr>
+                    <Table.Th>Name</Table.Th>
+                    <Table.Th>Attachment</Table.Th>
+                    <Table.Th>MAC</Table.Th>
+                    <Table.Th>IPs</Table.Th>
                   </Table.Tr>
-                ))}
-              </Table.Tbody>
-            </Table>
+                </Table.Thead>
+                <Table.Tbody>
+                  {vm.networks.map((net) => (
+                    <Table.Tr key={net.name}>
+                      <Table.Td>{net.name}</Table.Td>
+                      <Table.Td>
+                        {net.multusNetworkName
+                          ? `multus:${net.multusNetworkName}`
+                          : net.pod
+                            ? "pod"
+                            : "—"}
+                      </Table.Td>
+                      <Table.Td>
+                        <Text size="sm" c="dimmed">
+                          {net.mac ?? "—"}
+                        </Text>
+                      </Table.Td>
+                      <Table.Td>
+                        {net.ipAddresses?.length ? net.ipAddresses.join(", ") : "—"}
+                      </Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            </Table.ScrollContainer>
           )}
         </DetailCard>
       </SimpleGrid>
@@ -490,51 +501,57 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
             No volumes
           </Text>
         ) : (
-          <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Name</Table.Th>
-                <Table.Th>Kind</Table.Th>
-                <Table.Th>Detail</Table.Th>
-                <Table.Th>Size</Table.Th>
-                <Table.Th>Storage class</Table.Th>
-                <Table.Th>Bus</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {vm.volumes.map((vol) => {
-                const href = volumeHref(vm.cluster, vm.namespace, vol);
-                return (
-                  <Table.Tr key={vol.name}>
-                    <Table.Td>
-                      {href ? (
-                        <ResourceLink to={href}>{vol.name}</ResourceLink>
-                      ) : (
-                        vol.name
-                      )}
-                    </Table.Td>
-                    <Table.Td>
-                      {href ? (
-                        <ResourceLink to={href} dimmed>
-                          {vol.kind}
-                        </ResourceLink>
-                      ) : (
-                        vol.kind
-                      )}
-                    </Table.Td>
-                    <Table.Td>
-                      <ClampedText size="sm" c="dimmed" lineClamp={2}>
-                        {vol.detail ?? "—"}
-                      </ClampedText>
-                    </Table.Td>
-                    <Table.Td>{vol.size ?? "—"}</Table.Td>
-                    <Table.Td>{vol.storageClass ?? "—"}</Table.Td>
-                    <Table.Td>{vol.diskBus ?? "—"}</Table.Td>
-                  </Table.Tr>
-                );
-              })}
-            </Table.Tbody>
-          </Table>
+          <Table.ScrollContainer
+            className="kmc-table-scroll"
+            minWidth={720}
+            type="native"
+          >
+            <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Name</Table.Th>
+                  <Table.Th>Kind</Table.Th>
+                  <Table.Th>Detail</Table.Th>
+                  <Table.Th>Size</Table.Th>
+                  <Table.Th>Storage class</Table.Th>
+                  <Table.Th>Bus</Table.Th>
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {vm.volumes.map((vol) => {
+                  const href = volumeHref(vm.cluster, vm.namespace, vol);
+                  return (
+                    <Table.Tr key={vol.name}>
+                      <Table.Td>
+                        {href ? (
+                          <ResourceLink to={href}>{vol.name}</ResourceLink>
+                        ) : (
+                          vol.name
+                        )}
+                      </Table.Td>
+                      <Table.Td>
+                        {href ? (
+                          <ResourceLink to={href} dimmed>
+                            {vol.kind}
+                          </ResourceLink>
+                        ) : (
+                          vol.kind
+                        )}
+                      </Table.Td>
+                      <Table.Td>
+                        <ClampedText size="sm" c="dimmed" lineClamp={2}>
+                          {vol.detail ?? "—"}
+                        </ClampedText>
+                      </Table.Td>
+                      <Table.Td>{vol.size ?? "—"}</Table.Td>
+                      <Table.Td>{vol.storageClass ?? "—"}</Table.Td>
+                      <Table.Td>{vol.diskBus ?? "—"}</Table.Td>
+                    </Table.Tr>
+                  );
+                })}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
         )}
       </DetailCard>
 
@@ -544,50 +561,56 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
             No conditions
           </Text>
         ) : (
-          <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Type</Table.Th>
-                <Table.Th>Status</Table.Th>
-                <Table.Th>Reason</Table.Th>
-                <Table.Th>Message</Table.Th>
-                <Table.Th>Last transition</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {vm.conditions.map((c) => (
-                <Table.Tr key={c.type}>
-                  <Table.Td>{c.type}</Table.Td>
-                  <Table.Td>
-                    <Badge
-                      size="sm"
-                      variant="light"
-                      color={
-                        c.status === "True"
-                          ? "teal"
-                          : c.status === "False"
-                            ? "gray"
-                            : "yellow"
-                      }
-                    >
-                      {c.status}
-                    </Badge>
-                  </Table.Td>
-                  <Table.Td>{c.reason ?? "—"}</Table.Td>
-                  <Table.Td>
-                    <ClampedText size="sm" c="dimmed" maw={420} lineClamp={3}>
-                      {c.message ?? "—"}
-                    </ClampedText>
-                  </Table.Td>
-                  <Table.Td>
-                    <Text size="sm" c="dimmed">
-                      {formatDateTime(c.lastTransitionTime)}
-                    </Text>
-                  </Table.Td>
+          <Table.ScrollContainer
+            className="kmc-table-scroll"
+            minWidth={720}
+            type="native"
+          >
+            <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Type</Table.Th>
+                  <Table.Th>Status</Table.Th>
+                  <Table.Th>Reason</Table.Th>
+                  <Table.Th>Message</Table.Th>
+                  <Table.Th>Last transition</Table.Th>
                 </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
+              </Table.Thead>
+              <Table.Tbody>
+                {vm.conditions.map((c) => (
+                  <Table.Tr key={c.type}>
+                    <Table.Td>{c.type}</Table.Td>
+                    <Table.Td>
+                      <Badge
+                        size="sm"
+                        variant="light"
+                        color={
+                          c.status === "True"
+                            ? "teal"
+                            : c.status === "False"
+                              ? "gray"
+                              : "yellow"
+                        }
+                      >
+                        {c.status}
+                      </Badge>
+                    </Table.Td>
+                    <Table.Td>{c.reason ?? "—"}</Table.Td>
+                    <Table.Td>
+                      <ClampedText size="sm" c="dimmed" maw={420} lineClamp={3}>
+                        {c.message ?? "—"}
+                      </ClampedText>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text size="sm" c="dimmed">
+                        {formatDateTime(c.lastTransitionTime)}
+                      </Text>
+                    </Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
         )}
       </DetailCard>
 

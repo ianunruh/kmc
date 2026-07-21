@@ -67,149 +67,151 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
 
   return (
     <>
-      <Table
-        className="kmc-table"
-        highlightOnHover
-        verticalSpacing="sm"
-        horizontalSpacing="md"
-        withRowBorders
-      >
-        <Table.Thead>
-          <Table.Tr>
-            <Table.Th>Name</Table.Th>
-            <Table.Th>Cluster</Table.Th>
-            <Table.Th>Namespace</Table.Th>
-            <Table.Th>Status</Table.Th>
-            <Table.Th>Size</Table.Th>
-            <Table.Th>Disk</Table.Th>
-            <Table.Th>Age</Table.Th>
-            <Table.Th w={48} />
-          </Table.Tr>
-        </Table.Thead>
-        <Table.Tbody>
-          {vms.map((vm) => {
-            const key = `${vm.cluster}/${vm.namespace}/${vm.name}`;
-            return (
-              <Table.Tr key={key}>
-                <Table.Td>
-                  <ResourceLink to={vmPath(vm)}>{vm.name}</ResourceLink>
-                  {vm.message && (
-                    <ClampedText size="xs" c="dimmed" lineClamp={1} maw={280}>
-                      {vm.message}
-                    </ClampedText>
-                  )}
-                </Table.Td>
-                <Table.Td>
-                  <ResourceLink to={vmsListPath({ cluster: vm.cluster })} dimmed>
-                    {vm.cluster}
-                  </ResourceLink>
-                </Table.Td>
-                <Table.Td>
-                  <ResourceLink
-                    to={vmsListPath({ cluster: vm.cluster, namespace: vm.namespace })}
-                    dimmed
-                  >
-                    {vm.namespace}
-                  </ResourceLink>
-                </Table.Td>
-                <Table.Td>
-                  <ResourceLink
-                    to={vmsListPath({ cluster: vm.cluster, status: vm.status })}
-                    underline="never"
-                  >
-                    <StatusBadge status={vm.status} />
-                  </ResourceLink>
-                </Table.Td>
-                <Table.Td>
-                  <Text size="sm">{sizeLabel(vm)}</Text>
-                </Table.Td>
-                <Table.Td>
-                  <Text size="sm" c="dimmed">
-                    {vm.disk ?? "—"}
-                  </Text>
-                </Table.Td>
-                <Table.Td>
-                  <Tooltip label={vm.age || "unknown"}>
+      <Table.ScrollContainer className="kmc-table-scroll" minWidth={800} type="native">
+        <Table
+          className="kmc-table"
+          highlightOnHover
+          verticalSpacing="sm"
+          horizontalSpacing="md"
+          withRowBorders
+        >
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>Name</Table.Th>
+              <Table.Th>Cluster</Table.Th>
+              <Table.Th>Namespace</Table.Th>
+              <Table.Th>Status</Table.Th>
+              <Table.Th>Size</Table.Th>
+              <Table.Th>Disk</Table.Th>
+              <Table.Th>Age</Table.Th>
+              <Table.Th w={48} />
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {vms.map((vm) => {
+              const key = `${vm.cluster}/${vm.namespace}/${vm.name}`;
+              return (
+                <Table.Tr key={key}>
+                  <Table.Td>
+                    <ResourceLink to={vmPath(vm)}>{vm.name}</ResourceLink>
+                    {vm.message && (
+                      <ClampedText size="xs" c="dimmed" lineClamp={1} maw={280}>
+                        {vm.message}
+                      </ClampedText>
+                    )}
+                  </Table.Td>
+                  <Table.Td>
+                    <ResourceLink to={vmsListPath({ cluster: vm.cluster })} dimmed>
+                      {vm.cluster}
+                    </ResourceLink>
+                  </Table.Td>
+                  <Table.Td>
+                    <ResourceLink
+                      to={vmsListPath({ cluster: vm.cluster, namespace: vm.namespace })}
+                      dimmed
+                    >
+                      {vm.namespace}
+                    </ResourceLink>
+                  </Table.Td>
+                  <Table.Td>
+                    <ResourceLink
+                      to={vmsListPath({ cluster: vm.cluster, status: vm.status })}
+                      underline="never"
+                    >
+                      <StatusBadge status={vm.status} />
+                    </ResourceLink>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="sm">{sizeLabel(vm)}</Text>
+                  </Table.Td>
+                  <Table.Td>
                     <Text size="sm" c="dimmed">
-                      {formatAge(vm.age)}
+                      {vm.disk ?? "—"}
                     </Text>
-                  </Tooltip>
-                </Table.Td>
-                <Table.Td>
-                  <Menu shadow="md" width={170} position="bottom-end">
-                    <Menu.Target>
-                      <ActionIcon
-                        variant="subtle"
-                        color="gray"
-                        aria-label={`Actions for ${vm.name}`}
-                      >
-                        <IconDotsVertical size={16} />
-                      </ActionIcon>
-                    </Menu.Target>
-                    <Menu.Dropdown>
-                      <Menu.Item
-                        component={Link}
-                        to={vmEditPath(vm)}
-                        leftSection={<IconEdit size={14} />}
-                      >
-                        Edit
-                      </Menu.Item>
-                      <Menu.Divider />
-                      <Menu.Item
-                        leftSection={<IconPlayerStop size={14} />}
-                        disabled={!canStop(vm) || busy}
-                        onClick={() => submitIntent("stop", vm)}
-                      >
-                        Stop
-                      </Menu.Item>
-                      <Menu.Item
-                        leftSection={<IconPlayerPlay size={14} />}
-                        disabled={!canStart(vm) || busy}
-                        onClick={() => submitIntent("start", vm)}
-                      >
-                        Start
-                      </Menu.Item>
-                      <Menu.Item
-                        leftSection={<IconRefresh size={14} />}
-                        disabled={!canRestart(vm) || busy}
-                        onClick={() => submitIntent("restart", vm)}
-                      >
-                        Restart
-                      </Menu.Item>
-                      {canUnpause(vm) ? (
+                  </Table.Td>
+                  <Table.Td>
+                    <Tooltip label={vm.age || "unknown"}>
+                      <Text size="sm" c="dimmed">
+                        {formatAge(vm.age)}
+                      </Text>
+                    </Tooltip>
+                  </Table.Td>
+                  <Table.Td>
+                    <Menu shadow="md" width={170} position="bottom-end">
+                      <Menu.Target>
+                        <ActionIcon
+                          variant="subtle"
+                          color="gray"
+                          aria-label={`Actions for ${vm.name}`}
+                        >
+                          <IconDotsVertical size={16} />
+                        </ActionIcon>
+                      </Menu.Target>
+                      <Menu.Dropdown>
+                        <Menu.Item
+                          component={Link}
+                          to={vmEditPath(vm)}
+                          leftSection={<IconEdit size={14} />}
+                        >
+                          Edit
+                        </Menu.Item>
+                        <Menu.Divider />
+                        <Menu.Item
+                          leftSection={<IconPlayerStop size={14} />}
+                          disabled={!canStop(vm) || busy}
+                          onClick={() => submitIntent("stop", vm)}
+                        >
+                          Stop
+                        </Menu.Item>
                         <Menu.Item
                           leftSection={<IconPlayerPlay size={14} />}
-                          disabled={busy}
-                          onClick={() => submitIntent("unpause", vm)}
+                          disabled={!canStart(vm) || busy}
+                          onClick={() => submitIntent("start", vm)}
                         >
-                          Unpause
+                          Start
                         </Menu.Item>
-                      ) : (
                         <Menu.Item
-                          leftSection={<IconPlayerPause size={14} />}
-                          disabled={!canPause(vm) || busy}
-                          onClick={() => submitIntent("pause", vm)}
+                          leftSection={<IconRefresh size={14} />}
+                          disabled={!canRestart(vm) || busy}
+                          onClick={() => submitIntent("restart", vm)}
                         >
-                          Pause
+                          Restart
                         </Menu.Item>
-                      )}
-                      <Menu.Divider />
-                      <Menu.Item
-                        color="red"
-                        leftSection={<IconTrash size={14} />}
-                        disabled={busy}
-                        onClick={() => setDeleteTarget(vm)}
-                      >
-                        Delete
-                      </Menu.Item>
-                    </Menu.Dropdown>
-                  </Menu>
-                </Table.Td>
-              </Table.Tr>
-            );
-          })}
-        </Table.Tbody>
-      </Table>
+                        {canUnpause(vm) ? (
+                          <Menu.Item
+                            leftSection={<IconPlayerPlay size={14} />}
+                            disabled={busy}
+                            onClick={() => submitIntent("unpause", vm)}
+                          >
+                            Unpause
+                          </Menu.Item>
+                        ) : (
+                          <Menu.Item
+                            leftSection={<IconPlayerPause size={14} />}
+                            disabled={!canPause(vm) || busy}
+                            onClick={() => submitIntent("pause", vm)}
+                          >
+                            Pause
+                          </Menu.Item>
+                        )}
+                        <Menu.Divider />
+                        <Menu.Item
+                          color="red"
+                          leftSection={<IconTrash size={14} />}
+                          disabled={busy}
+                          onClick={() => setDeleteTarget(vm)}
+                        >
+                          Delete
+                        </Menu.Item>
+                      </Menu.Dropdown>
+                    </Menu>
+                  </Table.Td>
+                </Table.Tr>
+              );
+            })}
+          </Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
 
       <ConfirmDeleteModal
         opened={deleteTarget != null}
