@@ -109,9 +109,9 @@ clusters:
 
 When a Multus network on create matches a cluster `ipPools` entry, kmc:
 
-1. Scans cluster VMs for `kmc.io/ipv4` annotations and live VMI interface IPs in the pool CIDR
+1. Scans cluster VMs for `kmc.ianunruh.com/ipv4` annotations and live VMI interface IPs in the pool CIDR
 2. Picks the first free address (excluding network, broadcast, gateway, and `exclude`)
-3. Annotates the VM (`kmc.io/ipv4`, `kmc.io/ipam-pool`) and injects cloud-init `networkData` (netplan static config)
+3. Annotates the VM (`kmc.ianunruh.com/ipv4`, `kmc.ianunruh.com/ipam-pool`) and injects cloud-init `networkData` (netplan static config)
 4. Frees the address automatically when the VM is deleted (next create re-scans)
 
 No separate IPAM database — the cluster is the source of truth. Concurrent creates in a single kmc process are serialized per pool; multi-replica kmc can still race (use one replica or graduate to explicit leases later).

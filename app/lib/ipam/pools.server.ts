@@ -181,7 +181,7 @@ async function listClusterVmsAndVmis(cluster: ClusterId): Promise<{
 
 /**
  * Collect IPs considered in-use for a pool:
- * - kmc.io/ipv4 annotations on any VM (stopped VMs still hold the address)
+ * - kmc.ianunruh.com/ipv4 annotations on any VM (stopped VMs still hold the address)
  * - live VMI interface IPs that fall inside the pool CIDR
  */
 export function collectUsedIpv4(

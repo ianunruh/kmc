@@ -6,7 +6,7 @@ import { getAuthMode } from "~/lib/auth/mode.server";
 
 /** Scan-derived IPv4 pool bound to a Multus NAD (see app/lib/ipam). */
 export type IpPoolConfig = {
-  /** Stable id written to VM annotation kmc.io/ipam-pool */
+  /** Stable id written to VM annotation kmc.ianunruh.com/ipam-pool */
   id: string;
   /**
    * Multus NetworkAttachmentDefinition name this pool serves.

@@ -85,7 +85,7 @@ export interface VmDetail extends VmSummary {
   networks: VmNetworkInfo[];
   /** Live guest/VMI IPv4 when reported */
   ipv4Address?: string;
-  /** Static IP allocated by kmc IPAM (annotation kmc.io/ipv4) */
+  /** Static IP allocated by kmc IPAM (annotation kmc.ianunruh.com/ipv4) */
   allocatedIpv4?: string;
   vmiPhase?: string;
   hasVmi: boolean;

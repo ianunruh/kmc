@@ -25,9 +25,9 @@ const MAX_NAME_LEN = 64;
 const CONFLICT_RETRIES = 3;
 
 const LABEL_MANAGED_BY = "app.kubernetes.io/managed-by";
-const LABEL_RESOURCE = "kmc.io/resource";
-const LABEL_OWNER = "kmc.io/owner";
-const ANN_OWNER_EMAIL = "kmc.io/owner-email";
+const LABEL_RESOURCE = "kmc.ianunruh.com/resource";
+const LABEL_OWNER = "kmc.ianunruh.com/owner";
+const ANN_OWNER_EMAIL = "kmc.ianunruh.com/owner-email";
 
 const KEY_TYPE_RE =
   /^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)\s+[A-Za-z0-9+/=]+(?:\s+.*)?$/;
