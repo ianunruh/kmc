@@ -1,4 +1,5 @@
 export { ClampedText } from "./clamped-text";
+export { ConfirmActionModal } from "./confirm-action-modal";
 export { ConfirmDeleteModal } from "./confirm-delete-modal";
 export { ConsolePaper } from "./console-paper";
 export { DetailField } from "./detail-field";

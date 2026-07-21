@@ -28,6 +28,7 @@ import type { Route } from "./+types/vms.$cluster.$namespace.$name";
 import { StatusBadge } from "~/ui/status-badge";
 import {
   ClampedText,
+  ConfirmActionModal,
   ConfirmDeleteModal,
   EventsPanel,
   ResourceIdentity,
@@ -192,11 +193,39 @@ function Field({ label, value }: { label: string; value?: React.ReactNode }) {
   );
 }
 
+type ConfirmableLifecycleIntent = Extract<
+  VmLifecycleIntent,
+  "stop" | "restart" | "pause"
+>;
+
+const LIFECYCLE_CONFIRM: Record<
+  ConfirmableLifecycleIntent,
+  { title: string; confirmLabel: string; message: string }
+> = {
+  stop: {
+    title: "Stop virtual machine",
+    confirmLabel: "Stop VM",
+    message: "This will shut down the virtual machine.",
+  },
+  restart: {
+    title: "Restart virtual machine",
+    confirmLabel: "Restart VM",
+    message: "This will reboot the virtual machine.",
+  },
+  pause: {
+    title: "Pause virtual machine",
+    confirmLabel: "Pause VM",
+    message: "This will pause the virtual machine. It can be unpaused later.",
+  },
+};
+
 export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
   const { vm, events, yaml, prometheusConfigured } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
   const { refreshNow } = useRefresh();
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [confirmIntent, setConfirmIntent] =
+    useState<ConfirmableLifecycleIntent | null>(null);
   const busy = fetcher.state !== "idle";
 
   useFetcherResult(fetcher, (data) => {
@@ -221,6 +250,8 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
 
   const intentBusy = (intent: string) =>
     busy && fetcher.formData?.get("intent") === intent;
+
+  const confirmConfig = confirmIntent ? LIFECYCLE_CONFIRM[confirmIntent] : null;
 
   const interestingAnnotations = Object.entries(vm.annotations).filter(
     ([k]) =>
@@ -299,7 +330,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
             leftSection={<IconPlayerStop size={16} />}
             disabled={!canStop(vm) || busy}
             loading={intentBusy("stop")}
-            onClick={() => submitIntent("stop")}
+            onClick={() => setConfirmIntent("stop")}
           >
             Stop
           </Button>
@@ -317,7 +348,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
             leftSection={<IconRefresh size={16} />}
             disabled={!canRestart(vm) || busy}
             loading={intentBusy("restart")}
-            onClick={() => submitIntent("restart")}
+            onClick={() => setConfirmIntent("restart")}
           >
             Restart
           </Button>
@@ -337,7 +368,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
               leftSection={<IconPlayerPause size={16} />}
               disabled={!canPause(vm) || busy}
               loading={intentBusy("pause")}
-              onClick={() => submitIntent("pause")}
+              onClick={() => setConfirmIntent("pause")}
             >
               Pause
             </Button>
@@ -649,6 +680,28 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
 
       <EventsPanel events={events} showKind />
       <YamlPanel yaml={yaml} />
+
+      <ConfirmActionModal
+        opened={confirmIntent != null}
+        title={confirmConfig?.title ?? ""}
+        confirmLabel={confirmConfig?.confirmLabel}
+        message={
+          <>
+            {confirmConfig?.message}{" "}
+            <Text span fw={700}>
+              {vm.cluster}/{vm.namespace}/{vm.name}
+            </Text>
+          </>
+        }
+        loading={busy}
+        onClose={() => setConfirmIntent(null)}
+        onConfirm={() => {
+          if (!confirmIntent) return;
+          const intent = confirmIntent;
+          setConfirmIntent(null);
+          submitIntent(intent);
+        }}
+      />
 
       <ConfirmDeleteModal
         opened={deleteOpen}
