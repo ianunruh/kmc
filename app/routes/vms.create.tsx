@@ -1,10 +1,9 @@
 import {
   Alert,
   Button,
-  Group,
   NumberInput,
-  Paper,
   Select,
+  SimpleGrid,
   Stack,
   Switch,
   Text,
@@ -20,7 +19,9 @@ import { notifyActionError } from "~/lib/action-feedback";
 import { getRequestSession } from "~/lib/auth/middleware.server";
 import { logServerError } from "~/lib/errors";
 import { vmPath } from "~/lib/format";
+import { getImagePreference } from "~/lib/k8s/catalog.server";
 import { listSshKeysOrEmpty } from "~/ssh-keys/ssh-keys.server";
+import { FormActions, FormSection } from "~/ui";
 import { createVm, listClusters } from "~/vms/vms.server";
 import type { ClusterCatalog, CreateVmRequest, NetworkInfo } from "~/lib/types";
 
@@ -55,7 +56,6 @@ export async function action({ request }: Route.ActionArgs) {
   const name = String(form.get("name") ?? "").trim();
   const sizeMode = String(form.get("sizeMode") ?? "manual");
   const instanceType = String(form.get("instanceType") ?? "").trim() || undefined;
-  const preference = String(form.get("preference") ?? "").trim() || undefined;
   const cpuCoresRaw = String(form.get("cpuCores") ?? "").trim();
   const memory = String(form.get("memory") ?? "").trim() || undefined;
   const diskSize = String(form.get("diskSize") ?? "").trim();
@@ -96,6 +96,9 @@ export async function action({ request }: Route.ActionArgs) {
   const [imageNamespace, imageName] = imageValue.includes("/")
     ? (imageValue.split("/") as [string, string])
     : ["vm-images", imageValue];
+
+  // Preference comes from the golden image PVC label, not a form field.
+  const preference = await getImagePreference(cluster, imageNamespace, imageName);
 
   const payload: CreateVmRequest = {
     cluster,
@@ -166,7 +169,6 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       name: "",
       sizeMode: "manual" as "manual" | "instancetype",
       instanceType: "",
-      preference: "",
       cpuCores: 2,
       memory: "4Gi",
       diskSize: "100Gi",
@@ -204,7 +206,6 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       name: values.name,
       sizeMode: values.sizeMode,
       instanceType: values.instanceType,
-      preference: values.preference,
       cpuCores: String(values.cpuCores),
       memory: values.memory,
       diskSize: values.diskSize,
@@ -248,10 +249,6 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       if (!form.values.instanceType && catalog.instanceTypes[0]) {
         form.setFieldValue("instanceType", catalog.instanceTypes[0].name);
       }
-      if (!form.values.preference) {
-        const ubuntu = catalog.preferences.find((p) => p.name === "ubuntu");
-        if (ubuntu) form.setFieldValue("preference", ubuntu.name);
-      }
     } else {
       form.setFieldValue("sizeMode", "manual");
     }
@@ -292,12 +289,23 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
   );
   const imageOptions = useMemo(
     () =>
-      (catalog?.images ?? []).map((img) => ({
-        value: `${img.namespace}/${img.name}`,
-        label: `${img.name}${img.capacity ? ` (${img.capacity})` : ""}`,
-      })),
+      (catalog?.images ?? []).map((img) => {
+        const bits = [img.name];
+        if (img.capacity) bits.push(img.capacity);
+        if (img.preference) bits.push(`pref: ${img.preference}`);
+        return {
+          value: `${img.namespace}/${img.name}`,
+          label: bits.length > 1 ? `${bits[0]} (${bits.slice(1).join(" · ")})` : bits[0]!,
+        };
+      }),
     [catalog],
   );
+  const selectedImage = useMemo(() => {
+    if (!catalog || !form.values.image) return undefined;
+    return catalog.images.find(
+      (img) => `${img.namespace}/${img.name}` === form.values.image,
+    );
+  }, [catalog, form.values.image]);
   const storageOptions = useMemo(
     () =>
       (catalog?.storageClasses ?? []).map((sc) => ({
@@ -315,10 +323,6 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
             ? `${it.name} · ${it.cpu ?? "?"}c / ${it.memory ?? "?"}`
             : it.name,
       })),
-    [catalog],
-  );
-  const preferenceOptions = useMemo(
-    () => (catalog?.preferences ?? []).map((p) => p.name),
     [catalog],
   );
   const networkOptions = useMemo(() => {
@@ -362,15 +366,8 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
 
       <form onSubmit={onSubmit}>
         <Stack gap="md">
-          <Paper
-            p="md"
-            radius="sm"
-            style={{ background: "#12151a", border: "1px solid #1e242c" }}
-          >
-            <Stack gap="sm">
-              <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
-                Placement
-              </Text>
+          <FormSection title="Placement">
+            <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
               <Select
                 label="Cluster"
                 placeholder="Select cluster"
@@ -399,83 +396,43 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 error={form.errors.namespace}
                 onChange={(v) => form.setFieldValue("namespace", v ?? "")}
               />
-            </Stack>
-          </Paper>
+            </SimpleGrid>
+            <TextInput
+              label="Name"
+              placeholder="my-vm"
+              required
+              {...form.getInputProps("name")}
+            />
+          </FormSection>
 
-          <Paper
-            p="md"
-            radius="sm"
-            style={{ background: "#12151a", border: "1px solid #1e242c" }}
-          >
-            <Stack gap="sm">
-              <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
-                Identity
-              </Text>
-              <TextInput
-                label="Name"
-                placeholder="my-vm"
-                required
-                {...form.getInputProps("name")}
+          <FormSection title="Size & disk">
+            {catalog?.hasInstanceTypes && (
+              <Select
+                label="Instance type"
+                data={instanceTypeOptions}
+                value={form.values.instanceType || null}
+                onChange={(v) => {
+                  form.setFieldValue("instanceType", v ?? "");
+                  form.setFieldValue("sizeMode", v ? "instancetype" : "manual");
+                }}
               />
-            </Stack>
-          </Paper>
-
-          <Paper
-            p="md"
-            radius="sm"
-            style={{ background: "#12151a", border: "1px solid #1e242c" }}
-          >
-            <Stack gap="sm">
-              <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
-                Size
-              </Text>
-              {catalog?.hasInstanceTypes && (
-                <>
-                  <Select
-                    label="Instance type"
-                    data={instanceTypeOptions}
-                    value={form.values.instanceType || null}
-                    onChange={(v) => {
-                      form.setFieldValue("instanceType", v ?? "");
-                      form.setFieldValue("sizeMode", v ? "instancetype" : "manual");
-                    }}
-                  />
-                  <Select
-                    label="Preference"
-                    clearable
-                    data={preferenceOptions}
-                    value={form.values.preference || null}
-                    onChange={(v) => form.setFieldValue("preference", v ?? "")}
-                  />
-                </>
-              )}
-              {(!catalog?.hasInstanceTypes || form.values.sizeMode === "manual") && (
-                <Group grow>
-                  <NumberInput
-                    label="CPU cores"
-                    min={1}
-                    max={64}
-                    {...form.getInputProps("cpuCores")}
-                  />
-                  <TextInput
-                    label="Memory"
-                    placeholder="4Gi"
-                    {...form.getInputProps("memory")}
-                  />
-                </Group>
-              )}
-            </Stack>
-          </Paper>
-
-          <Paper
-            p="md"
-            radius="sm"
-            style={{ background: "#12151a", border: "1px solid #1e242c" }}
-          >
-            <Stack gap="sm">
-              <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
-                Disk
-              </Text>
+            )}
+            {(!catalog?.hasInstanceTypes || form.values.sizeMode === "manual") && (
+              <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+                <NumberInput
+                  label="CPU cores"
+                  min={1}
+                  max={64}
+                  {...form.getInputProps("cpuCores")}
+                />
+                <TextInput
+                  label="Memory"
+                  placeholder="4Gi"
+                  {...form.getInputProps("memory")}
+                />
+              </SimpleGrid>
+            )}
+            <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
               <TextInput
                 label="Disk size"
                 placeholder="100Gi"
@@ -489,141 +446,127 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 value={form.values.storageClass || null}
                 onChange={(v) => form.setFieldValue("storageClass", v ?? "")}
               />
-              <Select
-                label="Image"
-                placeholder="Select golden image PVC"
-                data={imageOptions}
-                required
-                disabled={!catalog}
-                value={form.values.image || null}
-                error={form.errors.image}
-                onChange={(v) => form.setFieldValue("image", v ?? "")}
-              />
-            </Stack>
-          </Paper>
+            </SimpleGrid>
+            <Select
+              label="Image"
+              placeholder="Select golden image PVC"
+              description={
+                selectedImage?.preference
+                  ? `Applies cluster preference “${selectedImage.preference}”`
+                  : selectedImage
+                    ? "No cluster preference labeled on this image"
+                    : undefined
+              }
+              data={imageOptions}
+              required
+              disabled={!catalog}
+              value={form.values.image || null}
+              error={form.errors.image}
+              onChange={(v) => form.setFieldValue("image", v ?? "")}
+            />
+          </FormSection>
 
-          <Paper
-            p="md"
-            radius="sm"
-            style={{ background: "#12151a", border: "1px solid #1e242c" }}
-          >
-            <Stack gap="sm">
-              <Text size="xs" c="dimmed" tt="uppercase" fw={600}>
-                Access & network
-              </Text>
-              {sshKeysError ? (
-                <Alert color="yellow" title="Saved SSH keys unavailable">
-                  {sshKeysError}. You can still paste a one-off public key below.
-                </Alert>
-              ) : null}
-              {hasSavedKeys ? (
+          <FormSection title="Access & network">
+            {sshKeysError ? (
+              <Alert color="yellow" title="Saved SSH keys unavailable">
+                {sshKeysError}. You can still paste a one-off public key below.
+              </Alert>
+            ) : null}
+            {hasSavedKeys ? (
+              <Select
+                label="SSH key source"
+                data={[
+                  { value: "saved", label: "Saved key" },
+                  { value: "paste", label: "Paste a one-off key" },
+                ]}
+                value={form.values.sshKeyMode}
+                onChange={(v) =>
+                  form.setFieldValue(
+                    "sshKeyMode",
+                    v === "paste" ? "paste" : "saved",
+                  )
+                }
+              />
+            ) : null}
+            {form.values.sshKeyMode === "saved" && hasSavedKeys ? (
+              <Stack gap={4}>
                 <Select
-                  label="SSH key source"
-                  data={[
-                    { value: "saved", label: "Saved key" },
-                    { value: "paste", label: "Paste a one-off key" },
-                  ]}
-                  value={form.values.sshKeyMode}
-                  onChange={(v) =>
-                    form.setFieldValue(
-                      "sshKeyMode",
-                      v === "paste" ? "paste" : "saved",
-                    )
-                  }
+                  label="SSH public key"
+                  description="Managed under SSH Keys in the sidebar"
+                  data={sshKeys.map((k) => ({
+                    value: k.id,
+                    label: `${k.name} · ${k.fingerprint}`,
+                  }))}
+                  required
+                  value={form.values.savedSshKeyId || null}
+                  error={form.errors.savedSshKeyId}
+                  onChange={(v) => form.setFieldValue("savedSshKeyId", v ?? "")}
                 />
-              ) : null}
-              {form.values.sshKeyMode === "saved" && hasSavedKeys ? (
-                <Stack gap={4}>
-                  <Select
-                    label="SSH public key"
-                    description="Managed under SSH Keys in the sidebar"
-                    data={sshKeys.map((k) => ({
-                      value: k.id,
-                      label: `${k.name} · ${k.fingerprint}`,
-                    }))}
-                    required
-                    value={form.values.savedSshKeyId || null}
-                    error={form.errors.savedSshKeyId}
-                    onChange={(v) => form.setFieldValue("savedSshKeyId", v ?? "")}
-                  />
-                  <Text size="xs" c="dimmed">
-                    <Text span component={Link} to="/ssh-keys" c="accent.4">
-                      Manage saved keys
-                    </Text>
+                <Text size="xs" c="dimmed">
+                  <Text span component={Link} to="/ssh-keys" c="accent.4">
+                    Manage saved keys
                   </Text>
-                </Stack>
-              ) : (
-                <Stack gap={4}>
-                  <Textarea
-                    label="SSH public key"
-                    placeholder="ssh-ed25519 AAAA… user@host"
-                    minRows={3}
-                    required
-                    autosize
-                    {...form.getInputProps("sshPublicKey")}
-                  />
-                  {signedIn && !hasSavedKeys && !sshKeysError ? (
-                    <Text size="xs" c="dimmed">
-                      Save keys on the{" "}
-                      <Text span component={Link} to="/ssh-keys" c="accent.4">
-                        SSH Keys
-                      </Text>{" "}
-                      page to select them here next time.
-                    </Text>
-                  ) : null}
-                </Stack>
-              )}
-              <Select
-                label="Network"
-                description="Multus NAD in the target namespace, or pod network"
-                data={networkOptions}
-                value={form.values.network}
-                onChange={(v) => form.setFieldValue("network", v ?? "")}
-              />
-              {selectedNetworkPool ? (
-                <Text size="xs" c="dimmed">
-                  Auto-assigns a free address from pool{" "}
-                  <Text span ff="monospace" c="gray.4">
-                    {selectedNetworkPool.id}
-                  </Text>{" "}
-                  ({selectedNetworkPool.cidr}, gateway {selectedNetworkPool.gateway}
-                  ). Configured via cloud-init netplan; released when the VM is
-                  deleted.
                 </Text>
-              ) : form.values.network ? (
-                <Text size="xs" c="dimmed">
-                  No IP pool configured for this Multus network — guest networking
-                  is left unconfigured by kmc.
-                </Text>
-              ) : null}
-              <Switch
-                label="Start after launch"
-                checked={form.values.start}
-                onChange={(e) => form.setFieldValue("start", e.currentTarget.checked)}
-              />
-            </Stack>
-          </Paper>
+              </Stack>
+            ) : (
+              <Stack gap={4}>
+                <Textarea
+                  label="SSH public key"
+                  placeholder="ssh-ed25519 AAAA… user@host"
+                  minRows={3}
+                  required
+                  autosize
+                  {...form.getInputProps("sshPublicKey")}
+                />
+                {signedIn && !hasSavedKeys && !sshKeysError ? (
+                  <Text size="xs" c="dimmed">
+                    Save keys on the{" "}
+                    <Text span component={Link} to="/ssh-keys" c="accent.4">
+                      SSH Keys
+                    </Text>{" "}
+                    page to select them here next time.
+                  </Text>
+                ) : null}
+              </Stack>
+            )}
+            <Select
+              label="Network"
+              description="Multus NAD in the target namespace, or pod network"
+              data={networkOptions}
+              value={form.values.network}
+              onChange={(v) => form.setFieldValue("network", v ?? "")}
+            />
+            {selectedNetworkPool ? (
+              <Text size="xs" c="dimmed">
+                Auto-assigns a free address from pool{" "}
+                <Text span ff="monospace" c="gray.4">
+                  {selectedNetworkPool.id}
+                </Text>{" "}
+                ({selectedNetworkPool.cidr}, gateway {selectedNetworkPool.gateway}
+                ). Configured via cloud-init netplan; released when the VM is
+                deleted.
+              </Text>
+            ) : form.values.network ? (
+              <Text size="xs" c="dimmed">
+                No IP pool configured for this Multus network — guest networking
+                is left unconfigured by kmc.
+              </Text>
+            ) : null}
+            <Switch
+              label="Start after launch"
+              checked={form.values.start}
+              onChange={(e) => form.setFieldValue("start", e.currentTarget.checked)}
+            />
+          </FormSection>
 
-          <Paper
-            p="md"
-            radius="sm"
-            style={{
-              background: "#12151a",
-              border: "1px solid #1e242c",
-              position: "sticky",
-              bottom: 12,
-              zIndex: 5,
-            }}
-          >
-            <Group justify="flex-end">
-              <Button component={Link} to="/" variant="default">
-                Cancel
-              </Button>
-              <Button type="submit" loading={submitting}>
-                Launch VM
-              </Button>
-            </Group>
-          </Paper>
+          <FormActions>
+            <Button component={Link} to="/" variant="default">
+              Cancel
+            </Button>
+            <Button type="submit" loading={submitting}>
+              Launch VM
+            </Button>
+          </FormActions>
         </Stack>
       </form>
     </Stack>

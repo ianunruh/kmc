@@ -170,6 +170,8 @@ export interface ImageInfo {
   namespace: string;
   capacity?: string;
   storageClass?: string;
+  /** VirtualMachineClusterPreference from kmc.ianunruh.com/cluster-preference */
+  preference?: string;
 }
 
 export interface NetworkIpPoolInfo {

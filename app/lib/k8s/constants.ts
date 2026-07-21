@@ -8,3 +8,9 @@ export const KMC_LABEL_NAMESPACE = "kmc.ianunruh.com";
 export const VM_ALLOWED_LABEL = `${KMC_LABEL_NAMESPACE}/vm-allowed`;
 
 export const VM_ALLOWED_LABEL_SELECTOR = `${VM_ALLOWED_LABEL}=true`;
+
+/**
+ * Golden image PVCs labeled with this key name a VirtualMachineClusterPreference
+ * applied automatically when launching a VM from that image.
+ */
+export const IMAGE_PREFERENCE_LABEL = `${KMC_LABEL_NAMESPACE}/cluster-preference`;

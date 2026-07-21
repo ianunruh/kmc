@@ -10,7 +10,11 @@ import type {
 } from "~/lib/types";
 import { findIpPoolForMultus, getIpPoolUsage } from "~/lib/ipam/pools.server";
 import { getClusterClients } from "./clients.server";
-import { VM_ALLOWED_LABEL, VM_ALLOWED_LABEL_SELECTOR } from "./constants";
+import {
+  IMAGE_PREFERENCE_LABEL,
+  VM_ALLOWED_LABEL,
+  VM_ALLOWED_LABEL_SELECTOR,
+} from "./constants";
 
 const IMAGE_NAMESPACE = process.env.KMC_IMAGE_NAMESPACE ?? "vm-images";
 
@@ -232,15 +236,39 @@ async function listImages(
     });
     return (res.items ?? [])
       .filter((pvc) => pvc.status?.phase === "Bound")
-      .map((pvc) => ({
-        name: pvc.metadata?.name ?? "",
-        namespace: pvc.metadata?.namespace ?? IMAGE_NAMESPACE,
-        capacity: pvc.status?.capacity?.storage ?? pvc.spec?.resources?.requests?.storage,
-        storageClass: pvc.spec?.storageClassName ?? undefined,
-      }))
+      .map((pvc) => {
+        const preference = pvc.metadata?.labels?.[IMAGE_PREFERENCE_LABEL]?.trim();
+        return {
+          name: pvc.metadata?.name ?? "",
+          namespace: pvc.metadata?.namespace ?? IMAGE_NAMESPACE,
+          capacity:
+            pvc.status?.capacity?.storage ?? pvc.spec?.resources?.requests?.storage,
+          storageClass: pvc.spec?.storageClassName ?? undefined,
+          preference: preference || undefined,
+        };
+      })
       .filter((i) => i.name)
       .sort((a, b) => a.name.localeCompare(b.name));
   } catch {
     return [];
+  }
+}
+
+/**
+ * Reads the cluster-preference label from a golden image PVC.
+ * Used at VM create time so preference is never taken from a free-form form field.
+ */
+export async function getImagePreference(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+): Promise<string | undefined> {
+  const { core } = getClusterClients(cluster);
+  try {
+    const pvc = await core.readNamespacedPersistentVolumeClaim({ name, namespace });
+    const preference = pvc.metadata?.labels?.[IMAGE_PREFERENCE_LABEL]?.trim();
+    return preference || undefined;
+  } catch {
+    return undefined;
   }
 }
