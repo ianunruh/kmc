@@ -1,6 +1,7 @@
 import {
   Alert,
   Button,
+  Group,
   NumberInput,
   Select,
   SimpleGrid,
@@ -401,6 +402,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
               label="Name"
               placeholder="my-vm"
               required
+              autoFocus
               {...form.getInputProps("name")}
             />
           </FormSection>
@@ -552,20 +554,24 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 is left unconfigured by kmc.
               </Text>
             ) : null}
+          </FormSection>
+
+          <FormActions>
             <Switch
               label="Start after launch"
               checked={form.values.start}
               onChange={(e) => form.setFieldValue("start", e.currentTarget.checked)}
+              mr={{ base: 0, sm: "auto" }}
+              w={{ base: "100%", sm: "auto" }}
             />
-          </FormSection>
-
-          <FormActions>
-            <Button component={Link} to="/" variant="default">
-              Cancel
-            </Button>
-            <Button type="submit" loading={submitting}>
-              Launch VM
-            </Button>
+            <Group gap="sm" justify="flex-end" w={{ base: "100%", sm: "auto" }} wrap="nowrap">
+              <Button component={Link} to="/" variant="default">
+                Cancel
+              </Button>
+              <Button type="submit" loading={submitting}>
+                Launch VM
+              </Button>
+            </Group>
           </FormActions>
         </Stack>
       </form>

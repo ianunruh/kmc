@@ -12,7 +12,9 @@ export function FormActions({ children }: { children: ReactNode }) {
         zIndex: 5,
       }}
     >
-      <Group justify="flex-end">{children}</Group>
+      <Group justify="flex-end" w="100%" wrap="wrap" gap="sm">
+        {children}
+      </Group>
     </ConsolePaper>
   );
 }
