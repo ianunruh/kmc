@@ -1,10 +1,4 @@
-import {
-  ActionIcon,
-  Group,
-  Switch,
-  Text,
-  Tooltip,
-} from "@mantine/core";
+import { ActionIcon, Group, Switch, Text, Tooltip } from "@mantine/core";
 import { IconRefresh } from "@tabler/icons-react";
 import { useRefresh } from "~/lib/refresh";
 

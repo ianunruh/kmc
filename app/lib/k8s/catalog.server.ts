@@ -12,24 +12,17 @@ import { getClusterClients } from "./clients.server";
 
 const IMAGE_NAMESPACE = process.env.KMC_IMAGE_NAMESPACE ?? "vm-images";
 
-export async function getClusterCatalog(
-  cluster: ClusterId,
-): Promise<ClusterCatalog> {
+export async function getClusterCatalog(cluster: ClusterId): Promise<ClusterCatalog> {
   const { custom, core, storage } = getClusterClients(cluster);
 
-  const [
-    namespaces,
-    instanceTypes,
-    preferences,
-    storageClasses,
-    images,
-  ] = await Promise.all([
-    listNamespaces(core),
-    listInstanceTypes(custom),
-    listPreferences(custom),
-    listStorageClasses(storage),
-    listImages(core),
-  ]);
+  const [namespaces, instanceTypes, preferences, storageClasses, images] =
+    await Promise.all([
+      listNamespaces(core),
+      listInstanceTypes(custom),
+      listPreferences(custom),
+      listStorageClasses(storage),
+      listImages(core),
+    ]);
 
   const defaultStorageClass =
     storageClasses.find((s) => s.isDefault)?.name ?? storageClasses[0]?.name;
@@ -102,10 +95,7 @@ async function listInstanceTypes(
     return (res.items ?? [])
       .map((item) => ({
         name: item.metadata?.name ?? "",
-        cpu:
-          item.spec?.cpu?.guest != null
-            ? String(item.spec.cpu.guest)
-            : undefined,
+        cpu: item.spec?.cpu?.guest != null ? String(item.spec.cpu.guest) : undefined,
         memory: item.spec?.memory?.guest,
       }))
       .filter((i) => i.name)
@@ -142,8 +132,7 @@ async function listStorageClasses(
       const annotations = sc.metadata?.annotations ?? {};
       const isDefault =
         annotations["storageclass.kubernetes.io/is-default-class"] === "true" ||
-        annotations["storageclass.beta.kubernetes.io/is-default-class"] ===
-          "true";
+        annotations["storageclass.beta.kubernetes.io/is-default-class"] === "true";
       return {
         name: sc.metadata?.name ?? "",
         isDefault,

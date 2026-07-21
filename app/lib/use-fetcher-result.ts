@@ -12,7 +12,10 @@ export function useFetcherResult<T>(
 ): void {
   const wasBusy = useRef(false);
   const onResultRef = useRef(onResult);
-  onResultRef.current = onResult;
+
+  useEffect(() => {
+    onResultRef.current = onResult;
+  }, [onResult]);
 
   useEffect(() => {
     if (fetcher.state !== "idle") {

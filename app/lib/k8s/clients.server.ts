@@ -69,9 +69,7 @@ export async function k8sFetch(
     throw new Error("No cluster server configured in kubeconfig");
   }
 
-  const base = cluster.server.endsWith("/")
-    ? cluster.server
-    : `${cluster.server}/`;
+  const base = cluster.server.endsWith("/") ? cluster.server : `${cluster.server}/`;
   const url = new URL(path.replace(/^\//, ""), base);
 
   const opts: https.RequestOptions = {

@@ -21,26 +21,12 @@ import {
 import { useState } from "react";
 import { Link, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/vms.$cluster.$namespace.$name";
-import { ConfirmDeleteModal } from "~/components/ConfirmDeleteModal";
-import { StatusBadge } from "~/components/StatusBadge";
-import {
-  notifyActionError,
-  notifyActionSuccess,
-} from "~/lib/action-feedback";
+import { StatusBadge } from "~/ui/status-badge";
+import { ConfirmDeleteModal } from "~/ui";
+import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
-import {
-  canStart,
-  canStop,
-  formatAge,
-  formatDateTime,
-  sizeLabel,
-} from "~/lib/format";
-import {
-  deleteVm,
-  getVm,
-  startVm,
-  stopVm,
-} from "~/lib/k8s/vms.server";
+import { canStart, canStop, formatAge, formatDateTime, sizeLabel } from "~/lib/format";
+import { deleteVm, getVm, startVm, stopVm } from "~/vms/vms.server";
 import { useRefresh } from "~/lib/refresh";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 export function meta({ params }: Route.MetaArgs) {
@@ -89,13 +75,7 @@ export async function action({ request, params }: Route.ActionArgs) {
   }
 }
 
-function DetailCard({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
+function DetailCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <Paper
       p="md"
@@ -142,10 +122,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
       return;
     }
     if (data.ok) {
-      notifyActionSuccess(
-        "Done",
-        `VM ${data.intent ?? "action"} requested`,
-      );
+      notifyActionSuccess("Done", `VM ${data.intent ?? "action"} requested`);
       refreshNow();
     }
   });
@@ -277,9 +254,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
                       </Text>
                     </Table.Td>
                     <Table.Td>
-                      {net.ipAddresses?.length
-                        ? net.ipAddresses.join(", ")
-                        : "—"}
+                      {net.ipAddresses?.length ? net.ipAddresses.join(", ") : "—"}
                     </Table.Td>
                   </Table.Tr>
                 ))}
@@ -413,8 +388,12 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
       )}
 
       <ConfirmDeleteModal
-        vm={vm}
         opened={deleteOpen}
+        resourceName={vm.name}
+        identity={`${vm.cluster}/${vm.namespace}/${vm.name}`}
+        title="Delete virtual machine"
+        confirmLabel="Delete VM"
+        warning="Owned disks (DataVolumes) may also be removed."
         loading={busy}
         onClose={() => setDeleteOpen(false)}
         onConfirm={() => {

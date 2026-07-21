@@ -12,9 +12,6 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     const networks = await listNetworks(cluster, namespace);
     return { networks };
   } catch (err) {
-    throw new Response(
-      err instanceof Error ? err.message : String(err),
-      { status: 500 },
-    );
+    throw new Response(err instanceof Error ? err.message : String(err), { status: 500 });
   }
 }

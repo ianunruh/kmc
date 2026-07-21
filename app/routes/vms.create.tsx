@@ -19,10 +19,10 @@ import type { Route } from "./+types/vms.create";
 import { notifyActionError } from "~/lib/action-feedback";
 import { logServerError } from "~/lib/errors";
 import { vmPath } from "~/lib/format";
-import { createVm, listClusters } from "~/lib/k8s/vms.server";
+import { createVm, listClusters } from "~/vms/vms.server";
 import type { ClusterCatalog, CreateVmRequest, NetworkInfo } from "~/lib/types";
 
-export function meta({}: Route.MetaArgs) {
+export function meta(_args: Route.MetaArgs) {
   return [{ title: "Create VM · kmc" }];
 }
 
@@ -54,8 +54,7 @@ export async function action({ request }: Route.ActionArgs) {
   if (!name) return { error: "Name is required" };
   if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name)) {
     return {
-      error:
-        "Name must be a DNS-1123 label (lowercase alphanumeric and hyphens)",
+      error: "Name must be a DNS-1123 label (lowercase alphanumeric and hyphens)",
     };
   }
   if (!diskSize) return { error: "Disk size is required" };
@@ -117,10 +116,7 @@ export async function action({ request }: Route.ActionArgs) {
 type CatalogFetcherData = ClusterCatalog;
 type NetworksFetcherData = { networks: NetworkInfo[] };
 
-export default function CreateVmPage({
-  loaderData,
-  actionData,
-}: Route.ComponentProps) {
+export default function CreateVmPage({ loaderData, actionData }: Route.ComponentProps) {
   const { clusters } = loaderData;
   const navigation = useNavigation();
   const submit = useSubmit();
@@ -283,7 +279,10 @@ export default function CreateVmPage({
   const networkOptions = useMemo(() => {
     const nets = networksFetcher.data?.networks ?? [];
     const opts = nets.map((n) => n.name);
-    return [{ value: "", label: "Pod network" }, ...opts.map((n) => ({ value: n, label: n }))];
+    return [
+      { value: "", label: "Pod network" },
+      ...opts.map((n) => ({ value: n, label: n })),
+    ];
   }, [networksFetcher.data]);
 
   return (
@@ -380,10 +379,7 @@ export default function CreateVmPage({
                     value={form.values.instanceType || null}
                     onChange={(v) => {
                       form.setFieldValue("instanceType", v ?? "");
-                      form.setFieldValue(
-                        "sizeMode",
-                        v ? "instancetype" : "manual",
-                      );
+                      form.setFieldValue("sizeMode", v ? "instancetype" : "manual");
                     }}
                   />
                   <Select
@@ -395,8 +391,7 @@ export default function CreateVmPage({
                   />
                 </>
               )}
-              {(!catalog?.hasInstanceTypes ||
-                form.values.sizeMode === "manual") && (
+              {(!catalog?.hasInstanceTypes || form.values.sizeMode === "manual") && (
                 <Group grow>
                   <NumberInput
                     label="CPU cores"
@@ -476,9 +471,7 @@ export default function CreateVmPage({
               <Switch
                 label="Start after create"
                 checked={form.values.start}
-                onChange={(e) =>
-                  form.setFieldValue("start", e.currentTarget.checked)
-                }
+                onChange={(e) => form.setFieldValue("start", e.currentTarget.checked)}
               />
             </Stack>
           </Paper>

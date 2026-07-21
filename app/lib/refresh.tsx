@@ -42,16 +42,21 @@ function readStoredEnabled(): boolean {
 export function RefreshProvider({ children }: { children: ReactNode }) {
   const revalidator = useRevalidator();
   const revalidatorRef = useRef(revalidator);
-  revalidatorRef.current = revalidator;
 
+  // Default true for SSR; hydrate preference from localStorage on the client.
   const [enabled, setEnabledState] = useState(true);
   const [hydrated, setHydrated] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState(AUTO_REFRESH_INTERVAL_SEC);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<number | null>(null);
   const prevState = useRef(revalidator.state);
 
-  // Avoid SSR/client mismatch: load preference after mount.
   useEffect(() => {
+    revalidatorRef.current = revalidator;
+  }, [revalidator]);
+
+  useEffect(() => {
+    // Client-only: reading localStorage during render would mismatch SSR HTML.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydrate preference after mount
     setEnabledState(readStoredEnabled());
     setHydrated(true);
   }, []);
@@ -80,6 +85,7 @@ export function RefreshProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!hydrated || !enabled) return;
 
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset countdown when auto-refresh is (re)enabled
     setSecondsLeft(AUTO_REFRESH_INTERVAL_SEC);
     const id = window.setInterval(() => {
       const rv = revalidatorRef.current;
@@ -126,9 +132,7 @@ export function RefreshProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  return (
-    <RefreshContext.Provider value={value}>{children}</RefreshContext.Provider>
-  );
+  return <RefreshContext.Provider value={value}>{children}</RefreshContext.Provider>;
 }
 
 export function useRefresh(): RefreshContextValue {

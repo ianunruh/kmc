@@ -7,17 +7,13 @@ import {
   ScrollRestoration,
   useRouteLoaderData,
 } from "react-router";
-import {
-  ColorSchemeScript,
-  MantineProvider,
-  mantineHtmlProps,
-} from "@mantine/core";
+import { ColorSchemeScript, MantineProvider, mantineHtmlProps } from "@mantine/core";
 import { Notifications } from "@mantine/notifications";
 
 import type { Route } from "./+types/root";
 import { theme } from "./theme";
-import { AppChrome } from "./components/AppChrome";
-import { listClusters } from "./lib/k8s/vms.server";
+import { AppChrome } from "./shell/app-chrome";
+import { listClusters } from "./vms/vms.server";
 import { RefreshProvider } from "./lib/refresh";
 import type { ClusterInfo } from "./lib/types";
 
@@ -63,9 +59,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  const data = useRouteLoaderData("root") as
-    | { clusters: ClusterInfo[] }
-    | undefined;
+  const data = useRouteLoaderData("root") as { clusters: ClusterInfo[] } | undefined;
 
   return (
     <RefreshProvider>

@@ -1,16 +1,25 @@
-import {
-  type RouteConfig,
-  index,
-  route,
-} from "@react-router/dev/routes";
+import { type RouteConfig, index, route } from "@react-router/dev/routes";
 
 export default [
   index("routes/home.tsx"),
   route("vms/create", "routes/vms.create.tsx"),
+  route("vms/:cluster/:namespace/:name", "routes/vms.$cluster.$namespace.$name.tsx"),
+
+  route("datavolumes", "routes/datavolumes._index.tsx"),
+  route("datavolumes/create", "routes/datavolumes.create.tsx"),
   route(
-    "vms/:cluster/:namespace/:name",
-    "routes/vms.$cluster.$namespace.$name.tsx",
+    "datavolumes/:cluster/:namespace/:name",
+    "routes/datavolumes.$cluster.$namespace.$name.tsx",
   ),
+
+  route("instancetypes", "routes/instancetypes._index.tsx"),
+  route("instancetypes/create", "routes/instancetypes.create.tsx"),
+  route("instancetypes/:cluster/:name", "routes/instancetypes.$cluster.$name.tsx"),
+  route(
+    "instancetypes/:cluster/:name/edit",
+    "routes/instancetypes.$cluster.$name.edit.tsx",
+  ),
+
   route("api/catalog/:cluster", "routes/api.catalog.$cluster.ts"),
   route("api/networks/:cluster", "routes/api.networks.$cluster.ts"),
 ] satisfies RouteConfig;

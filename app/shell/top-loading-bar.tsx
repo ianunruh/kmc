@@ -26,6 +26,7 @@ export function TopLoadingBar() {
         window.clearTimeout(hideTimer.current);
         hideTimer.current = null;
       }
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- drive bar from router navigation/revalidate/fetcher state
       setPhase("loading");
       return;
     }

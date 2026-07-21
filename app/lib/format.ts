@@ -40,3 +40,35 @@ export function canStart(vm: Pick<VmSummary, "status">): boolean {
 export function vmPath(vm: Pick<VmSummary, "cluster" | "namespace" | "name">): string {
   return `/vms/${encodeURIComponent(vm.cluster)}/${encodeURIComponent(vm.namespace)}/${encodeURIComponent(vm.name)}`;
 }
+
+export function dataVolumePath(
+  dv: Pick<
+    { cluster: string; namespace: string; name: string },
+    "cluster" | "namespace" | "name"
+  >,
+): string {
+  return `/datavolumes/${encodeURIComponent(dv.cluster)}/${encodeURIComponent(dv.namespace)}/${encodeURIComponent(dv.name)}`;
+}
+
+export function instanceTypePath(
+  it: Pick<{ cluster: string; name: string }, "cluster" | "name">,
+): string {
+  return `/instancetypes/${encodeURIComponent(it.cluster)}/${encodeURIComponent(it.name)}`;
+}
+
+export function instanceTypeEditPath(
+  it: Pick<{ cluster: string; name: string }, "cluster" | "name">,
+): string {
+  return `${instanceTypePath(it)}/edit`;
+}
+
+export const DNS1123_LABEL = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
+
+export function validateDns1123Label(value: string): string | null {
+  if (!value) return "Required";
+  if (value.length > 63) return "Max 63 characters";
+  if (!DNS1123_LABEL.test(value)) {
+    return "DNS-1123 label required (lowercase alphanumeric and hyphens)";
+  }
+  return null;
+}

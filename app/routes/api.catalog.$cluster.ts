@@ -9,9 +9,6 @@ export async function loader({ params }: Route.LoaderArgs) {
   try {
     return await getClusterCatalog(cluster);
   } catch (err) {
-    throw new Response(
-      err instanceof Error ? err.message : String(err),
-      { status: 500 },
-    );
+    throw new Response(err instanceof Error ? err.message : String(err), { status: 500 });
   }
 }

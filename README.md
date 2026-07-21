@@ -9,6 +9,19 @@ Local web console for listing and managing KubeVirt virtual machines across Kube
 - Mantine (dark) + Geist Mono
 - `@kubernetes/client-node` (server-only)
 
+## Layout
+
+```
+app/
+  routes/           # React Router route modules (default exports required by RR)
+  lib/              # shared utils (errors, format, refresh, k8s clients/catalog)
+  ui/               # shared UI primitives (kebab-case, named exports)
+  shell/            # app chrome, refresh control, loading bar
+  vms/              # VM feature (components + server)
+  datavolumes/      # DataVolume server module
+  instancetypes/    # cluster instance type server module
+```
+
 ## Prerequisites
 
 - Node 22+
@@ -28,19 +41,19 @@ Open [http://localhost:5173](http://localhost:5173).
 
 ## Config
 
-| Env | Default | Description |
-|---|---|---|
-| `KMC_CONTEXTS` | `prod-sjc1,homelab` | Comma-separated kube contexts |
-| `KMC_IMAGE_NAMESPACE` | `vm-images` | Namespace scanned for golden image PVCs |
+| Env                   | Default             | Description                             |
+| --------------------- | ------------------- | --------------------------------------- |
+| `KMC_CONTEXTS`        | `prod-sjc1,homelab` | Comma-separated kube contexts           |
+| `KMC_IMAGE_NAMESPACE` | `vm-images`         | Namespace scanned for golden image PVCs |
 
 ## Features (MVP)
 
-- List VMs across clusters
-- Global auto-refresh control in the header (10s countdown, toggle, manual refresh; preference in `localStorage`)
-- VM detail page (`/vms/:cluster/:namespace/:name`) — overview, networks, volumes, conditions
-- Create VM (full page) — clone PVC image, size, network, SSH key
-- Stop / start / delete with confirmation on delete
-- Namespace required on create (no default)
+- **Virtual machines** — list, create, detail, stop/start/delete
+- **Data volumes** — list, create (blank / PVC clone / HTTP), detail, delete
+- **Cluster instance types** — list, create, detail, edit, delete
+- Shared list/form UI primitives under `app/components/ui/`
+- Global auto-refresh + top loading bar
+- Multi-cluster via kubeconfig contexts (`KMC_CONTEXTS`)
 
 ## Safety
 
@@ -49,8 +62,12 @@ This binds as a local console with **no authentication**. Do not expose it beyon
 ## Scripts
 
 ```bash
-pnpm dev        # dev server
-pnpm build      # production build
-pnpm start      # serve build
-pnpm typecheck  # typegen + tsc
+pnpm dev           # dev server
+pnpm build         # production build
+pnpm start         # serve build
+pnpm typecheck     # typegen + tsc
+pnpm lint          # eslint
+pnpm format        # prettier --write
+pnpm format:check  # prettier --check
+pnpm check         # typecheck + lint + format:check
 ```

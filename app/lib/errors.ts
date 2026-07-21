@@ -17,8 +17,7 @@ export function formatError(err: unknown): string {
     if (typeof current === "object" && current !== null && "message" in current) {
       const msg = (current as { message?: unknown }).message;
       if (msg) parts.push(String(msg));
-      current =
-        "cause" in current ? (current as { cause?: unknown }).cause : undefined;
+      current = "cause" in current ? (current as { cause?: unknown }).cause : undefined;
       continue;
     }
     parts.push(String(current));
@@ -47,10 +46,7 @@ export function logServerError(
   const message = formatError(err);
   const stack = errorStack(err);
   // Structured line so it greps easily in dev server logs
-  console.error(
-    `[kmc:error] ${scope}`,
-    JSON.stringify({ message, ...meta }, null, 0),
-  );
+  console.error(`[kmc:error] ${scope}`, JSON.stringify({ message, ...meta }, null, 0));
   if (stack) {
     console.error(stack);
   }

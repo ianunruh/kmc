@@ -131,3 +131,73 @@ export interface ClusterCatalog {
 }
 
 export type VmLifecycleIntent = "stop" | "start" | "delete";
+
+// --- DataVolumes (cdi.kubevirt.io) ---
+
+export interface DataVolumeSummary {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  phase: string;
+  progress?: string;
+  size?: string;
+  storageClass?: string;
+  sourceKind: string;
+  sourceDetail?: string;
+  age: string;
+  message?: string;
+  ownerKind?: string;
+  ownerName?: string;
+}
+
+export interface DataVolumeDetail extends DataVolumeSummary {
+  uid?: string;
+  volumeMode?: string;
+  accessModes?: string[];
+  claimName?: string;
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
+  conditions: VmCondition[];
+}
+
+export type DataVolumeSourceKind = "blank" | "pvc" | "http";
+
+export interface CreateDataVolumeRequest {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  size: string;
+  storageClass?: string;
+  volumeMode?: "Block" | "Filesystem";
+  source: {
+    kind: DataVolumeSourceKind;
+    /** pvc clone */
+    pvcNamespace?: string;
+    pvcName?: string;
+    /** http import */
+    url?: string;
+  };
+}
+
+// --- Cluster instance types (instancetype.kubevirt.io) ---
+
+export interface ClusterInstanceTypeSummary {
+  cluster: ClusterId;
+  name: string;
+  cpu: number;
+  memory: string;
+  age: string;
+}
+
+export interface ClusterInstanceTypeDetail extends ClusterInstanceTypeSummary {
+  uid?: string;
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
+}
+
+export interface UpsertClusterInstanceTypeRequest {
+  cluster: ClusterId;
+  name: string;
+  cpu: number;
+  memory: string;
+}

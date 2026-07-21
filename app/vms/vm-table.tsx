@@ -1,11 +1,4 @@
-import {
-  ActionIcon,
-  Anchor,
-  Menu,
-  Table,
-  Text,
-  Tooltip,
-} from "@mantine/core";
+import { ActionIcon, Anchor, Menu, Table, Text, Tooltip } from "@mantine/core";
 import {
   IconDotsVertical,
   IconPlayerPlay,
@@ -15,21 +8,12 @@ import {
 import { useState } from "react";
 import { Link, useFetcher } from "react-router";
 import type { VmSummary } from "~/lib/types";
-import {
-  notifyActionError,
-  notifyActionSuccess,
-} from "~/lib/action-feedback";
-import {
-  canStart,
-  canStop,
-  formatAge,
-  sizeLabel,
-  vmPath,
-} from "~/lib/format";
+import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
+import { canStart, canStop, formatAge, sizeLabel, vmPath } from "~/lib/format";
 import { useRefresh } from "~/lib/refresh";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
-import { StatusBadge } from "./StatusBadge";
-import { ConfirmDeleteModal } from "./ConfirmDeleteModal";
+import { ConfirmDeleteModal } from "~/ui";
+import { StatusBadge } from "~/ui/status-badge";
 
 export function VmTable({ vms }: { vms: VmSummary[] }) {
   const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
@@ -47,10 +31,7 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
 
   const busy = fetcher.state !== "idle";
 
-  function submitIntent(
-    intent: "stop" | "start" | "delete",
-    vm: VmSummary,
-  ) {
+  function submitIntent(intent: "stop" | "start" | "delete", vm: VmSummary) {
     fetcher.submit(
       {
         intent,
@@ -185,8 +166,16 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
       </Table>
 
       <ConfirmDeleteModal
-        vm={deleteTarget}
         opened={deleteTarget != null}
+        resourceName={deleteTarget?.name ?? null}
+        identity={
+          deleteTarget
+            ? `${deleteTarget.cluster}/${deleteTarget.namespace}/${deleteTarget.name}`
+            : null
+        }
+        title="Delete virtual machine"
+        confirmLabel="Delete VM"
+        warning="Owned disks (DataVolumes) may also be removed."
         loading={busy}
         onClose={() => setDeleteTarget(null)}
         onConfirm={() => {

@@ -13,7 +13,7 @@ import {
   getConfiguredContexts,
   httpErrorMessage,
   k8sFetch,
-} from "./clients.server";
+} from "~/lib/k8s/clients.server";
 import { buildVirtualMachineManifest } from "./template.server";
 
 interface KubeVm {
@@ -169,11 +169,7 @@ function mapVm(cluster: ClusterId, vm: KubeVm): VmSummary {
     status,
     ready,
     running,
-    cpu: instanceType
-      ? instanceType
-      : cores != null
-        ? `${cores}c`
-        : undefined,
+    cpu: instanceType ? instanceType : cores != null ? `${cores}c` : undefined,
     memory: instanceType ? undefined : memory,
     disk,
     age: vm.metadata?.creationTimestamp ?? "",
@@ -184,14 +180,9 @@ function mapVm(cluster: ClusterId, vm: KubeVm): VmSummary {
 
 function mapVolumes(vm: KubeVm): VmVolumeInfo[] {
   const disks = vm.spec?.template?.spec?.domain?.devices?.disks ?? [];
-  const diskByName = new Map(
-    disks.map((d) => [d.name ?? "", d] as const),
-  );
+  const diskByName = new Map(disks.map((d) => [d.name ?? "", d] as const));
   const dvTemplates = new Map(
-    (vm.spec?.dataVolumeTemplates ?? []).map((dv) => [
-      dv.metadata?.name ?? "",
-      dv,
-    ]),
+    (vm.spec?.dataVolumeTemplates ?? []).map((dv) => [dv.metadata?.name ?? "", dv]),
   );
 
   return (vm.spec?.template?.spec?.volumes ?? []).map((vol) => {
@@ -203,8 +194,7 @@ function mapVolumes(vm: KubeVm): VmVolumeInfo[] {
         tpl?.spec?.storage?.resources?.requests?.storage ??
         tpl?.spec?.pvc?.resources?.requests?.storage;
       const storageClass =
-        tpl?.spec?.storage?.storageClassName ??
-        tpl?.spec?.pvc?.storageClassName;
+        tpl?.spec?.storage?.storageClassName ?? tpl?.spec?.pvc?.storageClassName;
       const src = tpl?.spec?.source?.pvc
         ? `clone ${tpl.spec.source.pvc.namespace}/${tpl.spec.source.pvc.name}`
         : tpl?.spec?.source?.http?.url
@@ -233,9 +223,7 @@ function mapVolumes(vm: KubeVm): VmVolumeInfo[] {
       return {
         name: vol.name ?? "",
         kind: "cloudInitNoCloud",
-        detail: vol.cloudInitNoCloud.networkData
-          ? "userData + networkData"
-          : "userData",
+        detail: vol.cloudInitNoCloud.networkData ? "userData + networkData" : "userData",
         diskBus: bus,
       };
     }
@@ -266,9 +254,7 @@ function mapNetworks(vm: KubeVm, vmi?: KubeVmi | null): VmNetworkInfo[] {
   return networks.map((net) => {
     const iface = ifaceByName.get(net.name ?? "");
     const st = statusByName.get(net.name ?? "");
-    const ips =
-      st?.ipAddresses ??
-      (st?.ipAddress ? [st.ipAddress] : undefined);
+    const ips = st?.ipAddresses ?? (st?.ipAddress ? [st.ipAddress] : undefined);
     return {
       name: net.name ?? "",
       model: iface?.model,
@@ -280,16 +266,14 @@ function mapNetworks(vm: KubeVm, vmi?: KubeVmi | null): VmNetworkInfo[] {
   });
 }
 
-function mapVmDetail(
-  cluster: ClusterId,
-  vm: KubeVm,
-  vmi?: KubeVmi | null,
-): VmDetail {
+function mapVmDetail(cluster: ClusterId, vm: KubeVm, vmi?: KubeVmi | null): VmDetail {
   const summary = mapVm(cluster, vm);
   const annotations = vm.metadata?.annotations ?? {};
   const ipv4 =
     annotations["monsoon.ianunruh.com/ipv4Address"] ??
-    vmi?.status?.interfaces?.flatMap((i) => i.ipAddresses ?? (i.ipAddress ? [i.ipAddress] : []))?.[0];
+    vmi?.status?.interfaces?.flatMap(
+      (i) => i.ipAddresses ?? (i.ipAddress ? [i.ipAddress] : []),
+    )?.[0];
 
   return {
     ...summary,
@@ -422,9 +406,7 @@ export async function listVms(clusterFilter?: ClusterId): Promise<{
   items: VmSummary[];
   clusters: ClusterInfo[];
 }> {
-  const contexts = clusterFilter
-    ? [clusterFilter]
-    : getConfiguredContexts();
+  const contexts = clusterFilter ? [clusterFilter] : getConfiguredContexts();
 
   const clusters = await Promise.all(contexts.map(probeCluster));
   const items: VmSummary[] = [];

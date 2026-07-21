@@ -1,28 +1,14 @@
-import {
-  Alert,
-  Button,
-  Group,
-  Paper,
-  Select,
-  Stack,
-  Text,
-  TextInput,
-  Title,
-} from "@mantine/core";
+import { Alert, Button, Select, Stack, TextInput } from "@mantine/core";
 import { IconPlus, IconSearch } from "@tabler/icons-react";
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import type { Route } from "./+types/home";
-import { VmTable } from "~/components/VmTable";
+import { VmTable } from "~/vms/vm-table";
+import { ConsolePaper, FilterBar, PageHeader } from "~/ui";
 import { actionFailure } from "~/lib/errors";
-import {
-  deleteVm,
-  listVms,
-  startVm,
-  stopVm,
-} from "~/lib/k8s/vms.server";
+import { deleteVm, listVms, startVm, stopVm } from "~/vms/vms.server";
 
-export function meta({}: Route.MetaArgs) {
+export function meta(_args: Route.MetaArgs) {
   return [
     { title: "Virtual Machines · kmc" },
     { name: "description", content: "Multi-cluster KubeVirt console" },
@@ -96,25 +82,15 @@ export default function Home({ loaderData }: Route.ComponentProps) {
 
   return (
     <Stack gap="md">
-      <Group justify="space-between" align="flex-end">
-        <div>
-          <Title order={2} size="h3">
-            Virtual Machines
-          </Title>
-          <Text size="sm" c="dimmed">
-            {filtered.length} shown · {items.length} total across{" "}
-            {clusters.filter((c) => c.reachable).length} cluster
-            {clusters.filter((c) => c.reachable).length === 1 ? "" : "s"}
-          </Text>
-        </div>
-        <Button
-          component={Link}
-          to="/vms/create"
-          leftSection={<IconPlus size={16} />}
-        >
-          Create VM
-        </Button>
-      </Group>
+      <PageHeader
+        title="Virtual Machines"
+        description={`${filtered.length} shown · ${items.length} total across ${clusters.filter((c) => c.reachable).length} cluster${clusters.filter((c) => c.reachable).length === 1 ? "" : "s"}`}
+        actions={
+          <Button component={Link} to="/vms/create" leftSection={<IconPlus size={16} />}>
+            Create VM
+          </Button>
+        }
+      />
 
       {unreachable.map((c) => (
         <Alert key={c.id} color="red" title={`${c.id}: unreachable`} variant="light">
@@ -122,15 +98,8 @@ export default function Home({ loaderData }: Route.ComponentProps) {
         </Alert>
       ))}
 
-      <Paper
-        p="md"
-        radius="sm"
-        style={{
-          background: "#12151a",
-          border: "1px solid #1e242c",
-        }}
-      >
-        <Group mb="md" align="flex-end">
+      <ConsolePaper>
+        <FilterBar>
           <TextInput
             placeholder="Search name, namespace, cluster…"
             leftSection={<IconSearch size={14} />}
@@ -154,10 +123,10 @@ export default function Home({ loaderData }: Route.ComponentProps) {
             onChange={setStatusFilter}
             w={180}
           />
-        </Group>
+        </FilterBar>
 
         <VmTable vms={filtered} />
-      </Paper>
+      </ConsolePaper>
     </Stack>
   );
 }

@@ -1,23 +1,31 @@
 import { Button, Group, Modal, Stack, Text, TextInput } from "@mantine/core";
 import { useState } from "react";
-import type { VmSummary } from "~/lib/types";
 
 export function ConfirmDeleteModal({
-  vm,
   opened,
   onClose,
   onConfirm,
   loading,
+  title = "Delete resource",
+  confirmLabel = "Delete",
+  resourceName,
+  identity,
+  warning,
 }: {
-  vm: VmSummary | null;
   opened: boolean;
   onClose: () => void;
   onConfirm: () => void;
   loading?: boolean;
+  title?: string;
+  confirmLabel?: string;
+  /** Exact string the user must type to enable delete. */
+  resourceName: string | null;
+  /** Full identity shown in the body, e.g. cluster/ns/name. */
+  identity?: string | null;
+  warning?: string;
 }) {
   const [confirmName, setConfirmName] = useState("");
-
-  const matches = vm != null && confirmName === vm.name;
+  const matches = resourceName != null && confirmName === resourceName;
 
   return (
     <Modal
@@ -26,20 +34,20 @@ export function ConfirmDeleteModal({
         setConfirmName("");
         onClose();
       }}
-      title="Delete virtual machine"
+      title={title}
       centered
     >
-      {vm && (
+      {resourceName && (
         <Stack gap="md">
           <Text size="sm">
             This will permanently delete{" "}
             <Text span fw={700}>
-              {vm.cluster}/{vm.namespace}/{vm.name}
+              {identity ?? resourceName}
             </Text>
-            . Owned disks (DataVolumes) may also be removed.
+            .{warning ? ` ${warning}` : null}
           </Text>
           <TextInput
-            label={`Type ${vm.name} to confirm`}
+            label={`Type ${resourceName} to confirm`}
             value={confirmName}
             onChange={(e) => setConfirmName(e.currentTarget.value)}
             data-autofocus
@@ -63,7 +71,7 @@ export function ConfirmDeleteModal({
                 setConfirmName("");
               }}
             >
-              Delete VM
+              {confirmLabel}
             </Button>
           </Group>
         </Stack>

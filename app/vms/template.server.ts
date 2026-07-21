@@ -85,9 +85,7 @@ export function buildVirtualMachineManifest(input: CreateVmRequest) {
           storage: input.diskSize,
         },
       },
-      ...(input.storageClass
-        ? { storageClassName: input.storageClass }
-        : {}),
+      ...(input.storageClass ? { storageClassName: input.storageClass } : {}),
     },
   };
 
