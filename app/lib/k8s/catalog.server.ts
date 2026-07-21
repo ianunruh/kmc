@@ -10,8 +10,37 @@ import type {
 } from "~/lib/types";
 import { findIpPoolForMultus, getIpPoolUsage } from "~/lib/ipam/pools.server";
 import { getClusterClients } from "./clients.server";
+import { VM_ALLOWED_LABEL, VM_ALLOWED_LABEL_SELECTOR } from "./constants";
 
 const IMAGE_NAMESPACE = process.env.KMC_IMAGE_NAMESPACE ?? "vm-images";
+
+/**
+ * Ensures the target namespace is labeled for VM creation.
+ * Catalog UI already filters, but create must reject forged form posts.
+ */
+export async function assertVmNamespaceAllowed(
+  cluster: ClusterId,
+  namespace: string,
+): Promise<void> {
+  const { core } = getClusterClients(cluster);
+  let ns;
+  try {
+    ns = await core.readNamespace({ name: namespace });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("404") || message.toLowerCase().includes("not found")) {
+      throw new Error(`Namespace "${namespace}" was not found`);
+    }
+    throw err;
+  }
+  const value = ns.metadata?.labels?.[VM_ALLOWED_LABEL];
+  if (value !== "true") {
+    throw new Error(
+      `Namespace "${namespace}" is not allowed for VM launch ` +
+        `(requires label ${VM_ALLOWED_LABEL}=true)`,
+    );
+  }
+}
 
 export async function getClusterCatalog(cluster: ClusterId): Promise<ClusterCatalog> {
   const { custom, core, storage } = getClusterClients(cluster);
@@ -113,7 +142,10 @@ export async function listNetworks(
 async function listNamespaces(
   core: ReturnType<typeof getClusterClients>["core"],
 ): Promise<NamespaceInfo[]> {
-  const res = await core.listNamespace();
+  // Only namespaces explicitly opted-in for VM / workload creation.
+  const res = await core.listNamespace({
+    labelSelector: VM_ALLOWED_LABEL_SELECTOR,
+  });
   return (res.items ?? [])
     .map((ns) => ({ name: ns.metadata?.name ?? "" }))
     .filter((n) => n.name)

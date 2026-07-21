@@ -17,6 +17,7 @@ import {
   httpErrorMessage,
   k8sFetch,
 } from "~/lib/k8s/clients.server";
+import { assertVmNamespaceAllowed } from "~/lib/k8s/catalog.server";
 import { allocateIpv4ForMultus } from "~/lib/ipam/pools.server";
 import { IPAM_ANNOTATION_IPV4 } from "~/lib/ipam/constants";
 import { buildVirtualMachineManifest } from "./template.server";
@@ -535,6 +536,8 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
   if (!input.instanceType && !(input.cpuCores && input.memory)) {
     throw new Error("Provide instanceType or both cpuCores and memory");
   }
+
+  await assertVmNamespaceAllowed(input.cluster, input.namespace);
 
   const { custom } = getClusterClients(input.cluster);
 

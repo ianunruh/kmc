@@ -394,7 +394,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 required
                 disabled={!form.values.cluster || catalogFetcher.state === "loading"}
                 searchable
-                nothingFoundMessage="No namespaces"
+                nothingFoundMessage="No namespaces labeled kmc.ianunruh.com/vm-allowed=true"
                 value={form.values.namespace || null}
                 error={form.errors.namespace}
                 onChange={(v) => form.setFieldValue("namespace", v ?? "")}
