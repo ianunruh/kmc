@@ -1,22 +1,34 @@
-FROM node:24-alpine AS development-dependencies-env
-COPY . /app
-WORKDIR /app
-RUN npm ci
+# syntax=docker/dockerfile:1
 
-FROM node:24-alpine AS production-dependencies-env
-COPY ./package.json package-lock.json /app/
+FROM node:22-alpine AS base
+RUN corepack enable && corepack prepare pnpm@10.32.1 --activate
 WORKDIR /app
-RUN npm ci --omit=dev
 
-FROM node:24-alpine AS build-env
-COPY . /app/
-COPY --from=development-dependencies-env /app/node_modules /app/node_modules
-WORKDIR /app
-RUN npm run build
+FROM base AS deps
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 
-FROM node:24-alpine
-COPY ./package.json package-lock.json /app/
-COPY --from=production-dependencies-env /app/node_modules /app/node_modules
-COPY --from=build-env /app/build /app/build
-WORKDIR /app
-CMD ["npm", "run", "start"]
+FROM base AS build
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN pnpm build
+
+FROM base AS production-deps
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile --prod
+
+FROM base
+ENV NODE_ENV=production
+ENV PORT=3000
+
+COPY package.json pnpm-lock.yaml ./
+COPY --from=production-deps /app/node_modules ./node_modules
+COPY --from=build /app/build ./build
+# Custom server + serial console proxy (tsx resolves ~/ via tsconfig paths)
+COPY server.ts tsconfig.json ./
+COPY app ./app
+COPY public ./public
+
+EXPOSE 3000
+USER node
+CMD ["pnpm", "start"]
