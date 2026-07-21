@@ -20,6 +20,7 @@ export async function loader(_args: Route.LoaderArgs) {
           githubLogin: session.user.githubLogin,
           email: session.user.email,
           name: session.user.name,
+          orgs: session.user.orgs ?? [],
           teams: session.user.teams,
           exp: session.exp,
         }
@@ -76,6 +77,22 @@ export default function MePage({ loaderData }: Route.ComponentProps) {
                     <Table.Tr>
                       <Table.Td>Name</Table.Td>
                       <Table.Td>{session.name || "—"}</Table.Td>
+                    </Table.Tr>
+                    <Table.Tr>
+                      <Table.Td>Orgs</Table.Td>
+                      <Table.Td>
+                        {session.orgs.length === 0 ? (
+                          <Text size="sm" c="dimmed">
+                            —
+                          </Text>
+                        ) : (
+                          session.orgs.map((org) => (
+                            <Code key={org} mr={6}>
+                              {org}
+                            </Code>
+                          ))
+                        )}
+                      </Table.Td>
                     </Table.Tr>
                     <Table.Tr>
                       <Table.Td>Teams</Table.Td>

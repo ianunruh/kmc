@@ -20,15 +20,20 @@ export async function loader({ request }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const error = url.searchParams.get("error");
   const returnTo = safeReturnTo(url.searchParams.get("returnTo"));
+  const allowedOrgs = (process.env.KMC_GITHUB_ORGS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
   return {
     error,
     returnTo,
     impersonateMode: isImpersonateMode(),
+    allowedOrgs,
   };
 }
 
 export default function LoginPage({ loaderData }: Route.ComponentProps) {
-  const { error, returnTo, impersonateMode } = loaderData;
+  const { error, returnTo, impersonateMode, allowedOrgs } = loaderData;
   const href = `/auth/github?returnTo=${encodeURIComponent(returnTo)}`;
   const navigation = useNavigation();
   const [clicked, setClicked] = useState(false);
@@ -59,6 +64,21 @@ export default function LoginPage({ loaderData }: Route.ComponentProps) {
               oidc:&lt;org&gt;:&lt;team&gt;
             </Text>
             .
+            {allowedOrgs.length > 0 && (
+              <>
+                {" "}
+                Access is limited to members of{" "}
+                {allowedOrgs.map((org, i) => (
+                  <span key={org}>
+                    {i > 0 && (i === allowedOrgs.length - 1 ? " or " : ", ")}
+                    <Text span ff="monospace" size="sm">
+                      {org}
+                    </Text>
+                  </span>
+                ))}
+                .
+              </>
+            )}
           </Text>
 
           {!impersonateMode && (

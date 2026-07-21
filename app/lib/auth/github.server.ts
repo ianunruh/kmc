@@ -25,6 +25,48 @@ export function githubAuthorizeUrl(state: string): string {
   return `https://github.com/login/oauth/authorize?${params}`;
 }
 
+/**
+ * Orgs that may sign in and whose teams map to k8s groups.
+ * Empty = no app-level org filter (any GitHub user can log in).
+ */
+export function allowedGithubOrgs(): string[] {
+  const raw = process.env.KMC_GITHUB_ORGS?.trim();
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * True when the session user is a member of at least one KMC_GITHUB_ORGS entry.
+ * When KMC_GITHUB_ORGS is unset, always true.
+ *
+ * Accepts legacy sessions that only stored teams (infers orgs from team.org).
+ */
+export function sessionUserPassesOrgFilter(user: SessionUser): boolean {
+  const allowed = allowedGithubOrgs();
+  if (allowed.length === 0) return true;
+
+  const memberOrgs = new Set<string>();
+  for (const org of user.orgs ?? []) {
+    if (org) memberOrgs.add(org.toLowerCase());
+  }
+  for (const team of user.teams ?? []) {
+    if (team.org) memberOrgs.add(team.org.toLowerCase());
+  }
+  return allowed.some((org) => memberOrgs.has(org));
+}
+
+export function orgAccessDeniedMessage(): string {
+  const allowed = allowedGithubOrgs();
+  const list = allowed.length > 0 ? allowed.join(", ") : "the required organization";
+  return (
+    `Access denied: you must be a member of ${list}. ` +
+    "If you are, ask an org admin to approve this OAuth app for the organization."
+  );
+}
+
 async function exchangeCode(code: string): Promise<string> {
   const clientId = requireEnv("KMC_GITHUB_CLIENT_ID");
   const clientSecret = requireEnv("KMC_GITHUB_CLIENT_SECRET");
@@ -75,19 +117,10 @@ async function ghJson<T>(token: string, path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-function allowedOrgs(): Set<string> | null {
-  const raw = process.env.KMC_GITHUB_ORGS?.trim();
-  if (!raw) return null;
-  return new Set(
-    raw
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean),
-  );
-}
-
 export async function loadSessionUserFromCode(code: string): Promise<SessionUser> {
   const token = await exchangeCode(code);
+  const allowed = allowedGithubOrgs();
+  const allowedSet = new Set(allowed);
 
   const profile = await ghJson<{
     login: string;
@@ -112,19 +145,37 @@ export async function loadSessionUserFromCode(code: string): Promise<SessionUser
     );
   }
 
+  let orgs: string[] = [];
+  try {
+    // With read:org, returns orgs the user belongs to (incl. private membership
+    // once the OAuth app is approved for that org).
+    const rawOrgs = await ghJson<Array<{ login?: string }>>(
+      token,
+      "/user/orgs?per_page=100",
+    );
+    orgs = rawOrgs
+      .map((o) => o.login ?? "")
+      .filter(Boolean)
+      .filter((login) => allowedSet.size === 0 || allowedSet.has(login.toLowerCase()));
+  } catch (err) {
+    console.warn(
+      "[kmc:auth] failed to list GitHub orgs — org filter may deny login",
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   let teams: GithubTeam[] = [];
   try {
     const rawTeams = await ghJson<
       Array<{ slug: string; organization?: { login?: string } }>
     >(token, "/user/teams?per_page=100");
-    const orgs = allowedOrgs();
     teams = rawTeams
       .map((t) => ({
         org: t.organization?.login ?? "",
         slug: t.slug,
       }))
       .filter((t) => t.org && t.slug)
-      .filter((t) => !orgs || orgs.has(t.org.toLowerCase()));
+      .filter((t) => allowedSet.size === 0 || allowedSet.has(t.org.toLowerCase()));
   } catch (err) {
     // read:org may be denied until the OAuth app is approved for the org.
     console.warn(
@@ -133,11 +184,27 @@ export async function loadSessionUserFromCode(code: string): Promise<SessionUser
     );
   }
 
-  return {
+  // If org listing failed but teams from an allowed org succeeded, count those orgs.
+  if (orgs.length === 0 && teams.length > 0) {
+    orgs = [...new Set(teams.map((t) => t.org))];
+  }
+
+  const user: SessionUser = {
     githubLogin: profile.login,
     email,
     name: profile.name ?? undefined,
     avatarUrl: profile.avatar_url,
+    orgs,
     teams,
   };
+
+  if (!sessionUserPassesOrgFilter(user)) {
+    console.warn(
+      `[kmc:auth] denied login for ${profile.login} — not in allowed orgs ` +
+        `(${allowed.join(",") || "none configured"})`,
+    );
+    throw new Error(orgAccessDeniedMessage());
+  }
+
+  return user;
 }

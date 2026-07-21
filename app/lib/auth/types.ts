@@ -10,6 +10,8 @@ export type SessionUser = {
   email: string;
   name?: string;
   avatarUrl?: string;
+  /** Allowed orgs this user belongs to (subset of KMC_GITHUB_ORGS). */
+  orgs: string[];
   teams: GithubTeam[];
 };
 

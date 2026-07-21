@@ -1,9 +1,17 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { redirect } from "react-router";
 import { runWithActor, toActor } from "./actor.server";
+import {
+  orgAccessDeniedMessage,
+  sessionUserPassesOrgFilter,
+} from "./github.server";
 import { isImpersonateMode } from "./mode.server";
 import { isPublicPath, safeReturnTo } from "./paths.server";
-import { getSession, type SessionData } from "./session.server";
+import {
+  clearSessionCookie,
+  getSession,
+  type SessionData,
+} from "./session.server";
 
 const currentSessionStorage = new AsyncLocalStorage<SessionData | null>();
 
@@ -27,6 +35,19 @@ export async function authMiddleware(
   try {
     session = await getSession(request);
   } catch {
+    session = null;
+  }
+
+  // Drop sessions that no longer pass the org allowlist (e.g. KMC_GITHUB_ORGS
+  // tightened, or a legacy cookie from before the filter).
+  if (session?.user && !sessionUserPassesOrgFilter(session.user)) {
+    if (!publicRoute) {
+      const returnTo = safeReturnTo(`${url.pathname}${url.search}`);
+      throw redirect(
+        `/login?error=${encodeURIComponent(orgAccessDeniedMessage())}&returnTo=${encodeURIComponent(returnTo)}`,
+        { headers: { "Set-Cookie": clearSessionCookie() } },
+      );
+    }
     session = null;
   }
 

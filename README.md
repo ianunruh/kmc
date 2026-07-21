@@ -51,7 +51,7 @@ Default **auth mode is `kubeconfig`**: no login, API calls use your local kubeco
 | Mode                     | `KMC_AUTH_MODE`       | Behavior                                                                                                                       |
 | ------------------------ | --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | **kubeconfig** (default) | `kubeconfig` or unset | Uses local kubeconfig. Optional GitHub login only for `/me` identity preview.                                                  |
-| **impersonate**          | `impersonate`         | Requires GitHub login. Calls each cluster with a platform ServiceAccount and `Impersonate-User` / `Impersonate-Group` headers. |
+| **impersonate**          | `impersonate`         | Requires GitHub login. When `KMC_GITHUB_ORGS` is set, login is denied unless the user is a member of one of those orgs. Calls each cluster with a platform ServiceAccount and `Impersonate-User` / `Impersonate-Group` headers. |
 
 ### Identity mapping (impersonate)
 
@@ -147,7 +147,7 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 | `KMC_SESSION_SECRET`       | —                       | ≥32 chars; HMAC key for signed session cookies (survives restarts) |
 | `KMC_GITHUB_CLIENT_ID`     | —                       | GitHub OAuth App client id                                         |
 | `KMC_GITHUB_CLIENT_SECRET` | —                       | GitHub OAuth App client secret                                     |
-| `KMC_GITHUB_ORGS`          | —                       | Comma-separated orgs whose teams become k8s groups                 |
+| `KMC_GITHUB_ORGS`          | —                       | Comma-separated GitHub orgs allowed to sign in; their teams become k8s groups |
 | `KMC_PUBLIC_URL`           | `http://localhost:5173` | Public origin (OAuth redirect)                                     |
 | `KMC_USERNAME_PREFIX`      | `oidc:`                 | Match apiserver username prefix                                    |
 | `KMC_GROUPS_PREFIX`        | `oidc:`                 | Match apiserver groups prefix                                      |
