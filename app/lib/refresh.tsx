@@ -31,11 +31,11 @@ type RefreshContextValue = {
 const RefreshContext = createContext<RefreshContextValue | null>(null);
 
 function readStoredEnabled(): boolean {
-  if (typeof window === "undefined") return true;
+  if (typeof window === "undefined") return false;
   try {
-    return window.localStorage.getItem(STORAGE_KEY) !== "false";
+    return window.localStorage.getItem(STORAGE_KEY) === "true";
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -43,8 +43,8 @@ export function RefreshProvider({ children }: { children: ReactNode }) {
   const revalidator = useRevalidator();
   const revalidatorRef = useRef(revalidator);
 
-  // Default true for SSR; hydrate preference from localStorage on the client.
-  const [enabled, setEnabledState] = useState(true);
+  // Default off; hydrate preference from localStorage on the client.
+  const [enabled, setEnabledState] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState(AUTO_REFRESH_INTERVAL_SEC);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<number | null>(null);
@@ -113,7 +113,7 @@ export function RefreshProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<RefreshContextValue>(
     () => ({
-      enabled: hydrated ? enabled : true,
+      enabled: hydrated ? enabled : false,
       setEnabled,
       secondsLeft: enabled ? secondsLeft : AUTO_REFRESH_INTERVAL_SEC,
       intervalSec: AUTO_REFRESH_INTERVAL_SEC,
