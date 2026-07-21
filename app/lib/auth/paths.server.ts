@@ -16,8 +16,10 @@ export function isPublicPath(pathname: string): boolean {
 }
 
 /**
- * Safe post-login redirect target. Rejects open redirects, auth pages, and
- * RR `.data` resource URLs (those re-trigger middleware and nest returnTo).
+ * Safe post-login redirect target. Rejects open redirects and auth pages.
+ * Strips React Router `.data` suffixes so revalidation/XHR paths like
+ * `/me.data` become `/me` (otherwise login returnTo loops on data routes).
+ * API resource paths are not useful post-login destinations → `/`.
  */
 export function safeReturnTo(raw: string | null | undefined): string {
   if (!raw) return "/";
@@ -29,10 +31,21 @@ export function safeReturnTo(raw: string | null | undefined): string {
   }
   // Absolute or protocol-relative → ignore
   if (!value.startsWith("/") || value.startsWith("//")) return "/";
-  const pathOnly = value.split("?")[0]?.split("#")[0] ?? "/";
+
+  const q = value.indexOf("?");
+  const h = value.indexOf("#");
+  let pathEnd = value.length;
+  if (q >= 0) pathEnd = Math.min(pathEnd, q);
+  if (h >= 0) pathEnd = Math.min(pathEnd, h);
+
+  const pathOnly = value.slice(0, pathEnd) || "/";
+  const suffix = value.slice(pathEnd);
   const normalized = appPathname(pathOnly);
+
   if (isPublicPath(normalized)) return "/";
-  // Cap length so a broken loop can't explode the URL further
-  if (value.length > 512) return "/";
-  return value.startsWith("/") ? value : "/";
+  if (normalized === "/api" || normalized.startsWith("/api/")) return "/";
+
+  const result = `${normalized}${suffix}`;
+  if (result.length > 512) return "/";
+  return result.startsWith("/") ? result : "/";
 }
