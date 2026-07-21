@@ -185,12 +185,7 @@ export interface ClusterCatalog {
 }
 
 export type VmLifecycleIntent =
-  | "stop"
-  | "start"
-  | "restart"
-  | "pause"
-  | "unpause"
-  | "delete";
+  "stop" | "start" | "restart" | "pause" | "unpause" | "delete";
 
 // --- DataVolumes (cdi.kubevirt.io) ---
 

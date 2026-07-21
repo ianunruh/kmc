@@ -19,6 +19,7 @@ import {
   IconPlayerPlay,
   IconPlayerStop,
   IconRefresh,
+  IconTerminal2,
   IconTrash,
 } from "@tabler/icons-react";
 import { useState } from "react";
@@ -36,6 +37,7 @@ import {
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
 import {
+  canOpenConsole,
   canPause,
   canRestart,
   canStart,
@@ -46,6 +48,7 @@ import {
   formatDateTime,
   instanceTypePath,
   sizeLabel,
+  vmConsolePath,
   vmEditPath,
   vmsListPath,
 } from "~/lib/format";
@@ -264,6 +267,20 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
           />
         </div>
         <Group>
+          <Button
+            component={Link}
+            to={vmConsolePath(vm)}
+            variant="default"
+            leftSection={<IconTerminal2 size={16} />}
+            disabled={!canOpenConsole(vm)}
+            title={
+              canOpenConsole(vm)
+                ? "Open serial console"
+                : "Serial console requires a live VMI (Running)"
+            }
+          >
+            Console
+          </Button>
           <Button
             component={Link}
             to={vmEditPath(vm)}

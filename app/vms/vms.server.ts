@@ -693,11 +693,7 @@ function clearInlineDomainResources(vm: KubeVm): void {
   }
 }
 
-function applyManualDomainResources(
-  vm: KubeVm,
-  cpuCores: number,
-  memory: string,
-): void {
+function applyManualDomainResources(vm: KubeVm, cpuCores: number, memory: string): void {
   const domain = ensureTemplateDomain(vm);
   domain.cpu = { cores: cpuCores };
   domain.resources = domain.resources ?? {};

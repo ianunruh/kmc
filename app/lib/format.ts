@@ -50,6 +50,11 @@ export function canUnpause(vm: Pick<VmSummary, "status">): boolean {
   return vm.status === "Paused";
 }
 
+/** Serial/VNC console needs a live VMI (virt-handler socket). */
+export function canOpenConsole(vm: Pick<VmSummary, "status">): boolean {
+  return ["Running", "Paused", "Migrating"].includes(vm.status);
+}
+
 /**
  * Size, preference, and runStrategy are only safe to change while the guest
  * is down (KubeVirt applies most template changes on the next start).
@@ -116,6 +121,12 @@ export function vmEditPath(
   vm: Pick<VmSummary, "cluster" | "namespace" | "name">,
 ): string {
   return `${vmPath(vm)}/edit`;
+}
+
+export function vmConsolePath(
+  vm: Pick<VmSummary, "cluster" | "namespace" | "name">,
+): string {
+  return `${vmPath(vm)}/console`;
 }
 
 export function dataVolumePath(

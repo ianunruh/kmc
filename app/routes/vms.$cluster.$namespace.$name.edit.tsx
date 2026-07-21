@@ -118,10 +118,11 @@ export default function EditVmPage({ loaderData, actionData }: Route.ComponentPr
 
   const form = useForm({
     initialValues: {
-      runStrategy: vm.runStrategy &&
+      runStrategy:
+        vm.runStrategy &&
         (VM_RUN_STRATEGIES as readonly string[]).includes(vm.runStrategy)
-        ? vm.runStrategy
-        : "Always",
+          ? vm.runStrategy
+          : "Always",
       sizeMode: initialSizeMode,
       instanceType: vm.instanceType ?? "",
       preference: vm.preference ?? "",
@@ -131,8 +132,7 @@ export default function EditVmPage({ loaderData, actionData }: Route.ComponentPr
     },
     validate: {
       runStrategy: (v) => (!v ? "Required" : null),
-      memory: (v, values) =>
-        values.sizeMode === "manual" && !v ? "Required" : null,
+      memory: (v, values) => (values.sizeMode === "manual" && !v ? "Required" : null),
       instanceType: (v, values) =>
         values.sizeMode === "instancetype" && !v ? "Required" : null,
       labelsText: (v) => {

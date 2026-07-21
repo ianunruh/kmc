@@ -135,7 +135,8 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 
 ## Features (MVP)
 
-- **Virtual machines** — list, create, detail, edit (labels always; size / preference / run strategy when stopped), stop/start/restart/pause/unpause/delete
+- **Virtual machines** — list, create, detail, edit (labels always; size / preference / run strategy when stopped), stop/start/restart/pause/unpause/delete, **serial console** (full-page xterm via app-proxied WebSocket)
+
 - **Data volumes** — list, create (blank / PVC clone / HTTP), detail, delete
 - **Cluster instance types** — list, create, detail, edit, delete
 - **Events + YAML** on detail pages
@@ -153,12 +154,21 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 ## Scripts
 
 ```bash
-pnpm dev           # dev server
+pnpm dev           # Vite dev server (HMR + serial console WS proxy)
 pnpm build         # production build
-pnpm start         # serve build
+pnpm start         # custom Node server (SSR + serial console WS)
 pnpm typecheck     # typegen + tsc
 pnpm lint          # eslint
 pnpm format        # prettier --write
 pnpm format:check  # prettier --check
 pnpm check         # typecheck + lint + format:check
 ```
+
+### Serial console
+
+- UI: `/vms/:cluster/:namespace/:name/console` (xterm.js)
+- Proxy: browser WebSocket → `ws(s)://…/api/vms/…/serial` → KubeVirt
+  `…/virtualmachineinstances/{name}/console` (`plain.kubevirt.io`)
+- Dev: Vite plugin attaches the upgrade handler on the same port as HMR
+- Prod: `server.ts` (replaces `react-router-serve`)
+- Requires a live VMI and `get` on the console subresource
