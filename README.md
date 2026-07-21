@@ -52,6 +52,8 @@ Open [http://localhost:5173](http://localhost:5173).
 - **Data volumes** — list, create (blank / PVC clone / HTTP), detail, delete
 - **Cluster instance types** — list, create, detail, edit, delete
 - **Events + YAML** on detail pages (shared `EventsPanel` / `YamlPanel`)
+- **URL-driven list filters** (`?q=&cluster=&namespace=&status=` / `phase=`) — shareable views
+- Cross-links between VMs, DataVolumes, instance types, and filtered lists
 - Shared list/form UI primitives under `app/ui/`
 - Global auto-refresh + top loading bar
 - Multi-cluster via kubeconfig contexts (`KMC_CONTEXTS`)

@@ -2,6 +2,7 @@ import { Badge, Text } from "@mantine/core";
 import type { CSSProperties } from "react";
 import type { ResourceEvent } from "~/lib/types";
 import { formatAge } from "~/lib/format";
+import { ClampedText } from "./clamped-text";
 import { DetailSection } from "./detail-section";
 import { ResourceTable, Table } from "./resource-table";
 
@@ -52,14 +53,18 @@ export function EventsPanel({
               </Text>
             </Table.Td>
             <Table.Td style={nowrapCell}>
-              <Text size="sm" c="dimmed" lineClamp={1} maw={140}>
+              <ClampedText size="sm" c="dimmed" lineClamp={1} maw={140}>
                 {ev.source ?? "—"}
-              </Text>
+              </ClampedText>
             </Table.Td>
             <Table.Td style={{ width: "100%" }}>
-              <Text size="sm" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+              <ClampedText
+                size="sm"
+                lineClamp={4}
+                style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}
+              >
                 {ev.message || "—"}
-              </Text>
+              </ClampedText>
             </Table.Td>
           </Table.Tr>
         ))}

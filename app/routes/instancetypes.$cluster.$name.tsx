@@ -17,11 +17,19 @@ import {
   DetailField,
   DetailSection,
   EventsPanel,
+  ResourceIdentity,
+  ResourceLink,
   YamlPanel,
 } from "~/ui";
 import { notifyActionError } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
-import { formatAge, formatDateTime, instanceTypeEditPath } from "~/lib/format";
+import {
+  formatAge,
+  formatDateTime,
+  instanceTypeEditPath,
+  instanceTypesListPath,
+  vmsListPath,
+} from "~/lib/format";
 import { listResourceEvents } from "~/lib/k8s/events.server";
 import { getCustomObjectYaml } from "~/lib/k8s/yaml.server";
 import {
@@ -106,9 +114,16 @@ export default function InstanceTypeDetailPage({ loaderData }: Route.ComponentPr
               {it.name}
             </Title>
           </Group>
-          <Text size="sm" c="dimmed" mt={4}>
-            {it.cluster} · VirtualMachineClusterInstancetype
-          </Text>
+          <ResourceIdentity
+            separator=" · "
+            items={[
+              {
+                label: it.cluster,
+                to: instanceTypesListPath({ cluster: it.cluster }),
+              },
+              { label: "VirtualMachineClusterInstancetype" },
+            ]}
+          />
         </div>
         <Group>
           <Button
@@ -134,12 +149,32 @@ export default function InstanceTypeDetailPage({ loaderData }: Route.ComponentPr
       <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
         <DetailSection title="Overview">
           <SimpleGrid cols={2} spacing="sm">
-            <DetailField label="Cluster" value={it.cluster} />
+            <DetailField
+              label="Cluster"
+              value={
+                <ResourceLink to={instanceTypesListPath({ cluster: it.cluster })} dimmed>
+                  {it.cluster}
+                </ResourceLink>
+              }
+            />
             <DetailField label="Name" value={it.name} />
             <DetailField label="CPU" value={`${it.cpu} cores`} />
             <DetailField label="Memory" value={it.memory} />
             <DetailField label="Age" value={formatAge(it.age)} />
             <DetailField label="Created" value={formatDateTime(it.age)} />
+            <DetailField
+              label="VMs using type"
+              value={
+                <ResourceLink
+                  to={vmsListPath({
+                    cluster: it.cluster,
+                    instancetype: it.name,
+                  })}
+                >
+                  View VMs ({it.cluster})
+                </ResourceLink>
+              }
+            />
             <DetailField label="UID" value={it.uid ? <Code>{it.uid}</Code> : undefined} />
           </SimpleGrid>
         </DetailSection>

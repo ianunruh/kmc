@@ -1,7 +1,6 @@
 import {
   ActionIcon,
   Alert,
-  Anchor,
   Button,
   Menu,
   Select,
@@ -25,12 +24,20 @@ import {
   ConsolePaper,
   FilterBar,
   PageHeader,
+  ResourceLink,
   ResourceTable,
   Table,
 } from "~/ui";
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
-import { formatAge, instanceTypeEditPath, instanceTypePath } from "~/lib/format";
+import {
+  formatAge,
+  instanceTypeEditPath,
+  instanceTypePath,
+  instanceTypesListPath,
+} from "~/lib/format";
+import { clusterFromRequest } from "~/lib/search-params";
+import { matchesQuery, useListFilters } from "~/lib/use-list-filters";
 import {
   deleteClusterInstanceType,
   listClusterInstanceTypes,
@@ -43,8 +50,8 @@ export function meta(_args: Route.MetaArgs) {
   return [{ title: "Instance Types · kmc" }];
 }
 
-export async function loader() {
-  return listClusterInstanceTypes();
+export async function loader({ request }: Route.LoaderArgs) {
+  return listClusterInstanceTypes(clusterFromRequest(request));
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -75,8 +82,7 @@ export default function InstanceTypesPage({ loaderData }: Route.ComponentProps) 
   const { items, clusters } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
   const { refreshNow } = useRefresh();
-  const [search, setSearch] = useState("");
-  const [clusterFilter, setClusterFilter] = useState<string | null>(null);
+  const { filters, qDraft, setQ, setFilter } = useListFilters();
   const [deleteTarget, setDeleteTarget] = useState<ClusterInstanceTypeSummary | null>(
     null,
   );
@@ -91,17 +97,11 @@ export default function InstanceTypesPage({ loaderData }: Route.ComponentProps) 
   });
 
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
     return items.filter((it) => {
-      if (clusterFilter && it.cluster !== clusterFilter) return false;
-      if (!q) return true;
-      return (
-        it.name.toLowerCase().includes(q) ||
-        it.cluster.toLowerCase().includes(q) ||
-        it.memory.toLowerCase().includes(q)
-      );
+      if (filters.cluster && it.cluster !== filters.cluster) return false;
+      return matchesQuery(qDraft, [it.name, it.cluster, it.memory, String(it.cpu)]);
     });
-  }, [items, search, clusterFilter]);
+  }, [items, filters.cluster, qDraft]);
 
   const busy = fetcher.state !== "idle";
   const unreachable = clusters.filter((c) => !c.reachable);
@@ -133,16 +133,16 @@ export default function InstanceTypesPage({ loaderData }: Route.ComponentProps) 
           <TextInput
             placeholder="Search name, cluster…"
             leftSection={<IconSearch size={14} />}
-            value={search}
-            onChange={(e) => setSearch(e.currentTarget.value)}
+            value={qDraft}
+            onChange={(e) => setQ(e.currentTarget.value)}
             style={{ flex: 1, minWidth: 200 }}
           />
           <Select
             placeholder="Cluster"
             clearable
             data={clusters.map((c) => c.id)}
-            value={clusterFilter}
-            onChange={setClusterFilter}
+            value={filters.cluster}
+            onChange={(v) => setFilter("cluster", v)}
             w={180}
           />
         </FilterBar>
@@ -157,20 +157,15 @@ export default function InstanceTypesPage({ loaderData }: Route.ComponentProps) 
             return (
               <Table.Tr key={key}>
                 <Table.Td>
-                  <Anchor
-                    component={Link}
-                    to={instanceTypePath(it)}
-                    fw={600}
-                    size="sm"
-                    c="accent.4"
-                  >
-                    {it.name}
-                  </Anchor>
+                  <ResourceLink to={instanceTypePath(it)}>{it.name}</ResourceLink>
                 </Table.Td>
                 <Table.Td>
-                  <Text size="sm" c="dimmed">
+                  <ResourceLink
+                    to={instanceTypesListPath({ cluster: it.cluster })}
+                    dimmed
+                  >
                     {it.cluster}
-                  </Text>
+                  </ResourceLink>
                 </Table.Td>
                 <Table.Td>
                   <Text size="sm">{it.cpu}c</Text>

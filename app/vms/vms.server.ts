@@ -104,6 +104,7 @@ interface KubeVm {
       lastTransitionTime?: string;
     }>;
     nodeName?: string;
+    instancetypeRef?: { name?: string; kind?: string };
   };
 }
 
@@ -127,7 +128,11 @@ interface KubeVmi {
   };
 }
 
-function mapVm(cluster: ClusterId, vm: KubeVm): VmSummary {
+function mapVm(
+  cluster: ClusterId,
+  vm: KubeVm,
+  instanceTypes?: Map<string, InstanceTypeSize>,
+): VmSummary {
   const name = vm.metadata?.name ?? "unknown";
   const namespace = vm.metadata?.namespace ?? "default";
   const status = vm.status?.printableStatus ?? "Unknown";
@@ -147,11 +152,30 @@ function mapVm(cluster: ClusterId, vm: KubeVm): VmSummary {
   ]);
   const running = runningStatuses.has(status);
 
-  const cores = vm.spec?.template?.spec?.domain?.cpu?.cores;
-  const memory =
+  // Prefer live matcher, then status ref / common labels set by the controller.
+  const instanceType =
+    vm.spec?.instancetype?.name ||
+    vm.status?.instancetypeRef?.name ||
+    vm.metadata?.labels?.["instancetype.kubevirt.io/cluster-instancetype-name"] ||
+    vm.metadata?.labels?.["instancetype.kubevirt.io/instancetype-name"] ||
+    undefined;
+  let cores = vm.spec?.template?.spec?.domain?.cpu?.cores;
+  let memory =
     vm.spec?.template?.spec?.domain?.resources?.requests?.memory ??
     vm.spec?.template?.spec?.domain?.resources?.limits?.memory;
-  const instanceType = vm.spec?.instancetype?.name;
+
+  // Instance-type VMs usually omit inline domain resources; resolve guest size
+  // from the cluster instance type when available.
+  if (instanceType && instanceTypes?.has(instanceType)) {
+    const it = instanceTypes.get(instanceType)!;
+    if (cores == null && it.cpu != null && it.cpu !== "") {
+      const n = Number(it.cpu);
+      cores = Number.isFinite(n) ? n : undefined;
+    }
+    if (!memory && it.memory) {
+      memory = it.memory;
+    }
+  }
 
   const dv = vm.spec?.dataVolumeTemplates?.[0];
   const disk =
@@ -169,13 +193,49 @@ function mapVm(cluster: ClusterId, vm: KubeVm): VmSummary {
     status,
     ready,
     running,
-    cpu: instanceType ? instanceType : cores != null ? `${cores}c` : undefined,
-    memory: instanceType ? undefined : memory,
+    cpu: cores != null ? `${cores}c` : undefined,
+    memory,
+    instanceType,
     disk,
     age: vm.metadata?.creationTimestamp ?? "",
     nodeName: vm.status?.nodeName,
     message: notReady?.message ?? notReady?.reason,
   };
+}
+
+type InstanceTypeSize = { cpu?: string; memory?: string };
+
+async function loadInstanceTypeSizes(
+  cluster: ClusterId,
+): Promise<Map<string, InstanceTypeSize>> {
+  try {
+    const { custom } = getClusterClients(cluster);
+    const res = (await custom.listClusterCustomObject({
+      group: "instancetype.kubevirt.io",
+      version: "v1beta1",
+      plural: "virtualmachineclusterinstancetypes",
+    })) as {
+      items?: Array<{
+        metadata?: { name?: string };
+        spec?: {
+          cpu?: { guest?: number };
+          memory?: { guest?: string };
+        };
+      }>;
+    };
+    const map = new Map<string, InstanceTypeSize>();
+    for (const item of res.items ?? []) {
+      const name = item.metadata?.name;
+      if (!name) continue;
+      map.set(name, {
+        cpu: item.spec?.cpu?.guest != null ? String(item.spec.cpu.guest) : undefined,
+        memory: item.spec?.memory?.guest,
+      });
+    }
+    return map;
+  } catch {
+    return new Map();
+  }
 }
 
 function mapVolumes(vm: KubeVm): VmVolumeInfo[] {
@@ -209,6 +269,7 @@ function mapVolumes(vm: KubeVm): VmVolumeInfo[] {
         diskBus: bus,
         size,
         storageClass,
+        linkName: vol.dataVolume.name,
       };
     }
     if (vol.persistentVolumeClaim?.claimName) {
@@ -217,6 +278,8 @@ function mapVolumes(vm: KubeVm): VmVolumeInfo[] {
         kind: "PVC",
         detail: vol.persistentVolumeClaim.claimName,
         diskBus: bus,
+        // CDI often backs a DV of the same name; link to DV detail when possible.
+        linkName: vol.persistentVolumeClaim.claimName,
       };
     }
     if (vol.cloudInitNoCloud) {
@@ -266,26 +329,28 @@ function mapNetworks(vm: KubeVm, vmi?: KubeVmi | null): VmNetworkInfo[] {
   });
 }
 
-function mapVmDetail(cluster: ClusterId, vm: KubeVm, vmi?: KubeVmi | null): VmDetail {
-  const summary = mapVm(cluster, vm);
-  const annotations = vm.metadata?.annotations ?? {};
-  const ipv4 =
-    annotations["monsoon.ianunruh.com/ipv4Address"] ??
-    vmi?.status?.interfaces?.flatMap(
-      (i) => i.ipAddresses ?? (i.ipAddress ? [i.ipAddress] : []),
-    )?.[0];
+function mapVmDetail(
+  cluster: ClusterId,
+  vm: KubeVm,
+  vmi?: KubeVmi | null,
+  instanceTypes?: Map<string, InstanceTypeSize>,
+): VmDetail {
+  const summary = mapVm(cluster, vm, instanceTypes);
+  const ipv4 = vmi?.status?.interfaces?.flatMap(
+    (i) => i.ipAddresses ?? (i.ipAddress ? [i.ipAddress] : []),
+  )?.[0];
 
   return {
     ...summary,
     uid: vm.metadata?.uid,
     nodeName: vmi?.status?.nodeName ?? summary.nodeName,
     runStrategy: vm.spec?.runStrategy,
-    instanceType: vm.spec?.instancetype?.name,
+    instanceType: summary.instanceType,
     preference: vm.spec?.preference?.name,
     machineType: vm.spec?.template?.spec?.domain?.machine?.type,
     architecture: vm.spec?.template?.spec?.architecture,
     labels: vm.metadata?.labels ?? {},
-    annotations,
+    annotations: vm.metadata?.annotations ?? {},
     conditions: (vm.status?.conditions ?? []).map((c) => ({
       type: c.type ?? "Unknown",
       status: c.status ?? "Unknown",
@@ -338,7 +403,8 @@ export async function getVm(
     vmi = null;
   }
 
-  return mapVmDetail(cluster, vm, vmi);
+  const instanceTypes = await loadInstanceTypeSizes(cluster);
+  return mapVmDetail(cluster, vm, vmi, instanceTypes);
 }
 
 async function probeCluster(id: ClusterId): Promise<ClusterInfo> {
@@ -406,24 +472,31 @@ export async function listVms(clusterFilter?: ClusterId): Promise<{
   items: VmSummary[];
   clusters: ClusterInfo[];
 }> {
-  const contexts = clusterFilter ? [clusterFilter] : getConfiguredContexts();
-
-  const clusters = await Promise.all(contexts.map(probeCluster));
+  // Always probe every configured context so health + filter dropdowns stay complete
+  // when `?cluster=` narrows which VMs are fetched.
+  const allContexts = getConfiguredContexts();
+  const clusters = await Promise.all(allContexts.map(probeCluster));
+  const byId = new Map(clusters.map((c) => [c.id, c]));
+  const fetchIds = clusterFilter ? [clusterFilter] : allContexts;
   const items: VmSummary[] = [];
 
   await Promise.all(
-    clusters.map(async (cluster) => {
-      if (!cluster.reachable) return;
+    fetchIds.map(async (id) => {
+      const cluster = byId.get(id);
+      if (!cluster?.reachable) return;
       try {
-        const { custom } = getClusterClients(cluster.id);
-        const res = (await custom.listClusterCustomObject({
-          group: "kubevirt.io",
-          version: "v1",
-          plural: "virtualmachines",
-        })) as { items?: KubeVm[] };
+        const { custom } = getClusterClients(id);
+        const [res, instanceTypes] = await Promise.all([
+          custom.listClusterCustomObject({
+            group: "kubevirt.io",
+            version: "v1",
+            plural: "virtualmachines",
+          }) as Promise<{ items?: KubeVm[] }>,
+          loadInstanceTypeSizes(id),
+        ]);
 
         for (const vm of res.items ?? []) {
-          items.push(mapVm(cluster.id, vm));
+          items.push(mapVm(id, vm, instanceTypes));
         }
       } catch (err) {
         cluster.reachable = false;
@@ -466,7 +539,10 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
       plural: "virtualmachines",
       body,
     })) as KubeVm;
-    return mapVm(input.cluster, created);
+    const instanceTypes = input.instanceType
+      ? await loadInstanceTypeSizes(input.cluster)
+      : undefined;
+    return mapVm(input.cluster, created, instanceTypes);
   } catch (err) {
     throw new Error(formatError(err), { cause: err });
   }

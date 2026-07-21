@@ -1,11 +1,13 @@
 import { Alert, Button, Select, Stack, TextInput } from "@mantine/core";
 import { IconPlus, IconSearch } from "@tabler/icons-react";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Link } from "react-router";
 import type { Route } from "./+types/home";
 import { VmTable } from "~/vms/vm-table";
 import { ConsolePaper, FilterBar, PageHeader } from "~/ui";
 import { actionFailure } from "~/lib/errors";
+import { clusterFromRequest } from "~/lib/search-params";
+import { matchesQuery, useListFilters } from "~/lib/use-list-filters";
 import { deleteVm, listVms, startVm, stopVm } from "~/vms/vms.server";
 
 export function meta(_args: Route.MetaArgs) {
@@ -16,9 +18,7 @@ export function meta(_args: Route.MetaArgs) {
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
-  const url = new URL(request.url);
-  const cluster = url.searchParams.get("cluster") ?? undefined;
-  return listVms(cluster || undefined);
+  return listVms(clusterFromRequest(request));
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -55,28 +55,53 @@ export async function action({ request }: Route.ActionArgs) {
 
 export default function Home({ loaderData }: Route.ComponentProps) {
   const { items, clusters } = loaderData;
-  const [search, setSearch] = useState("");
-  const [clusterFilter, setClusterFilter] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<string | null>(null);
+  const { filters, qDraft, setQ, setFilter } = useListFilters();
+
+  const namespaces = useMemo(() => {
+    const set = new Set(items.map((v) => v.namespace));
+    return Array.from(set).sort();
+  }, [items]);
 
   const statuses = useMemo(() => {
     const set = new Set(items.map((v) => v.status));
     return Array.from(set).sort();
   }, [items]);
 
+  const instanceTypes = useMemo(() => {
+    const set = new Set(
+      items.map((v) => v.instanceType).filter((v): v is string => Boolean(v)),
+    );
+    return Array.from(set).sort();
+  }, [items]);
+
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
     return items.filter((vm) => {
-      if (clusterFilter && vm.cluster !== clusterFilter) return false;
-      if (statusFilter && vm.status !== statusFilter) return false;
-      if (!q) return true;
-      return (
-        vm.name.toLowerCase().includes(q) ||
-        vm.namespace.toLowerCase().includes(q) ||
-        vm.cluster.toLowerCase().includes(q)
-      );
+      if (filters.cluster && vm.cluster !== filters.cluster) return false;
+      if (filters.namespace && vm.namespace !== filters.namespace) return false;
+      if (filters.status && vm.status !== filters.status) return false;
+      if (filters.instancetype && vm.instanceType !== filters.instancetype) {
+        return false;
+      }
+      return matchesQuery(qDraft, [
+        vm.name,
+        vm.namespace,
+        vm.cluster,
+        vm.status,
+        vm.nodeName,
+        vm.cpu,
+        vm.memory,
+        vm.disk,
+        vm.instanceType,
+      ]);
     });
-  }, [items, search, clusterFilter, statusFilter]);
+  }, [
+    items,
+    filters.cluster,
+    filters.namespace,
+    filters.status,
+    filters.instancetype,
+    qDraft,
+  ]);
 
   const unreachable = clusters.filter((c) => !c.reachable);
 
@@ -103,26 +128,46 @@ export default function Home({ loaderData }: Route.ComponentProps) {
           <TextInput
             placeholder="Search name, namespace, cluster…"
             leftSection={<IconSearch size={14} />}
-            value={search}
-            onChange={(e) => setSearch(e.currentTarget.value)}
+            value={qDraft}
+            onChange={(e) => setQ(e.currentTarget.value)}
             style={{ flex: 1, minWidth: 200 }}
           />
           <Select
             placeholder="Cluster"
             clearable
             data={clusters.map((c) => c.id)}
-            value={clusterFilter}
-            onChange={setClusterFilter}
+            value={filters.cluster}
+            onChange={(v) => setFilter("cluster", v)}
+            w={180}
+          />
+          <Select
+            placeholder="Namespace"
+            clearable
+            searchable
+            data={namespaces}
+            value={filters.namespace}
+            onChange={(v) => setFilter("namespace", v)}
             w={180}
           />
           <Select
             placeholder="Status"
             clearable
             data={statuses}
-            value={statusFilter}
-            onChange={setStatusFilter}
-            w={180}
+            value={filters.status}
+            onChange={(v) => setFilter("status", v)}
+            w={160}
           />
+          {instanceTypes.length > 0 && (
+            <Select
+              placeholder="Instance type"
+              clearable
+              searchable
+              data={instanceTypes}
+              value={filters.instancetype}
+              onChange={(v) => setFilter("instancetype", v)}
+              w={200}
+            />
+          )}
         </FilterBar>
 
         <VmTable vms={filtered} />

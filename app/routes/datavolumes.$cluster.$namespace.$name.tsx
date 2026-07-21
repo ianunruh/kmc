@@ -16,17 +16,20 @@ import { Link, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/datavolumes.$cluster.$namespace.$name";
 import { StatusBadge } from "~/ui/status-badge";
 import {
+  ClampedText,
   ConfirmDeleteModal,
   DetailField,
   DetailSection,
   EventsPanel,
+  ResourceIdentity,
+  ResourceLink,
   ResourceTable,
   Table,
   YamlPanel,
 } from "~/ui";
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
-import { formatAge, formatDateTime } from "~/lib/format";
+import { dataVolumesListPath, formatAge, formatDateTime, vmPath } from "~/lib/format";
 import { listResourceEvents } from "~/lib/k8s/events.server";
 import { getCustomObjectYaml } from "~/lib/k8s/yaml.server";
 import { deleteDataVolume, getDataVolume } from "~/datavolumes/datavolumes.server";
@@ -112,11 +115,25 @@ export default function DataVolumeDetailPage({ loaderData }: Route.ComponentProp
             <Title order={2} size="h3">
               {dv.name}
             </Title>
-            <StatusBadge status={dv.phase} />
+            <ResourceLink
+              to={dataVolumesListPath({ cluster: dv.cluster, phase: dv.phase })}
+              underline="never"
+            >
+              <StatusBadge status={dv.phase} />
+            </ResourceLink>
           </Group>
-          <Text size="sm" c="dimmed" mt={4}>
-            {dv.cluster} / {dv.namespace}
-          </Text>
+          <ResourceIdentity
+            items={[
+              { label: dv.cluster, to: dataVolumesListPath({ cluster: dv.cluster }) },
+              {
+                label: dv.namespace,
+                to: dataVolumesListPath({
+                  cluster: dv.cluster,
+                  namespace: dv.namespace,
+                }),
+              },
+            ]}
+          />
         </div>
         <Button
           color="red"
@@ -138,12 +155,45 @@ export default function DataVolumeDetailPage({ loaderData }: Route.ComponentProp
       <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
         <DetailSection title="Overview">
           <SimpleGrid cols={2} spacing="sm">
-            <DetailField label="Phase" value={<StatusBadge status={dv.phase} />} />
+            <DetailField
+              label="Phase"
+              value={
+                <ResourceLink
+                  to={dataVolumesListPath({
+                    cluster: dv.cluster,
+                    phase: dv.phase,
+                  })}
+                  underline="never"
+                >
+                  <StatusBadge status={dv.phase} />
+                </ResourceLink>
+              }
+            />
             <DetailField label="Progress" value={dv.progress} />
             <DetailField label="Age" value={formatAge(dv.age)} />
             <DetailField label="Created" value={formatDateTime(dv.age)} />
-            <DetailField label="Cluster" value={dv.cluster} />
-            <DetailField label="Namespace" value={dv.namespace} />
+            <DetailField
+              label="Cluster"
+              value={
+                <ResourceLink to={dataVolumesListPath({ cluster: dv.cluster })} dimmed>
+                  {dv.cluster}
+                </ResourceLink>
+              }
+            />
+            <DetailField
+              label="Namespace"
+              value={
+                <ResourceLink
+                  to={dataVolumesListPath({
+                    cluster: dv.cluster,
+                    namespace: dv.namespace,
+                  })}
+                  dimmed
+                >
+                  {dv.namespace}
+                </ResourceLink>
+              }
+            />
             <DetailField label="Size" value={dv.size} />
             <DetailField label="Storage class" value={dv.storageClass} />
             <DetailField label="Volume mode" value={dv.volumeMode} />
@@ -151,7 +201,23 @@ export default function DataVolumeDetailPage({ loaderData }: Route.ComponentProp
             <DetailField label="Claim" value={dv.claimName} />
             <DetailField
               label="Owner"
-              value={dv.ownerName ? `${dv.ownerKind}/${dv.ownerName}` : undefined}
+              value={
+                dv.ownerName ? (
+                  dv.ownerKind === "VirtualMachine" ? (
+                    <ResourceLink
+                      to={vmPath({
+                        cluster: dv.cluster,
+                        namespace: dv.namespace,
+                        name: dv.ownerName,
+                      })}
+                    >
+                      {dv.ownerKind}/{dv.ownerName}
+                    </ResourceLink>
+                  ) : (
+                    `${dv.ownerKind}/${dv.ownerName}`
+                  )
+                ) : undefined
+              }
             />
             <DetailField label="Source" value={dv.sourceKind} />
             <DetailField label="Source detail" value={dv.sourceDetail} />
@@ -205,9 +271,9 @@ export default function DataVolumeDetailPage({ loaderData }: Route.ComponentProp
               </Table.Td>
               <Table.Td>{c.reason ?? "—"}</Table.Td>
               <Table.Td>
-                <Text size="sm" c="dimmed" maw={420} lineClamp={3}>
+                <ClampedText size="sm" c="dimmed" maw={420} lineClamp={3}>
                   {c.message ?? "—"}
-                </Text>
+                </ClampedText>
               </Table.Td>
               <Table.Td>
                 <Text size="sm" c="dimmed">

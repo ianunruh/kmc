@@ -1,4 +1,5 @@
 import type { VmSummary } from "~/lib/types";
+import { withSearch } from "./search-params";
 
 export function formatAge(iso: string): string {
   if (!iso) return "—";
@@ -22,11 +23,9 @@ export function formatDateTime(iso?: string): string {
   return d.toLocaleString();
 }
 
+/** Always `cpu / memory` (em dash when a side is unknown). */
 export function sizeLabel(vm: Pick<VmSummary, "cpu" | "memory">): string {
-  if (vm.cpu && vm.memory) return `${vm.cpu} / ${vm.memory}`;
-  if (vm.cpu) return vm.cpu;
-  if (vm.memory) return vm.memory;
-  return "—";
+  return `${vm.cpu ?? "—"} / ${vm.memory ?? "—"}`;
 }
 
 export function canStop(vm: Pick<VmSummary, "status">): boolean {
@@ -60,6 +59,39 @@ export function instanceTypeEditPath(
   it: Pick<{ cluster: string; name: string }, "cluster" | "name">,
 ): string {
   return `${instanceTypePath(it)}/edit`;
+}
+
+/** List paths with optional URL-driven filters (shareable views). */
+export function vmsListPath(
+  filters: {
+    q?: string | null;
+    cluster?: string | null;
+    namespace?: string | null;
+    status?: string | null;
+    instancetype?: string | null;
+  } = {},
+): string {
+  return withSearch("/", filters);
+}
+
+export function dataVolumesListPath(
+  filters: {
+    q?: string | null;
+    cluster?: string | null;
+    namespace?: string | null;
+    phase?: string | null;
+  } = {},
+): string {
+  return withSearch("/datavolumes", filters);
+}
+
+export function instanceTypesListPath(
+  filters: {
+    q?: string | null;
+    cluster?: string | null;
+  } = {},
+): string {
+  return withSearch("/instancetypes", filters);
 }
 
 export const DNS1123_LABEL = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;

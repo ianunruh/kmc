@@ -1,7 +1,6 @@
 import {
   ActionIcon,
   Alert,
-  Anchor,
   Button,
   Menu,
   Select,
@@ -16,16 +15,20 @@ import { Link, useFetcher } from "react-router";
 import type { Route } from "./+types/datavolumes._index";
 import { StatusBadge } from "~/ui/status-badge";
 import {
+  ClampedText,
   ConfirmDeleteModal,
   ConsolePaper,
   FilterBar,
   PageHeader,
+  ResourceLink,
   ResourceTable,
   Table,
 } from "~/ui";
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
-import { dataVolumePath, formatAge } from "~/lib/format";
+import { dataVolumePath, dataVolumesListPath, formatAge, vmPath } from "~/lib/format";
+import { clusterFromRequest } from "~/lib/search-params";
+import { matchesQuery, useListFilters } from "~/lib/use-list-filters";
 import { deleteDataVolume, listDataVolumes } from "~/datavolumes/datavolumes.server";
 import { useRefresh } from "~/lib/refresh";
 import type { DataVolumeSummary } from "~/lib/types";
@@ -35,8 +38,8 @@ export function meta(_args: Route.MetaArgs) {
   return [{ title: "Data Volumes · kmc" }];
 }
 
-export async function loader() {
-  return listDataVolumes();
+export async function loader({ request }: Route.LoaderArgs) {
+  return listDataVolumes(clusterFromRequest(request));
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -69,8 +72,7 @@ export default function DataVolumesPage({ loaderData }: Route.ComponentProps) {
   const { items, clusters } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
   const { refreshNow } = useRefresh();
-  const [search, setSearch] = useState("");
-  const [clusterFilter, setClusterFilter] = useState<string | null>(null);
+  const { filters, qDraft, setQ, setFilter } = useListFilters();
   const [deleteTarget, setDeleteTarget] = useState<DataVolumeSummary | null>(null);
 
   useFetcherResult(fetcher, (data) => {
@@ -82,19 +84,32 @@ export default function DataVolumesPage({ loaderData }: Route.ComponentProps) {
     }
   });
 
+  const namespaces = useMemo(() => {
+    const set = new Set(items.map((dv) => dv.namespace));
+    return Array.from(set).sort();
+  }, [items]);
+
+  const phases = useMemo(() => {
+    const set = new Set(items.map((dv) => dv.phase));
+    return Array.from(set).sort();
+  }, [items]);
+
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
     return items.filter((dv) => {
-      if (clusterFilter && dv.cluster !== clusterFilter) return false;
-      if (!q) return true;
-      return (
-        dv.name.toLowerCase().includes(q) ||
-        dv.namespace.toLowerCase().includes(q) ||
-        dv.cluster.toLowerCase().includes(q) ||
-        dv.phase.toLowerCase().includes(q)
-      );
+      if (filters.cluster && dv.cluster !== filters.cluster) return false;
+      if (filters.namespace && dv.namespace !== filters.namespace) return false;
+      if (filters.phase && dv.phase !== filters.phase) return false;
+      return matchesQuery(qDraft, [
+        dv.name,
+        dv.namespace,
+        dv.cluster,
+        dv.phase,
+        dv.sourceKind,
+        dv.sourceDetail,
+        dv.ownerName,
+      ]);
     });
-  }, [items, search, clusterFilter]);
+  }, [items, filters.cluster, filters.namespace, filters.phase, qDraft]);
 
   const busy = fetcher.state !== "idle";
   const unreachable = clusters.filter((c) => !c.reachable);
@@ -126,16 +141,33 @@ export default function DataVolumesPage({ loaderData }: Route.ComponentProps) {
           <TextInput
             placeholder="Search name, namespace, cluster…"
             leftSection={<IconSearch size={14} />}
-            value={search}
-            onChange={(e) => setSearch(e.currentTarget.value)}
+            value={qDraft}
+            onChange={(e) => setQ(e.currentTarget.value)}
             style={{ flex: 1, minWidth: 200 }}
           />
           <Select
             placeholder="Cluster"
             clearable
             data={clusters.map((c) => c.id)}
-            value={clusterFilter}
-            onChange={setClusterFilter}
+            value={filters.cluster}
+            onChange={(v) => setFilter("cluster", v)}
+            w={180}
+          />
+          <Select
+            placeholder="Namespace"
+            clearable
+            searchable
+            data={namespaces}
+            value={filters.namespace}
+            onChange={(v) => setFilter("namespace", v)}
+            w={180}
+          />
+          <Select
+            placeholder="Phase"
+            clearable
+            data={phases}
+            value={filters.phase}
+            onChange={(v) => setFilter("phase", v)}
             w={180}
           />
         </FilterBar>
@@ -150,46 +182,74 @@ export default function DataVolumesPage({ loaderData }: Route.ComponentProps) {
             return (
               <Table.Tr key={key}>
                 <Table.Td>
-                  <Anchor
-                    component={Link}
-                    to={dataVolumePath(dv)}
-                    fw={600}
-                    size="sm"
-                    c="accent.4"
-                  >
-                    {dv.name}
-                  </Anchor>
+                  <ResourceLink to={dataVolumePath(dv)}>{dv.name}</ResourceLink>
                   {dv.ownerName && (
                     <Text size="xs" c="dimmed">
-                      owned by {dv.ownerKind}/{dv.ownerName}
+                      owned by{" "}
+                      {dv.ownerKind === "VirtualMachine" ? (
+                        <ResourceLink
+                          to={vmPath({
+                            cluster: dv.cluster,
+                            namespace: dv.namespace,
+                            name: dv.ownerName,
+                          })}
+                          dimmed
+                        >
+                          {dv.ownerKind}/{dv.ownerName}
+                        </ResourceLink>
+                      ) : (
+                        `${dv.ownerKind}/${dv.ownerName}`
+                      )}
                     </Text>
                   )}
                 </Table.Td>
                 <Table.Td>
-                  <Text size="sm" c="dimmed">
+                  <ResourceLink to={dataVolumesListPath({ cluster: dv.cluster })} dimmed>
                     {dv.cluster}
-                  </Text>
+                  </ResourceLink>
                 </Table.Td>
                 <Table.Td>
-                  <Text size="sm" c="dimmed">
+                  <ResourceLink
+                    to={dataVolumesListPath({
+                      cluster: dv.cluster,
+                      namespace: dv.namespace,
+                    })}
+                    dimmed
+                  >
                     {dv.namespace}
-                  </Text>
+                  </ResourceLink>
                 </Table.Td>
                 <Table.Td>
-                  <StatusBadge status={dv.phase} />
+                  <ResourceLink
+                    to={dataVolumesListPath({
+                      cluster: dv.cluster,
+                      phase: dv.phase,
+                    })}
+                    underline="never"
+                  >
+                    <StatusBadge status={dv.phase} />
+                  </ResourceLink>
                 </Table.Td>
                 <Table.Td>
                   <Text size="sm">{dv.size ?? "—"}</Text>
                 </Table.Td>
                 <Table.Td>
-                  <Text size="sm">
+                  <ClampedText
+                    size="sm"
+                    lineClamp={2}
+                    tooltip={
+                      dv.sourceDetail
+                        ? `${dv.sourceKind} ${dv.sourceDetail}`
+                        : dv.sourceKind
+                    }
+                  >
                     {dv.sourceKind}
                     {dv.sourceDetail ? (
                       <Text span size="xs" c="dimmed" ml={6}>
                         {dv.sourceDetail}
                       </Text>
                     ) : null}
-                  </Text>
+                  </ClampedText>
                 </Table.Td>
                 <Table.Td>
                   <Tooltip label={dv.age || "unknown"}>

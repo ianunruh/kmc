@@ -22,15 +22,43 @@ import { useState } from "react";
 import { Link, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/vms.$cluster.$namespace.$name";
 import { StatusBadge } from "~/ui/status-badge";
-import { ConfirmDeleteModal, EventsPanel, YamlPanel } from "~/ui";
+import {
+  ClampedText,
+  ConfirmDeleteModal,
+  EventsPanel,
+  ResourceIdentity,
+  ResourceLink,
+  YamlPanel,
+} from "~/ui";
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
-import { canStart, canStop, formatAge, formatDateTime, sizeLabel } from "~/lib/format";
+import {
+  canStart,
+  canStop,
+  dataVolumePath,
+  formatAge,
+  formatDateTime,
+  instanceTypePath,
+  sizeLabel,
+  vmsListPath,
+} from "~/lib/format";
 import { listResourceEvents } from "~/lib/k8s/events.server";
 import { getCustomObjectYaml } from "~/lib/k8s/yaml.server";
+import type { VmVolumeInfo } from "~/lib/types";
 import { deleteVm, getVm, startVm, stopVm } from "~/vms/vms.server";
 import { useRefresh } from "~/lib/refresh";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
+
+function volumeHref(
+  cluster: string,
+  namespace: string,
+  vol: VmVolumeInfo,
+): string | null {
+  if (!vol.linkName) return null;
+  if (vol.kind !== "DataVolume" && vol.kind !== "PVC") return null;
+  return dataVolumePath({ cluster, namespace, name: vol.linkName });
+}
+
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `${params.name ?? "VM"} · kmc` }];
 }
@@ -156,6 +184,12 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
       !k.startsWith("kubevirt.io/storage"),
   );
 
+  const rootVolume =
+    vm.volumes.find((v) => v.kind === "DataVolume" && v.linkName) ?? null;
+  const rootVolumeHref = rootVolume
+    ? volumeHref(vm.cluster, vm.namespace, rootVolume)
+    : null;
+
   return (
     <Stack gap="md">
       <Group justify="space-between" align="flex-start">
@@ -170,16 +204,27 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
             <Title order={2} size="h3">
               {vm.name}
             </Title>
-            <StatusBadge status={vm.status} />
+            <ResourceLink
+              to={vmsListPath({ cluster: vm.cluster, status: vm.status })}
+              underline="never"
+            >
+              <StatusBadge status={vm.status} />
+            </ResourceLink>
             {vm.ready && (
               <Badge size="sm" variant="outline" color="teal">
                 ready
               </Badge>
             )}
           </Group>
-          <Text size="sm" c="dimmed" mt={4}>
-            {vm.cluster} / {vm.namespace}
-          </Text>
+          <ResourceIdentity
+            items={[
+              { label: vm.cluster, to: vmsListPath({ cluster: vm.cluster }) },
+              {
+                label: vm.namespace,
+                to: vmsListPath({ cluster: vm.cluster, namespace: vm.namespace }),
+              },
+            ]}
+          />
         </div>
         <Group>
           <Button
@@ -221,15 +266,68 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
       <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
         <DetailCard title="Overview">
           <SimpleGrid cols={2} spacing="sm">
-            <Field label="Status" value={<StatusBadge status={vm.status} />} />
+            <Field
+              label="Status"
+              value={
+                <ResourceLink
+                  to={vmsListPath({ cluster: vm.cluster, status: vm.status })}
+                  underline="never"
+                >
+                  <StatusBadge status={vm.status} />
+                </ResourceLink>
+              }
+            />
             <Field label="Age" value={formatAge(vm.age)} />
             <Field label="Created" value={formatDateTime(vm.age)} />
-            <Field label="Cluster" value={vm.cluster} />
-            <Field label="Namespace" value={vm.namespace} />
+            <Field
+              label="Cluster"
+              value={
+                <ResourceLink to={vmsListPath({ cluster: vm.cluster })} dimmed>
+                  {vm.cluster}
+                </ResourceLink>
+              }
+            />
+            <Field
+              label="Namespace"
+              value={
+                <ResourceLink
+                  to={vmsListPath({
+                    cluster: vm.cluster,
+                    namespace: vm.namespace,
+                  })}
+                  dimmed
+                >
+                  {vm.namespace}
+                </ResourceLink>
+              }
+            />
             <Field label="Node" value={vm.nodeName} />
             <Field label="Size" value={sizeLabel(vm)} />
-            <Field label="Disk" value={vm.disk} />
-            <Field label="Instance type" value={vm.instanceType} />
+            <Field
+              label="Disk"
+              value={
+                vm.disk && rootVolumeHref ? (
+                  <ResourceLink to={rootVolumeHref}>{vm.disk}</ResourceLink>
+                ) : (
+                  vm.disk
+                )
+              }
+            />
+            <Field
+              label="Instance type"
+              value={
+                vm.instanceType ? (
+                  <ResourceLink
+                    to={instanceTypePath({
+                      cluster: vm.cluster,
+                      name: vm.instanceType,
+                    })}
+                  >
+                    {vm.instanceType}
+                  </ResourceLink>
+                ) : undefined
+              }
+            />
             <Field label="Preference" value={vm.preference} />
             <Field label="Run strategy" value={vm.runStrategy} />
             <Field label="Machine" value={vm.machineType} />
@@ -300,20 +398,37 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
-              {vm.volumes.map((vol) => (
-                <Table.Tr key={vol.name}>
-                  <Table.Td>{vol.name}</Table.Td>
-                  <Table.Td>{vol.kind}</Table.Td>
-                  <Table.Td>
-                    <Text size="sm" c="dimmed" lineClamp={2}>
-                      {vol.detail ?? "—"}
-                    </Text>
-                  </Table.Td>
-                  <Table.Td>{vol.size ?? "—"}</Table.Td>
-                  <Table.Td>{vol.storageClass ?? "—"}</Table.Td>
-                  <Table.Td>{vol.diskBus ?? "—"}</Table.Td>
-                </Table.Tr>
-              ))}
+              {vm.volumes.map((vol) => {
+                const href = volumeHref(vm.cluster, vm.namespace, vol);
+                return (
+                  <Table.Tr key={vol.name}>
+                    <Table.Td>
+                      {href ? (
+                        <ResourceLink to={href}>{vol.name}</ResourceLink>
+                      ) : (
+                        vol.name
+                      )}
+                    </Table.Td>
+                    <Table.Td>
+                      {href ? (
+                        <ResourceLink to={href} dimmed>
+                          {vol.kind}
+                        </ResourceLink>
+                      ) : (
+                        vol.kind
+                      )}
+                    </Table.Td>
+                    <Table.Td>
+                      <ClampedText size="sm" c="dimmed" lineClamp={2}>
+                        {vol.detail ?? "—"}
+                      </ClampedText>
+                    </Table.Td>
+                    <Table.Td>{vol.size ?? "—"}</Table.Td>
+                    <Table.Td>{vol.storageClass ?? "—"}</Table.Td>
+                    <Table.Td>{vol.diskBus ?? "—"}</Table.Td>
+                  </Table.Tr>
+                );
+              })}
             </Table.Tbody>
           </Table>
         )}
@@ -356,9 +471,9 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
                   </Table.Td>
                   <Table.Td>{c.reason ?? "—"}</Table.Td>
                   <Table.Td>
-                    <Text size="sm" c="dimmed" maw={420} lineClamp={3}>
+                    <ClampedText size="sm" c="dimmed" maw={420} lineClamp={3}>
                       {c.message ?? "—"}
-                    </Text>
+                    </ClampedText>
                   </Table.Td>
                   <Table.Td>
                     <Text size="sm" c="dimmed">

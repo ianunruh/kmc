@@ -1,4 +1,4 @@
-import { ActionIcon, Anchor, Menu, Table, Text, Tooltip } from "@mantine/core";
+import { ActionIcon, Menu, Table, Text, Tooltip } from "@mantine/core";
 import {
   IconDotsVertical,
   IconPlayerPlay,
@@ -6,13 +6,20 @@ import {
   IconTrash,
 } from "@tabler/icons-react";
 import { useState } from "react";
-import { Link, useFetcher } from "react-router";
+import { useFetcher } from "react-router";
 import type { VmSummary } from "~/lib/types";
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
-import { canStart, canStop, formatAge, sizeLabel, vmPath } from "~/lib/format";
+import {
+  canStart,
+  canStop,
+  formatAge,
+  sizeLabel,
+  vmPath,
+  vmsListPath,
+} from "~/lib/format";
 import { useRefresh } from "~/lib/refresh";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
-import { ConfirmDeleteModal } from "~/ui";
+import { ClampedText, ConfirmDeleteModal, ResourceLink } from "~/ui";
 import { StatusBadge } from "~/ui/status-badge";
 
 export function VmTable({ vms }: { vms: VmSummary[] }) {
@@ -78,33 +85,33 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
             return (
               <Table.Tr key={key}>
                 <Table.Td>
-                  <Anchor
-                    component={Link}
-                    to={vmPath(vm)}
-                    fw={600}
-                    size="sm"
-                    c="accent.4"
-                  >
-                    {vm.name}
-                  </Anchor>
+                  <ResourceLink to={vmPath(vm)}>{vm.name}</ResourceLink>
                   {vm.message && (
-                    <Text size="xs" c="dimmed" lineClamp={1} maw={280}>
+                    <ClampedText size="xs" c="dimmed" lineClamp={1} maw={280}>
                       {vm.message}
-                    </Text>
+                    </ClampedText>
                   )}
                 </Table.Td>
                 <Table.Td>
-                  <Text size="sm" c="dimmed">
+                  <ResourceLink to={vmsListPath({ cluster: vm.cluster })} dimmed>
                     {vm.cluster}
-                  </Text>
+                  </ResourceLink>
                 </Table.Td>
                 <Table.Td>
-                  <Text size="sm" c="dimmed">
+                  <ResourceLink
+                    to={vmsListPath({ cluster: vm.cluster, namespace: vm.namespace })}
+                    dimmed
+                  >
                     {vm.namespace}
-                  </Text>
+                  </ResourceLink>
                 </Table.Td>
                 <Table.Td>
-                  <StatusBadge status={vm.status} />
+                  <ResourceLink
+                    to={vmsListPath({ cluster: vm.cluster, status: vm.status })}
+                    underline="never"
+                  >
+                    <StatusBadge status={vm.status} />
+                  </ResourceLink>
                 </Table.Td>
                 <Table.Td>
                   <Text size="sm">{sizeLabel(vm)}</Text>

@@ -1,3 +1,4 @@
+export { ClampedText } from "./clamped-text";
 export { ConfirmDeleteModal } from "./confirm-delete-modal";
 export { ConsolePaper } from "./console-paper";
 export { DetailField } from "./detail-field";
@@ -7,6 +8,7 @@ export { FilterBar } from "./filter-bar";
 export { FormActions } from "./form-actions";
 export { FormSection } from "./form-section";
 export { PageHeader } from "./page-header";
+export { ResourceIdentity, ResourceLink } from "./resource-link";
 export { ResourceTable, Table } from "./resource-table";
 export { StatusBadge } from "./status-badge";
 export { YamlPanel } from "./yaml-panel";

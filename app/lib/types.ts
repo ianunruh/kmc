@@ -28,9 +28,13 @@ export interface VmSummary {
   status: string;
   ready: boolean;
   running: boolean;
+  /** Guest CPU label, e.g. `2c` (from domain or instance type). */
   cpu?: string;
+  /** Guest memory, e.g. `4Gi` (from domain or instance type). */
   memory?: string;
   disk?: string;
+  /** Cluster instance type name when the VM references one. */
+  instanceType?: string;
   age: string;
   nodeName?: string;
   message?: string;
@@ -51,6 +55,11 @@ export interface VmVolumeInfo {
   diskBus?: string;
   size?: string;
   storageClass?: string;
+  /**
+   * Target resource name for in-app links (DataVolume name, PVC claim name).
+   * Namespace is the VM's namespace unless noted otherwise.
+   */
+  linkName?: string;
 }
 
 export interface VmNetworkInfo {
