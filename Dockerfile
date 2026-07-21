@@ -17,11 +17,13 @@ FROM base AS production-deps
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile --prod
 
-FROM base
+# Runtime image: deps already installed; never run pnpm at startup.
+FROM node:22-alpine
 ENV NODE_ENV=production
 ENV PORT=3000
+WORKDIR /app
 
-COPY package.json pnpm-lock.yaml ./
+COPY package.json ./
 COPY --from=production-deps /app/node_modules ./node_modules
 COPY --from=build /app/build ./build
 # Custom server + serial console proxy (tsx resolves ~/ via tsconfig paths)
@@ -31,4 +33,5 @@ COPY public ./public
 
 EXPOSE 3000
 USER node
-CMD ["pnpm", "start"]
+# Invoke the binary directly — `pnpm start` would re-check deps and try to install.
+CMD ["./node_modules/.bin/tsx", "./server.ts"]
