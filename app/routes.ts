@@ -28,4 +28,8 @@ export default [
 
   route("api/catalog/:cluster", "routes/api.catalog.$cluster.ts"),
   route("api/networks/:cluster", "routes/api.networks.$cluster.ts"),
+  route(
+    "api/vms/:cluster/:namespace/:name/metrics",
+    "routes/api.vms.$cluster.$namespace.$name.metrics.ts",
+  ),
 ] satisfies RouteConfig;

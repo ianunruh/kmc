@@ -94,6 +94,8 @@ clusters:
     apiServer: https://kubernetes.den1.kcloud.zone:6443
     caData: LS0t...
     tokenFile: config/secrets/homelab.token
+    # Optional — enables VM metrics graphs (KubeVirt VMI metrics)
+    prometheusUrl: https://prometheus.example.com
 ```
 
 ### GitHub OAuth App (impersonate mode)
@@ -117,19 +119,19 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 
 ## Config
 
-| Env                        | Default                 | Description                                               |
-| -------------------------- | ----------------------- | --------------------------------------------------------- |
-| `KMC_AUTH_MODE`            | `kubeconfig`            | `kubeconfig` \| `impersonate`                             |
-| `KMC_CLUSTERS_CONFIG`      | `config/clusters.yaml`  | Cluster identity registry                                 |
-| `KMC_CONTEXTS`             | `prod-sjc1,homelab`     | Fallback cluster list when YAML missing (kubeconfig mode) |
-| `KMC_IMAGE_NAMESPACE`      | `vm-images`             | Namespace scanned for golden image PVCs                   |
-| `KMC_SESSION_SECRET`       | —                       | ≥32 chars; required to seal session cookies               |
-| `KMC_GITHUB_CLIENT_ID`     | —                       | GitHub OAuth App client id                                |
-| `KMC_GITHUB_CLIENT_SECRET` | —                       | GitHub OAuth App client secret                            |
-| `KMC_GITHUB_ORGS`          | —                       | Comma-separated orgs whose teams become k8s groups        |
-| `KMC_PUBLIC_URL`           | `http://localhost:5173` | Public origin (OAuth redirect)                            |
-| `KMC_USERNAME_PREFIX`      | `oidc:`                 | Match apiserver username prefix                           |
-| `KMC_GROUPS_PREFIX`        | `oidc:`                 | Match apiserver groups prefix                             |
+| Env                        | Default                 | Description                                                        |
+| -------------------------- | ----------------------- | ------------------------------------------------------------------ |
+| `KMC_AUTH_MODE`            | `kubeconfig`            | `kubeconfig` \| `impersonate`                                      |
+| `KMC_CLUSTERS_CONFIG`      | `config/clusters.yaml`  | Cluster identity registry                                          |
+| `KMC_CONTEXTS`             | `prod-sjc1,homelab`     | Fallback cluster list when YAML missing (kubeconfig mode)          |
+| `KMC_IMAGE_NAMESPACE`      | `vm-images`             | Namespace scanned for golden image PVCs                            |
+| `KMC_SESSION_SECRET`       | —                       | ≥32 chars; HMAC key for signed session cookies (survives restarts) |
+| `KMC_GITHUB_CLIENT_ID`     | —                       | GitHub OAuth App client id                                         |
+| `KMC_GITHUB_CLIENT_SECRET` | —                       | GitHub OAuth App client secret                                     |
+| `KMC_GITHUB_ORGS`          | —                       | Comma-separated orgs whose teams become k8s groups                 |
+| `KMC_PUBLIC_URL`           | `http://localhost:5173` | Public origin (OAuth redirect)                                     |
+| `KMC_USERNAME_PREFIX`      | `oidc:`                 | Match apiserver username prefix                                    |
+| `KMC_GROUPS_PREFIX`        | `oidc:`                 | Match apiserver groups prefix                                      |
 
 ## Features (MVP)
 

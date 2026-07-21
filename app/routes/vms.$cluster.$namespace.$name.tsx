@@ -42,10 +42,12 @@ import {
   sizeLabel,
   vmsListPath,
 } from "~/lib/format";
+import { hasClusterPrometheus } from "~/lib/k8s/cluster-config.server";
 import { listResourceEvents } from "~/lib/k8s/events.server";
 import { getCustomObjectYaml } from "~/lib/k8s/yaml.server";
 import type { VmVolumeInfo } from "~/lib/types";
 import { deleteVm, getVm, startVm, stopVm } from "~/vms/vms.server";
+import { VmMetricsPanel } from "~/vms/vm-metrics-panel";
 import { useRefresh } from "~/lib/refresh";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 
@@ -85,7 +87,12 @@ export async function loader({ params }: Route.LoaderArgs) {
       name,
     }),
   ]);
-  return { vm, events, yaml };
+  return {
+    vm,
+    events,
+    yaml,
+    prometheusConfigured: hasClusterPrometheus(cluster),
+  };
 }
 
 export async function action({ request, params }: Route.ActionArgs) {
@@ -151,7 +158,7 @@ function Field({ label, value }: { label: string; value?: React.ReactNode }) {
 }
 
 export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
-  const { vm, events, yaml } = loaderData;
+  const { vm, events, yaml, prometheusConfigured } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
   const { refreshNow } = useRefresh();
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -261,6 +268,10 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
         <Alert color="yellow" variant="light" title="Status message">
           {vm.message}
         </Alert>
+      )}
+
+      {prometheusConfigured && (
+        <VmMetricsPanel cluster={vm.cluster} namespace={vm.namespace} name={vm.name} />
       )}
 
       <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">

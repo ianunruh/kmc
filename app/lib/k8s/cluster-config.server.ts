@@ -13,6 +13,8 @@ export type ClusterIdentity = {
   token?: string;
   tokenFile?: string;
   tokenEnv?: string;
+  /** Base URL for Prometheus HTTP API (e.g. https://prometheus.example.com). */
+  prometheusUrl?: string;
 };
 
 type ClustersFile = {
@@ -25,6 +27,7 @@ type ClustersFile = {
     token?: string;
     tokenFile?: string;
     tokenEnv?: string;
+    prometheusUrl?: string;
   }>;
 };
 
@@ -58,9 +61,20 @@ function loadFromYaml(path: string): Map<string, ClusterIdentity> {
       token: raw.token,
       tokenFile: raw.tokenFile,
       tokenEnv: raw.tokenEnv,
+      prometheusUrl: raw.prometheusUrl?.trim() || undefined,
     });
   }
   return map;
+}
+
+/** Prometheus base URL for a cluster, if configured. */
+export function getClusterPrometheusUrl(id: ClusterId): string | null {
+  const url = getClusterIdentity(id)?.prometheusUrl?.trim();
+  return url || null;
+}
+
+export function hasClusterPrometheus(id: ClusterId): boolean {
+  return getClusterPrometheusUrl(id) != null;
 }
 
 function getIdentities(): Map<string, ClusterIdentity> {
