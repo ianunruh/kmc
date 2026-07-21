@@ -25,7 +25,7 @@ import { createVm, listClusters } from "~/vms/vms.server";
 import type { ClusterCatalog, CreateVmRequest, NetworkInfo } from "~/lib/types";
 
 export function meta(_args: Route.MetaArgs) {
-  return [{ title: "Create VM · kmc" }];
+  return [{ title: "Launch VM · kmc" }];
 }
 
 export async function loader() {
@@ -156,10 +156,12 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
   const catalogFetcher = useFetcher<CatalogFetcherData>();
   const networksFetcher = useFetcher<NetworksFetcherData>();
   const hasSavedKeys = sshKeys.length > 0;
+  const reachableClusters = clusters.filter((c) => c.reachable);
+  const defaultCluster = reachableClusters[0]?.id ?? "";
 
   const form = useForm({
     initialValues: {
-      cluster: "",
+      cluster: defaultCluster,
       namespace: "",
       name: "",
       sizeMode: "manual" as "manual" | "instancetype",
@@ -218,7 +220,6 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
   });
 
   const catalog = catalogFetcher.data;
-  const reachableClusters = clusters.filter((c) => c.reachable);
 
   useEffect(() => {
     if (!form.values.cluster) return;
@@ -238,6 +239,10 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
 
   useEffect(() => {
     if (!catalog) return;
+    const namespaceNames = catalog.namespaces.map((n) => n.name);
+    if (!form.values.namespace || !namespaceNames.includes(form.values.namespace)) {
+      form.setFieldValue("namespace", namespaceNames[0] ?? "");
+    }
     if (catalog.hasInstanceTypes) {
       form.setFieldValue("sizeMode", "instancetype");
       if (!form.values.instanceType && catalog.instanceTypes[0]) {
@@ -277,7 +282,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
 
   useEffect(() => {
     if (actionData && "error" in actionData && actionData.error) {
-      notifyActionError("Create failed", actionData.error);
+      notifyActionError("Launch failed", actionData.error);
     }
   }, [actionData]);
 
@@ -342,7 +347,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
     <Stack gap="md" pb={80}>
       <div>
         <Title order={2} size="h3">
-          Create virtual machine
+          Launch virtual machine
         </Title>
         <Text size="sm" c="dimmed">
           Provision a KubeVirt VM by cloning a golden image PVC
@@ -350,7 +355,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       </div>
 
       {actionData && "error" in actionData && actionData.error && (
-        <Alert color="red" title="Create failed" variant="light">
+        <Alert color="red" title="Launch failed" variant="light">
           {actionData.error}
         </Alert>
       )}
@@ -592,7 +597,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 </Text>
               ) : null}
               <Switch
-                label="Start after create"
+                label="Start after launch"
                 checked={form.values.start}
                 onChange={(e) => form.setFieldValue("start", e.currentTarget.checked)}
               />
@@ -615,7 +620,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 Cancel
               </Button>
               <Button type="submit" loading={submitting}>
-                Create VM
+                Launch VM
               </Button>
             </Group>
           </Paper>

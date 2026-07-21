@@ -191,7 +191,7 @@ export function AppChrome({
         <NavLink
           component={Link}
           to="/vms/create"
-          label="Create VM"
+          label="Launch VM"
           leftSection={<IconPlus size={16} />}
           active={location.pathname === "/vms/create"}
           variant="subtle"

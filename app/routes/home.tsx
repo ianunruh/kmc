@@ -126,7 +126,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
         description={`${filtered.length} shown · ${items.length} total across ${clusters.filter((c) => c.reachable).length} cluster${clusters.filter((c) => c.reachable).length === 1 ? "" : "s"}`}
         actions={
           <Button component={Link} to="/vms/create" leftSection={<IconPlus size={16} />}>
-            Create VM
+            Launch VM
           </Button>
         }
       />
