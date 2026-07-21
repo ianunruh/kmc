@@ -193,6 +193,8 @@ function mapVm(
     (c) => c.type === "Ready" && c.status !== "True",
   );
 
+  const allocatedIpv4 = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
+
   return {
     cluster,
     namespace,
@@ -204,6 +206,7 @@ function mapVm(
     memory,
     instanceType,
     disk,
+    allocatedIpv4: allocatedIpv4 || undefined,
     age: vm.metadata?.creationTimestamp ?? "",
     nodeName: vm.status?.nodeName,
     message: notReady?.message ?? notReady?.reason,
@@ -346,7 +349,6 @@ function mapVmDetail(
   const liveIpv4 = vmi?.status?.interfaces?.flatMap(
     (i) => i.ipAddresses ?? (i.ipAddress ? [i.ipAddress] : []),
   )?.[0];
-  const allocatedIpv4 = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
 
   return {
     ...summary,
@@ -369,7 +371,6 @@ function mapVmDetail(
     volumes: mapVolumes(vm),
     networks: mapNetworks(vm, vmi),
     ipv4Address: liveIpv4,
-    allocatedIpv4: allocatedIpv4 || undefined,
     vmiPhase: vmi?.status?.phase,
     hasVmi: vmi != null,
   };

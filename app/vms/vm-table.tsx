@@ -29,6 +29,14 @@ import { useFetcherResult } from "~/lib/use-fetcher-result";
 import { ClampedText, ConfirmDeleteModal, ResourceLink } from "~/ui";
 import { StatusBadge } from "~/ui/status-badge";
 
+/** Strip optional /prefix from kmc.ianunruh.com/ipv4 for the list column. */
+function displayAllocatedIpv4(value?: string): string | undefined {
+  if (!value) return undefined;
+  const s = value.trim();
+  if (!s) return undefined;
+  return s.includes("/") ? s.slice(0, s.indexOf("/")) : s;
+}
+
 export function VmTable({ vms }: { vms: VmSummary[] }) {
   const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
   const { refreshNow } = useRefresh();
@@ -82,6 +90,7 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
               <Table.Th>Namespace</Table.Th>
               <Table.Th>Status</Table.Th>
               <Table.Th>Size</Table.Th>
+              <Table.Th>IPv4</Table.Th>
               <Table.Th>Disk</Table.Th>
               <Table.Th>Age</Table.Th>
               <Table.Th w={48} />
@@ -90,6 +99,7 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
           <Table.Tbody>
             {vms.map((vm) => {
               const key = `${vm.cluster}/${vm.namespace}/${vm.name}`;
+              const ipv4 = displayAllocatedIpv4(vm.allocatedIpv4);
               return (
                 <Table.Tr key={key}>
                   <Table.Td>
@@ -123,6 +133,11 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                   </Table.Td>
                   <Table.Td>
                     <Text size="sm">{sizeLabel(vm)}</Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="sm" ff="monospace" c={ipv4 ? undefined : "dimmed"}>
+                      {ipv4 ?? "—"}
+                    </Text>
                   </Table.Td>
                   <Table.Td>
                     <Text size="sm" c="dimmed">

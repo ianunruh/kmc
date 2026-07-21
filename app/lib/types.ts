@@ -35,6 +35,8 @@ export interface VmSummary {
   disk?: string;
   /** Cluster instance type name when the VM references one. */
   instanceType?: string;
+  /** Static IP from kmc.ianunruh.com/ipv4 (may include /prefix). */
+  allocatedIpv4?: string;
   age: string;
   nodeName?: string;
   message?: string;
@@ -85,8 +87,6 @@ export interface VmDetail extends VmSummary {
   networks: VmNetworkInfo[];
   /** Live guest/VMI IPv4 when reported */
   ipv4Address?: string;
-  /** Static IP allocated by kmc IPAM (annotation kmc.ianunruh.com/ipv4) */
-  allocatedIpv4?: string;
   vmiPhase?: string;
   hasVmi: boolean;
 }
