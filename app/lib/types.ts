@@ -110,6 +110,38 @@ export interface CreateVmRequest {
   start?: boolean;
 }
 
+/**
+ * First-pass VM edit surface.
+ * - labels: always mutable
+ * - spec (runStrategy / size / preference): only when the VM is stopped
+ */
+export interface UpdateVmRequest {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  labels: Record<string, string>;
+  /** Omitted when the VM is running — only labels are applied. */
+  spec?: {
+    runStrategy: string;
+    sizeMode: "manual" | "instancetype";
+    instanceType?: string;
+    /** Empty / omit clears the preference matcher. */
+    preference?: string;
+    cpuCores?: number;
+    memory?: string;
+  };
+}
+
+export const VM_RUN_STRATEGIES = [
+  "Always",
+  "RerunOnFailure",
+  "Manual",
+  "Halted",
+  "Once",
+] as const;
+
+export type VmRunStrategy = (typeof VM_RUN_STRATEGIES)[number];
+
 export interface NamespaceInfo {
   name: string;
 }
@@ -152,7 +184,13 @@ export interface ClusterCatalog {
   hasInstanceTypes: boolean;
 }
 
-export type VmLifecycleIntent = "stop" | "start" | "delete";
+export type VmLifecycleIntent =
+  | "stop"
+  | "start"
+  | "restart"
+  | "pause"
+  | "unpause"
+  | "delete";
 
 // --- DataVolumes (cdi.kubevirt.io) ---
 

@@ -1,13 +1,16 @@
 import { formatError } from "~/lib/errors";
+import { canEditVmSpec } from "~/lib/format";
 import type {
   ClusterId,
   ClusterInfo,
   CreateVmRequest,
+  UpdateVmRequest,
   VmDetail,
   VmNetworkInfo,
   VmSummary,
   VmVolumeInfo,
 } from "~/lib/types";
+import { VM_RUN_STRATEGIES } from "~/lib/types";
 import {
   getClusterClients,
   getConfiguredContexts,
@@ -24,12 +27,13 @@ interface KubeVm {
     creationTimestamp?: string;
     labels?: Record<string, string>;
     annotations?: Record<string, string>;
+    resourceVersion?: string;
   };
   spec?: {
     running?: boolean;
     runStrategy?: string;
-    instancetype?: { name?: string; kind?: string };
-    preference?: { name?: string; kind?: string };
+    instancetype?: { name?: string; kind?: string; revisionName?: string };
+    preference?: { name?: string; kind?: string; revisionName?: string };
     dataVolumeTemplates?: Array<{
       metadata?: { name?: string };
       spec?: {
@@ -548,11 +552,169 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
   }
 }
 
+/**
+ * Conservative first-pass edit:
+ * - labels always
+ * - runStrategy / instance type or manual CPU+memory / preference only when stopped
+ */
+export async function updateVm(input: UpdateVmRequest): Promise<VmDetail> {
+  if (!input.cluster?.trim()) throw new Error("cluster is required");
+  if (!input.namespace?.trim()) throw new Error("namespace is required");
+  if (!input.name?.trim()) throw new Error("name is required");
+  if (!input.labels || typeof input.labels !== "object") {
+    throw new Error("labels are required");
+  }
+
+  const { custom } = getClusterClients(input.cluster);
+  let existing: KubeVm;
+  try {
+    existing = (await custom.getNamespacedCustomObject({
+      group: "kubevirt.io",
+      version: "v1",
+      namespace: input.namespace,
+      plural: "virtualmachines",
+      name: input.name,
+    })) as KubeVm;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("404") || message.toLowerCase().includes("not found")) {
+      throw new Response("Virtual machine not found", { status: 404 });
+    }
+    throw err;
+  }
+
+  const current = mapVm(input.cluster, existing);
+  const body = structuredClone(existing) as KubeVm & {
+    metadata: NonNullable<KubeVm["metadata"]>;
+    spec: NonNullable<KubeVm["spec"]> & Record<string, unknown>;
+  };
+
+  body.metadata = body.metadata ?? {};
+  body.metadata.labels = { ...input.labels };
+  body.spec = body.spec ?? {};
+
+  if (input.spec) {
+    if (!canEditVmSpec(current)) {
+      throw new Error(
+        `VM must be Stopped to change size, preference, or run strategy (current status: ${current.status})`,
+      );
+    }
+
+    const runStrategy = input.spec.runStrategy.trim();
+    if (!runStrategy) throw new Error("runStrategy is required");
+    if (!(VM_RUN_STRATEGIES as readonly string[]).includes(runStrategy)) {
+      throw new Error(
+        `Invalid runStrategy "${runStrategy}". Allowed: ${VM_RUN_STRATEGIES.join(", ")}`,
+      );
+    }
+    body.spec.runStrategy = runStrategy;
+    // Avoid conflicting with the deprecated boolean when runStrategy is set.
+    delete body.spec.running;
+
+    if (input.spec.sizeMode === "instancetype") {
+      const itName = input.spec.instanceType?.trim();
+      if (!itName) throw new Error("instanceType is required in instancetype mode");
+      body.spec.instancetype = {
+        kind: "VirtualMachineClusterInstancetype",
+        name: itName,
+      };
+      clearInlineDomainResources(body);
+    } else {
+      const cpuCores = input.spec.cpuCores ?? 0;
+      const memory = input.spec.memory?.trim() ?? "";
+      if (!Number.isFinite(cpuCores) || cpuCores < 1) {
+        throw new Error("cpuCores must be a positive number");
+      }
+      if (!memory) throw new Error("memory is required in manual size mode");
+      delete body.spec.instancetype;
+      applyManualDomainResources(body, cpuCores, memory);
+    }
+
+    const preference = input.spec.preference?.trim();
+    if (preference) {
+      body.spec.preference = {
+        kind: "VirtualMachineClusterPreference",
+        name: preference,
+      };
+    } else {
+      delete body.spec.preference;
+    }
+  }
+
+  try {
+    await custom.replaceNamespacedCustomObject({
+      group: "kubevirt.io",
+      version: "v1",
+      namespace: input.namespace,
+      plural: "virtualmachines",
+      name: input.name,
+      body,
+    });
+  } catch (err) {
+    throw new Error(formatError(err), { cause: err });
+  }
+
+  return getVm(input.cluster, input.namespace, input.name);
+}
+
+function ensureTemplateDomain(vm: KubeVm): {
+  cpu?: { cores?: number; threads?: number; sockets?: number };
+  resources?: {
+    requests?: { memory?: string; cpu?: string };
+    limits?: { memory?: string; cpu?: string };
+  };
+} {
+  vm.spec = vm.spec ?? {};
+  vm.spec.template = vm.spec.template ?? {};
+  vm.spec.template.spec = vm.spec.template.spec ?? {};
+  vm.spec.template.spec.domain = vm.spec.template.spec.domain ?? {};
+  return vm.spec.template.spec.domain;
+}
+
+function clearInlineDomainResources(vm: KubeVm): void {
+  const domain = ensureTemplateDomain(vm);
+  delete domain.cpu;
+  if (domain.resources?.requests) {
+    delete domain.resources.requests.memory;
+    delete domain.resources.requests.cpu;
+    if (Object.keys(domain.resources.requests).length === 0) {
+      delete domain.resources.requests;
+    }
+  }
+  if (domain.resources?.limits) {
+    delete domain.resources.limits.memory;
+    delete domain.resources.limits.cpu;
+    if (Object.keys(domain.resources.limits).length === 0) {
+      delete domain.resources.limits;
+    }
+  }
+  if (domain.resources && Object.keys(domain.resources).length === 0) {
+    delete domain.resources;
+  }
+}
+
+function applyManualDomainResources(
+  vm: KubeVm,
+  cpuCores: number,
+  memory: string,
+): void {
+  const domain = ensureTemplateDomain(vm);
+  domain.cpu = { cores: cpuCores };
+  domain.resources = domain.resources ?? {};
+  domain.resources.requests = {
+    ...(domain.resources.requests ?? {}),
+    memory,
+  };
+}
+
+type VmPowerAction = "start" | "stop" | "restart";
+type VmiPauseAction = "pause" | "unpause";
+
 async function putVmSubresource(
   cluster: ClusterId,
   namespace: string,
   name: string,
-  action: "start" | "stop",
+  action: VmPowerAction,
 ): Promise<void> {
   const { kc } = getClusterClients(cluster);
   const path = `/apis/subresources.kubevirt.io/v1/namespaces/${encodeURIComponent(namespace)}/virtualmachines/${encodeURIComponent(name)}/${action}`;
@@ -562,11 +724,33 @@ async function putVmSubresource(
   });
   if (!res.ok) {
     const text = await res.text();
-    // Fallback: patch runStrategy / running for older clusters
-    if (res.status === 404 || res.status === 405) {
+    // Fallback: patch runStrategy / running for older clusters (start/stop only)
+    if (
+      (action === "start" || action === "stop") &&
+      (res.status === 404 || res.status === 405)
+    ) {
       await patchPowerState(cluster, namespace, name, action === "start");
       return;
     }
+    throw new Error(httpErrorMessage(res.status, text));
+  }
+}
+
+/** Pause/unpause target the VMI (virtctl does the same under the hood). */
+async function putVmiSubresource(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+  action: VmiPauseAction,
+): Promise<void> {
+  const { kc } = getClusterClients(cluster);
+  const path = `/apis/subresources.kubevirt.io/v1/namespaces/${encodeURIComponent(namespace)}/virtualmachineinstances/${encodeURIComponent(name)}/${action}`;
+  const res = await k8sFetch(kc, path, {
+    method: "PUT",
+    body: "{}",
+  });
+  if (!res.ok) {
+    const text = await res.text();
     throw new Error(httpErrorMessage(res.status, text));
   }
 }
@@ -619,6 +803,30 @@ export async function startVm(
   name: string,
 ): Promise<void> {
   await putVmSubresource(cluster, namespace, name, "start");
+}
+
+export async function restartVm(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+): Promise<void> {
+  await putVmSubresource(cluster, namespace, name, "restart");
+}
+
+export async function pauseVm(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+): Promise<void> {
+  await putVmiSubresource(cluster, namespace, name, "pause");
+}
+
+export async function unpauseVm(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+): Promise<void> {
+  await putVmiSubresource(cluster, namespace, name, "unpause");
 }
 
 export async function deleteVm(

@@ -135,7 +135,7 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 
 ## Features (MVP)
 
-- **Virtual machines** — list, create, detail, stop/start/delete
+- **Virtual machines** — list, create, detail, edit (labels always; size / preference / run strategy when stopped), stop/start/restart/pause/unpause/delete
 - **Data volumes** — list, create (blank / PVC clone / HTTP), detail, delete
 - **Cluster instance types** — list, create, detail, edit, delete
 - **Events + YAML** on detail pages

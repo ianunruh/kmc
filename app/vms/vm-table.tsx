@@ -1,19 +1,26 @@
 import { ActionIcon, Menu, Table, Text, Tooltip } from "@mantine/core";
 import {
   IconDotsVertical,
+  IconEdit,
+  IconPlayerPause,
   IconPlayerPlay,
   IconPlayerStop,
+  IconRefresh,
   IconTrash,
 } from "@tabler/icons-react";
 import { useState } from "react";
-import { useFetcher } from "react-router";
-import type { VmSummary } from "~/lib/types";
+import { Link, useFetcher } from "react-router";
+import type { VmLifecycleIntent, VmSummary } from "~/lib/types";
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import {
+  canPause,
+  canRestart,
   canStart,
   canStop,
+  canUnpause,
   formatAge,
   sizeLabel,
+  vmEditPath,
   vmPath,
   vmsListPath,
 } from "~/lib/format";
@@ -38,7 +45,7 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
 
   const busy = fetcher.state !== "idle";
 
-  function submitIntent(intent: "stop" | "start" | "delete", vm: VmSummary) {
+  function submitIntent(intent: VmLifecycleIntent, vm: VmSummary) {
     fetcher.submit(
       {
         intent,
@@ -129,7 +136,7 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                   </Tooltip>
                 </Table.Td>
                 <Table.Td>
-                  <Menu shadow="md" width={160} position="bottom-end">
+                  <Menu shadow="md" width={170} position="bottom-end">
                     <Menu.Target>
                       <ActionIcon
                         variant="subtle"
@@ -140,6 +147,14 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                       </ActionIcon>
                     </Menu.Target>
                     <Menu.Dropdown>
+                      <Menu.Item
+                        component={Link}
+                        to={vmEditPath(vm)}
+                        leftSection={<IconEdit size={14} />}
+                      >
+                        Edit
+                      </Menu.Item>
+                      <Menu.Divider />
                       <Menu.Item
                         leftSection={<IconPlayerStop size={14} />}
                         disabled={!canStop(vm) || busy}
@@ -154,6 +169,30 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                       >
                         Start
                       </Menu.Item>
+                      <Menu.Item
+                        leftSection={<IconRefresh size={14} />}
+                        disabled={!canRestart(vm) || busy}
+                        onClick={() => submitIntent("restart", vm)}
+                      >
+                        Restart
+                      </Menu.Item>
+                      {canUnpause(vm) ? (
+                        <Menu.Item
+                          leftSection={<IconPlayerPlay size={14} />}
+                          disabled={busy}
+                          onClick={() => submitIntent("unpause", vm)}
+                        >
+                          Unpause
+                        </Menu.Item>
+                      ) : (
+                        <Menu.Item
+                          leftSection={<IconPlayerPause size={14} />}
+                          disabled={!canPause(vm) || busy}
+                          onClick={() => submitIntent("pause", vm)}
+                        >
+                          Pause
+                        </Menu.Item>
+                      )}
                       <Menu.Divider />
                       <Menu.Item
                         color="red"

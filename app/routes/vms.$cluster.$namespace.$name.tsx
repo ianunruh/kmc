@@ -14,8 +14,11 @@ import {
 } from "@mantine/core";
 import {
   IconArrowLeft,
+  IconEdit,
+  IconPlayerPause,
   IconPlayerPlay,
   IconPlayerStop,
+  IconRefresh,
   IconTrash,
 } from "@tabler/icons-react";
 import { useState } from "react";
@@ -33,20 +36,32 @@ import {
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
 import {
+  canPause,
+  canRestart,
   canStart,
   canStop,
+  canUnpause,
   dataVolumePath,
   formatAge,
   formatDateTime,
   instanceTypePath,
   sizeLabel,
+  vmEditPath,
   vmsListPath,
 } from "~/lib/format";
 import { hasClusterPrometheus } from "~/lib/k8s/cluster-config.server";
 import { listResourceEvents } from "~/lib/k8s/events.server";
 import { getCustomObjectYaml } from "~/lib/k8s/yaml.server";
-import type { VmVolumeInfo } from "~/lib/types";
-import { deleteVm, getVm, startVm, stopVm } from "~/vms/vms.server";
+import type { VmLifecycleIntent, VmVolumeInfo } from "~/lib/types";
+import {
+  deleteVm,
+  getVm,
+  pauseVm,
+  restartVm,
+  startVm,
+  stopVm,
+  unpauseVm,
+} from "~/vms/vms.server";
 import { VmMetricsPanel } from "~/vms/vm-metrics-panel";
 import { useRefresh } from "~/lib/refresh";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
@@ -111,6 +126,18 @@ export async function action({ request, params }: Route.ActionArgs) {
     }
     if (intent === "start") {
       await startVm(cluster, namespace, name);
+      return { ok: true, intent };
+    }
+    if (intent === "restart") {
+      await restartVm(cluster, namespace, name);
+      return { ok: true, intent };
+    }
+    if (intent === "pause") {
+      await pauseVm(cluster, namespace, name);
+      return { ok: true, intent };
+    }
+    if (intent === "unpause") {
+      await unpauseVm(cluster, namespace, name);
       return { ok: true, intent };
     }
     if (intent === "delete") {
@@ -180,9 +207,12 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
     }
   });
 
-  function submitIntent(intent: "stop" | "start" | "delete") {
+  function submitIntent(intent: VmLifecycleIntent) {
     fetcher.submit({ intent }, { method: "post" });
   }
+
+  const intentBusy = (intent: string) =>
+    busy && fetcher.formData?.get("intent") === intent;
 
   const interestingAnnotations = Object.entries(vm.annotations).filter(
     ([k]) =>
@@ -235,10 +265,18 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
         </div>
         <Group>
           <Button
+            component={Link}
+            to={vmEditPath(vm)}
+            variant="default"
+            leftSection={<IconEdit size={16} />}
+          >
+            Edit
+          </Button>
+          <Button
             variant="default"
             leftSection={<IconPlayerStop size={16} />}
             disabled={!canStop(vm) || busy}
-            loading={busy && fetcher.formData?.get("intent") === "stop"}
+            loading={intentBusy("stop")}
             onClick={() => submitIntent("stop")}
           >
             Stop
@@ -247,11 +285,41 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
             variant="default"
             leftSection={<IconPlayerPlay size={16} />}
             disabled={!canStart(vm) || busy}
-            loading={busy && fetcher.formData?.get("intent") === "start"}
+            loading={intentBusy("start")}
             onClick={() => submitIntent("start")}
           >
             Start
           </Button>
+          <Button
+            variant="default"
+            leftSection={<IconRefresh size={16} />}
+            disabled={!canRestart(vm) || busy}
+            loading={intentBusy("restart")}
+            onClick={() => submitIntent("restart")}
+          >
+            Restart
+          </Button>
+          {canUnpause(vm) ? (
+            <Button
+              variant="default"
+              leftSection={<IconPlayerPlay size={16} />}
+              disabled={busy}
+              loading={intentBusy("unpause")}
+              onClick={() => submitIntent("unpause")}
+            >
+              Unpause
+            </Button>
+          ) : (
+            <Button
+              variant="default"
+              leftSection={<IconPlayerPause size={16} />}
+              disabled={!canPause(vm) || busy}
+              loading={intentBusy("pause")}
+              onClick={() => submitIntent("pause")}
+            >
+              Pause
+            </Button>
+          )}
           <Button
             color="red"
             variant="light"

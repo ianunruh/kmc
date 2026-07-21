@@ -8,7 +8,15 @@ import { ConsolePaper, FilterBar, PageHeader } from "~/ui";
 import { actionFailure } from "~/lib/errors";
 import { clusterFromRequest } from "~/lib/search-params";
 import { matchesQuery, useListFilters } from "~/lib/use-list-filters";
-import { deleteVm, listVms, startVm, stopVm } from "~/vms/vms.server";
+import {
+  deleteVm,
+  listVms,
+  pauseVm,
+  restartVm,
+  startVm,
+  stopVm,
+  unpauseVm,
+} from "~/vms/vms.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [
@@ -37,6 +45,12 @@ export async function action({ request }: Route.ActionArgs) {
       await stopVm(cluster, namespace, name);
     } else if (intent === "start") {
       await startVm(cluster, namespace, name);
+    } else if (intent === "restart") {
+      await restartVm(cluster, namespace, name);
+    } else if (intent === "pause") {
+      await pauseVm(cluster, namespace, name);
+    } else if (intent === "unpause") {
+      await unpauseVm(cluster, namespace, name);
     } else if (intent === "delete") {
       await deleteVm(cluster, namespace, name);
     } else {
