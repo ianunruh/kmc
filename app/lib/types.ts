@@ -271,3 +271,66 @@ export interface UpsertClusterInstanceTypeRequest {
   cpu: number;
   memory: string;
 }
+
+// --- Ingresses (networking.k8s.io) bound to VMs ---
+
+export interface IngressSummary {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  hosts: string[];
+  className?: string;
+  /** Target VM name (same namespace) when bound */
+  vmName?: string;
+  /** Companion Service name (same as Ingress in v1) */
+  serviceName?: string;
+  age: string;
+  /** First loadBalancer ingress host/IP when present */
+  address?: string;
+}
+
+export interface IngressRulePath {
+  path: string;
+  pathType: string;
+  serviceName: string;
+  servicePort: number | string;
+}
+
+export interface IngressRuleInfo {
+  host?: string;
+  paths: IngressRulePath[];
+}
+
+export interface IngressDetail extends IngressSummary {
+  uid?: string;
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
+  rules: IngressRuleInfo[];
+  tls?: Array<{ hosts: string[]; secretName?: string }>;
+  servicePorts?: Array<{
+    name?: string;
+    port: number;
+    targetPort: number | string;
+    protocol?: string;
+  }>;
+  /** Endpoint readiness for the companion Service (when available) */
+  endpointsReady?: number;
+  endpointsTotal?: number;
+  vm?: { name: string; exists: boolean; podNetwork: boolean };
+}
+
+export type IngressPathType = "Prefix" | "Exact" | "ImplementationSpecific";
+
+export interface CreateIngressRequest {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  vmName: string;
+  host: string;
+  path?: string;
+  pathType?: IngressPathType;
+  servicePort?: number;
+  targetPort?: number;
+  ingressClassName?: string;
+}
+

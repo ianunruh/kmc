@@ -27,6 +27,13 @@ export default [
     "routes/datavolumes.$cluster.$namespace.$name.tsx",
   ),
 
+  route("ingresses", "routes/ingresses._index.tsx"),
+  route("ingresses/create", "routes/ingresses.create.tsx"),
+  route(
+    "ingresses/:cluster/:namespace/:name",
+    "routes/ingresses.$cluster.$namespace.$name.tsx",
+  ),
+
   route("instancetypes", "routes/instancetypes._index.tsx"),
   route("instancetypes/create", "routes/instancetypes.create.tsx"),
   route("instancetypes/:cluster/:name", "routes/instancetypes.$cluster.$name.tsx"),
@@ -37,6 +44,7 @@ export default [
 
   route("api/catalog/:cluster", "routes/api.catalog.$cluster.ts"),
   route("api/networks/:cluster", "routes/api.networks.$cluster.ts"),
+  route("api/vms/:cluster", "routes/api.vms.$cluster.ts"),
   route(
     "api/vms/:cluster/:namespace/:name/metrics",
     "routes/api.vms.$cluster.$namespace.$name.metrics.ts",

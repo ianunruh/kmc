@@ -17,6 +17,7 @@ import {
   IconKey,
   IconLogout,
   IconPlus,
+  IconRoute,
   IconServer,
   IconUser,
 } from "@tabler/icons-react";
@@ -40,6 +41,12 @@ const NAV = [
     label: "Data Volumes",
     icon: IconDatabase,
     match: (path: string) => path.startsWith("/datavolumes"),
+  },
+  {
+    to: "/ingresses",
+    label: "Ingresses",
+    icon: IconRoute,
+    match: (path: string) => path.startsWith("/ingresses"),
   },
   {
     to: "/instancetypes",

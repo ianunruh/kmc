@@ -157,6 +157,7 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 - **Virtual machines** — list, create, detail, edit (labels always; size / preference / run strategy when stopped), stop/start/restart/pause/unpause/delete, **serial console** (full-page xterm via app-proxied WebSocket)
 - **IPAM** — optional per-cluster IPv4 pools for Multus NADs; auto-allocate + netplan cloud-init on create
 - **SSH keys** — signed-in users save named public keys (ConfigMap on the settings cluster); select when creating a VM
+- **Ingresses** — create/list/detail/delete HTTP Ingresses bound to a VM (companion ClusterIP Service selects `kubevirt.io/vm`)
 
 - **Data volumes** — list, create (blank / PVC clone / HTTP), detail, delete
 - **Cluster instance types** — list, create, detail, edit, delete
@@ -165,6 +166,28 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 - Cross-links between resources
 - Global auto-refresh + top loading bar
 - Multi-cluster via kubeconfig **or** platform SA + impersonation
+
+### Exposing VMs (Ingress)
+
+For **pod-network** VMs, kmc can create a Kubernetes Ingress that routes to the virt-launcher pod through a ClusterIP Service (same CNI path as any backend pod — e.g. Calico). No VM network template changes are required.
+
+1. Open **Ingresses → Create Ingress**
+2. Pick cluster, namespace, and target VM
+3. Set host / path / ports (and optional `ingressClassName`)
+4. kmc creates:
+   - **Service** (same name as the Ingress) with selector `kubevirt.io/vm=<vm-name>`
+   - **Ingress** with backend pointing at that Service
+5. Labels mark ownership: `app.kubernetes.io/managed-by=kmc`, `kmc.ianunruh.com/vm`, `kmc.ianunruh.com/target-kind=VirtualMachine`
+
+**Requirements**
+
+- Guest must listen on the target port (kmc does not configure guest apps)
+- Caller needs RBAC to create/delete `services` and `ingresses` in the namespace
+- Multus guest IPs are **not** used as backends (Service selects the pod); a soft warning is shown when the target VM is Multus-attached
+
+**Delete** removes both the Ingress and the companion Service; the VM is left intact.
+
+**Future:** bind one Ingress/Service to a group of VMs via label selector (same object model; only the Service selector source changes).
 
 ### User SSH keys
 

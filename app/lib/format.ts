@@ -183,6 +183,26 @@ export function instanceTypesListPath(
   return withSearch("/instancetypes", filters);
 }
 
+export function ingressPath(
+  ing: Pick<
+    { cluster: string; namespace: string; name: string },
+    "cluster" | "namespace" | "name"
+  >,
+): string {
+  return `/ingresses/${encodeURIComponent(ing.cluster)}/${encodeURIComponent(ing.namespace)}/${encodeURIComponent(ing.name)}`;
+}
+
+export function ingressesListPath(
+  filters: {
+    q?: string | null;
+    cluster?: string | null;
+    namespace?: string | null;
+    host?: string | null;
+  } = {},
+): string {
+  return withSearch("/ingresses", filters);
+}
+
 export const DNS1123_LABEL = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 
 export function validateDns1123Label(value: string): string | null {

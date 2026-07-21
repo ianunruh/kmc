@@ -25,6 +25,7 @@ export interface ClusterClients {
   custom: k8s.CustomObjectsApi;
   core: k8s.CoreV1Api;
   storage: k8s.StorageV1Api;
+  networking: k8s.NetworkingV1Api;
 }
 
 function loadKubeconfigContext(context: ClusterId): k8s.KubeConfig {
@@ -144,7 +145,7 @@ function nodeHttpLibrary(): ReturnType<typeof k8s.wrapHttpLibrary> {
 
 function makeApiClients(
   kc: k8s.KubeConfig,
-): Pick<ClusterClients, "custom" | "core" | "storage"> {
+): Pick<ClusterClients, "custom" | "core" | "storage" | "networking"> {
   const cluster = kc.getCurrentCluster();
   if (!cluster?.server) {
     throw new Error("No active cluster server in kubeconfig");
@@ -160,6 +161,7 @@ function makeApiClients(
     custom: new k8s.CustomObjectsApi(config),
     core: new k8s.CoreV1Api(config),
     storage: new k8s.StorageV1Api(config),
+    networking: new k8s.NetworkingV1Api(config),
   };
 }
 
