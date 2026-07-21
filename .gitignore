@@ -9,3 +9,7 @@
 # Tooling caches
 .eslintcache
 *.tsbuildinfo
+
+# Auth secrets
+config/secrets/
+config/clusters.yaml

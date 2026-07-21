@@ -1,17 +1,28 @@
 import {
   AppShell,
+  Badge,
   Box,
   Burger,
+  Button,
   Group,
+  Menu,
   NavLink,
   Text,
   UnstyledButton,
 } from "@mantine/core";
 import { useDisclosure } from "@mantine/hooks";
-import { IconDatabase, IconCpu, IconPlus, IconServer } from "@tabler/icons-react";
-import { Link, useLocation } from "react-router";
+import {
+  IconDatabase,
+  IconCpu,
+  IconLogout,
+  IconPlus,
+  IconServer,
+  IconUser,
+} from "@tabler/icons-react";
+import { Form, Link, useLocation } from "react-router";
 import type { ReactNode } from "react";
 import type { ClusterInfo } from "~/lib/types";
+import type { AuthMode, SessionUser } from "~/lib/auth/types";
 import { ClusterHealth } from "./cluster-health";
 import { RefreshControl } from "./refresh-control";
 import { TopLoadingBar } from "./top-loading-bar";
@@ -40,12 +51,29 @@ const NAV = [
 export function AppChrome({
   children,
   clusters = [],
+  authMode = "kubeconfig",
+  user = null,
 }: {
   children: ReactNode;
   clusters?: ClusterInfo[];
+  authMode?: AuthMode;
+  user?: SessionUser | null;
 }) {
   const [opened, { toggle }] = useDisclosure();
   const location = useLocation();
+  const isLogin =
+    location.pathname === "/login" || location.pathname.startsWith("/auth/");
+
+  if (isLogin) {
+    return (
+      <>
+        <TopLoadingBar />
+        <Box mih="100vh" bg="#0b0d0f" p="md">
+          {children}
+        </Box>
+      </>
+    );
+  }
 
   return (
     <AppShell
@@ -87,9 +115,58 @@ export function AppChrome({
           <Group gap="md" wrap="nowrap">
             <ClusterHealth clusters={clusters} />
             <RefreshControl />
+            {authMode === "kubeconfig" && (
+              <Badge size="xs" variant="outline" color="gray">
+                kubeconfig
+              </Badge>
+            )}
+            {user ? (
+              <Menu shadow="md" width={220} position="bottom-end">
+                <Menu.Target>
+                  <UnstyledButton>
+                    <Group gap={6} wrap="nowrap">
+                      <IconUser size={14} />
+                      <Text size="xs" visibleFrom="sm" lineClamp={1} maw={140}>
+                        {user.email}
+                      </Text>
+                    </Group>
+                  </UnstyledButton>
+                </Menu.Target>
+                <Menu.Dropdown>
+                  <Menu.Label>{user.githubLogin}</Menu.Label>
+                  <Menu.Item
+                    component={Link}
+                    to="/me"
+                    leftSection={<IconUser size={14} />}
+                  >
+                    Identity
+                  </Menu.Item>
+                  <Menu.Divider />
+                  <Menu.Item
+                    color="red"
+                    leftSection={<IconLogout size={14} />}
+                    component="button"
+                    type="submit"
+                    form="kmc-logout"
+                  >
+                    Sign out
+                  </Menu.Item>
+                </Menu.Dropdown>
+              </Menu>
+            ) : authMode === "impersonate" ? (
+              <Button component={Link} to="/login" size="xs" variant="light">
+                Sign in
+              </Button>
+            ) : (
+              <Button component={Link} to="/login" size="xs" variant="subtle">
+                Sign in
+              </Button>
+            )}
           </Group>
         </Group>
       </AppShell.Header>
+
+      <Form id="kmc-logout" method="post" action="/auth/logout" />
 
       <AppShell.Navbar p="sm">
         {NAV.map((item) => (
@@ -115,7 +192,7 @@ export function AppChrome({
         />
         <Box mt="auto" p="xs">
           <Text size="xs" c="dimmed">
-            localhost console
+            {authMode === "impersonate" ? "impersonate mode" : "localhost console"}
           </Text>
         </Box>
       </AppShell.Navbar>

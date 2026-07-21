@@ -16,6 +16,10 @@ import { AppChrome } from "./shell/app-chrome";
 import { listClusters } from "./vms/vms.server";
 import { RefreshProvider } from "./lib/refresh";
 import type { ClusterInfo } from "./lib/types";
+import { authMiddleware, getRequestSession } from "./lib/auth/middleware.server";
+import { getAuthMode } from "./lib/auth/mode.server";
+import { isPublicPath } from "./lib/auth/paths.server";
+import type { AuthMode, SessionUser } from "./lib/auth/types";
 
 import "@fontsource/geist-mono/400.css";
 import "@fontsource/geist-mono/500.css";
@@ -27,12 +31,44 @@ import "./app.css";
 
 export const links: Route.LinksFunction = () => [];
 
-export async function loader() {
+export const middleware: Route.MiddlewareFunction[] = [
+  authMiddleware as Route.MiddlewareFunction,
+];
+
+export type RootLoaderData = {
+  clusters: ClusterInfo[];
+  authMode: AuthMode;
+  user: SessionUser | null;
+};
+
+export async function loader({ request }: Route.LoaderArgs) {
+  const url = new URL(request.url);
+  const publicAuth = isPublicPath(url.pathname);
+
+  const session = getRequestSession();
+  const user = session?.user ?? null;
+
+  if (publicAuth) {
+    return {
+      clusters: [] as ClusterInfo[],
+      authMode: getAuthMode(),
+      user,
+    } satisfies RootLoaderData;
+  }
+
   try {
     const clusters = await listClusters();
-    return { clusters };
+    return {
+      clusters,
+      authMode: getAuthMode(),
+      user,
+    } satisfies RootLoaderData;
   } catch {
-    return { clusters: [] as ClusterInfo[] };
+    return {
+      clusters: [] as ClusterInfo[],
+      authMode: getAuthMode(),
+      user,
+    } satisfies RootLoaderData;
   }
 }
 
@@ -59,11 +95,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  const data = useRouteLoaderData("root") as { clusters: ClusterInfo[] } | undefined;
+  const data = useRouteLoaderData("root") as RootLoaderData | undefined;
 
   return (
     <RefreshProvider>
-      <AppChrome clusters={data?.clusters ?? []}>
+      <AppChrome
+        clusters={data?.clusters ?? []}
+        authMode={data?.authMode ?? "kubeconfig"}
+        user={data?.user ?? null}
+      >
         <Outlet />
       </AppChrome>
     </RefreshProvider>

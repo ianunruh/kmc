@@ -2,6 +2,12 @@ import { type RouteConfig, index, route } from "@react-router/dev/routes";
 
 export default [
   index("routes/home.tsx"),
+  route("login", "routes/login.tsx"),
+  route("auth/github", "routes/auth.github.ts"),
+  route("auth/callback", "routes/auth.callback.ts"),
+  route("auth/logout", "routes/auth.logout.ts"),
+  route("me", "routes/me.tsx"),
+
   route("vms/create", "routes/vms.create.tsx"),
   route("vms/:cluster/:namespace/:name", "routes/vms.$cluster.$namespace.$name.tsx"),
 
