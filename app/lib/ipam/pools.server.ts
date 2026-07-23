@@ -5,8 +5,11 @@ import { getClusterClients } from "~/lib/k8s/clients.server";
 import {
   KMC_ANN_CIDR,
   KMC_ANN_DNS,
+  KMC_ANN_FLOATING_IPV4,
   KMC_ANN_GATEWAY,
   KMC_LABEL_RESOURCE,
+  KMC_NAT_POLICY_DATA_KEY,
+  KMC_NAT_POLICY_LABEL_SELECTOR,
   KMC_RESOURCE_VPC,
 } from "~/lib/k8s/constants";
 import {
@@ -202,9 +205,7 @@ function validatePool(pool: IpPoolConfig): {
   if (gw) {
     parseIpv4(gw);
     if (!containsIpv4(parsed, gw)) {
-      throw new Error(
-        `IP pool "${pool.id}": gateway ${gw} is outside ${parsed.cidr}`,
-      );
+      throw new Error(`IP pool "${pool.id}": gateway ${gw} is outside ${parsed.cidr}`);
     }
   }
   const range = usableHostRange(parsed, { start: pool.start, end: pool.end });
@@ -329,6 +330,7 @@ export function parseIpv4AnnotationList(value: string): string[] {
  * Collect IPs considered in-use for a pool:
  * - kmc.ianunruh.com/ipv4 annotations on any VM (stopped VMs still hold the address;
  *   multi-attach stores comma-separated addresses)
+ * - kmc.ianunruh.com/floating-ipv4 on NAT gateway VMs (secondary public floats)
  * - live VMI interface IPs that fall inside the pool CIDR
  */
 export function collectUsedIpv4(
@@ -339,16 +341,27 @@ export function collectUsedIpv4(
 ): Set<string> {
   const used = new Set<string>();
 
+  const addIfInPool = (raw: string) => {
+    const addr = addressFromIpv4Annotation(raw) ?? raw.trim();
+    if (!addr) return;
+    try {
+      if (containsIpv4(parsed, addr)) used.add(addr);
+    } catch {
+      /* skip */
+    }
+  };
+
   for (const vm of vms) {
     const ann = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
-    if (!ann) continue;
-    for (const addr of parseIpv4AnnotationList(ann)) {
-      try {
-        if (containsIpv4(parsed, addr)) {
-          used.add(addr);
-        }
-      } catch {
-        /* skip bad annotation */
+    if (ann) {
+      for (const addr of parseIpv4AnnotationList(ann)) {
+        addIfInPool(addr);
+      }
+    }
+    const floats = vm.metadata?.annotations?.[KMC_ANN_FLOATING_IPV4];
+    if (floats) {
+      for (const addr of parseIpv4AnnotationList(floats)) {
+        addIfInPool(addr);
       }
     }
   }
@@ -357,21 +370,52 @@ export function collectUsedIpv4(
     for (const iface of vmi.status?.interfaces ?? []) {
       const ips = iface.ipAddresses ?? (iface.ipAddress ? [iface.ipAddress] : []);
       for (const raw of ips) {
-        const addr = addressFromIpv4Annotation(raw);
-        if (!addr) continue;
-        try {
-          if (containsIpv4(parsed, addr)) {
-            used.add(addr);
-          }
-        } catch {
-          /* skip */
-        }
+        addIfInPool(raw);
       }
     }
   }
 
   // Gateway and configured exclusions count as used for free-count display
   void pool;
+  return used;
+}
+
+/**
+ * Floating public IPs from NAT policy ConfigMaps (desired state).
+ * Complements VM annotations when the agent has not stamped secondaries yet.
+ */
+export async function collectFloatingIpv4FromPolicies(
+  cluster: ClusterId,
+  parsed: ParsedCidr,
+): Promise<Set<string>> {
+  const used = new Set<string>();
+  const { core } = getClusterClients(cluster);
+  try {
+    const res = await core.listConfigMapForAllNamespaces({
+      labelSelector: KMC_NAT_POLICY_LABEL_SELECTOR,
+    });
+    for (const cm of res.items ?? []) {
+      const raw = cm.data?.[KMC_NAT_POLICY_DATA_KEY];
+      if (!raw?.trim()) continue;
+      try {
+        const doc = JSON.parse(raw) as {
+          floatingIPs?: Array<{ public?: string }>;
+        };
+        for (const f of doc.floatingIPs ?? []) {
+          const addr = addressFromIpv4Annotation(f.public ?? "") ?? f.public?.trim();
+          if (!addr) continue;
+          if (containsIpv4(parsed, addr)) used.add(addr);
+        }
+      } catch {
+        /* skip bad policy */
+      }
+    }
+  } catch (err) {
+    console.error(
+      "collectFloatingIpv4FromPolicies failed:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
   return used;
 }
 
@@ -382,6 +426,8 @@ export async function getIpPoolUsageForConfig(
   const { parsed, range, exclude } = validatePool(pool);
   const { vms, vmis } = await listClusterVmsAndVmis(cluster);
   const usedSet = collectUsedIpv4(pool, parsed, vms, vmis);
+  const fromPolicies = await collectFloatingIpv4FromPolicies(cluster, parsed);
+  for (const a of fromPolicies) usedSet.add(a);
   for (const e of exclude) {
     if (containsIpv4(parsed, e)) usedSet.add(e);
   }
@@ -425,11 +471,7 @@ export async function getIpPoolUsageForMultus(
   multusNetworkName: string,
   namespace?: string,
 ): Promise<IpPoolUsage | null> {
-  const pool = await resolveIpPoolForMultus(
-    cluster,
-    multusNetworkName,
-    namespace,
-  );
+  const pool = await resolveIpPoolForMultus(cluster, multusNetworkName, namespace);
   if (!pool) return null;
   return getIpPoolUsageForConfig(cluster, pool);
 }
@@ -469,11 +511,7 @@ export async function allocateIpv4ForMultus(
   namespace?: string,
   opts?: AllocateIpv4Opts,
 ): Promise<AllocatedIp | null> {
-  const pool = await resolveIpPoolForMultus(
-    cluster,
-    multusNetworkName,
-    namespace,
-  );
+  const pool = await resolveIpPoolForMultus(cluster, multusNetworkName, namespace);
   if (!pool) return null;
 
   const lockKey = `${cluster}::${pool.id}`;
@@ -483,6 +521,8 @@ export async function allocateIpv4ForMultus(
     const { parsed, range, exclude } = validatePool(pool);
     const { vms, vmis } = await listClusterVmsAndVmis(cluster);
     const used = collectUsedIpv4(pool, parsed, vms, vmis);
+    const fromPolicies = await collectFloatingIpv4FromPolicies(cluster, parsed);
+    for (const a of fromPolicies) used.add(a);
     for (const a of opts?.extraUsed ?? []) {
       const addr = addressFromIpv4Annotation(a) ?? a.trim();
       if (addr) used.add(addr);
@@ -581,10 +621,7 @@ function matchLinesFor(allocation: AllocatedIp): string[] {
     return [`    match:`, `      name: "${allocation.interfaceName}"`];
   }
   if (allocation.macAddress) {
-    return [
-      `    match:`,
-      `      macaddress: "${allocation.macAddress.toLowerCase()}"`,
-    ];
+    return [`    match:`, `      macaddress: "${allocation.macAddress.toLowerCase()}"`];
   }
   // Single-NIC fallback when no MAC was stamped (legacy behavior)
   return [`    match:`, `      driver: virtio_net`];

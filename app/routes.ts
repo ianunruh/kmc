@@ -46,6 +46,9 @@ export default [
   ),
   route("vpcs/:cluster/:namespace/:name", "routes/vpcs.$cluster.$namespace.$name.tsx"),
 
+  route("floating-ips", "routes/floating-ips._index.tsx"),
+  route("floating-ips/create", "routes/floating-ips.create.tsx"),
+
   route("namespaces", "routes/namespaces._index.tsx"),
   route("namespaces/create", "routes/namespaces.create.tsx"),
   route("namespaces/:cluster/:name", "routes/namespaces.$cluster.$name.tsx"),

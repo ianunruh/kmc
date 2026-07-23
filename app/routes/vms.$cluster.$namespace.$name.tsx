@@ -20,9 +20,11 @@ import {
   IconPlayerPause,
   IconPlayerPlay,
   IconPlayerStop,
+  IconPlus,
   IconRefresh,
   IconTerminal2,
   IconTrash,
+  IconWorldWww,
 } from "@tabler/icons-react";
 import { useState } from "react";
 import { Link, redirect, useFetcher } from "react-router";
@@ -48,6 +50,8 @@ import {
   canStop,
   canUnpause,
   dataVolumePath,
+  floatingIpCreatePath,
+  floatingIpsListPath,
   formatAge,
   formatBytes,
   formatDateTime,
@@ -61,7 +65,7 @@ import {
 import { hasClusterPrometheus } from "~/lib/k8s/cluster-config.server";
 import { listResourceEvents } from "~/lib/k8s/events.server";
 import { getCustomObjectYaml } from "~/lib/k8s/yaml.server";
-import type { VmLifecycleIntent, VmVolumeInfo } from "~/lib/types";
+import type { FloatingIpSummary, VmLifecycleIntent, VmVolumeInfo } from "~/lib/types";
 import {
   deleteVm,
   getVm,
@@ -72,9 +76,11 @@ import {
   stopVm,
   unpauseVm,
 } from "~/vms/vms.server";
+import { disassociateFloatingIp, listFloatingIpsForVm } from "~/vpcs/vpcs.server";
 import { VmMetricsPanel } from "~/vms/vm-metrics-panel";
 import { useRefresh } from "~/lib/refresh";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
+import { addressFromIpv4Annotation } from "~/lib/ipam/cidr";
 
 function volumeHref(
   cluster: string,
@@ -112,11 +118,34 @@ export async function loader({ params }: Route.LoaderArgs) {
       name,
     }),
   ]);
+
+  const privateAddrs = (vm.allocatedIpv4 ?? "")
+    .split(",")
+    .map((p) => addressFromIpv4Annotation(p.trim()) ?? p.trim())
+    .filter(Boolean);
+  let floatingIps: FloatingIpSummary[] = [];
+  try {
+    floatingIps = await listFloatingIpsForVm(cluster, namespace, name, privateAddrs);
+  } catch {
+    floatingIps = [];
+  }
+
+  // Prefill associate form: first Multus network that is a VPC
+  const vpcPrefill = vm.networks.find((n) => n.vpc)?.vpc;
+
   return {
     vm,
     events,
     yaml,
     prometheusConfigured: hasClusterPrometheus(cluster),
+    floatingIps,
+    vpcPrefill: vpcPrefill
+      ? {
+          cluster,
+          namespace: vpcPrefill.namespace,
+          name: vpcPrefill.name,
+        }
+      : null,
   };
 }
 
@@ -157,6 +186,20 @@ export async function action({ request, params }: Route.ActionArgs) {
     if (intent === "delete") {
       await deleteVm(cluster, namespace, name);
       return redirect("/");
+    }
+    if (intent === "disassociate-fip") {
+      const vpcName = String(form.get("vpcName") ?? "").trim();
+      const idOrPublic = String(form.get("idOrPublic") ?? "").trim();
+      if (!vpcName || !idOrPublic) {
+        return { ok: false, error: "Missing floating IP identity", intent };
+      }
+      await disassociateFloatingIp({
+        cluster,
+        namespace,
+        vpcName,
+        idOrPublic,
+      });
+      return { ok: true, intent };
     }
     return { ok: false, error: `Unknown intent: ${intent}`, intent };
   } catch (err) {
@@ -248,12 +291,16 @@ function intentSuccessLabel(intent?: string): string {
 }
 
 export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
-  const { vm, events, yaml, prometheusConfigured } = loaderData;
+  const { vm, events, yaml, prometheusConfigured, floatingIps, vpcPrefill } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
   const { refreshNow } = useRefresh();
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [confirmIntent, setConfirmIntent] =
-    useState<ConfirmableLifecycleIntent | null>(null);
+  const [confirmIntent, setConfirmIntent] = useState<ConfirmableLifecycleIntent | null>(
+    null,
+  );
+  const [disassociateTarget, setDisassociateTarget] = useState<FloatingIpSummary | null>(
+    null,
+  );
   const busy = fetcher.state !== "idle";
 
   useFetcherResult(fetcher, (data) => {
@@ -267,10 +314,14 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
       return;
     }
     if (data.ok) {
-      notifyActionSuccess(
-        "Done",
-        `VM ${intentSuccessLabel(data.intent)} requested`,
-      );
+      if (data.intent === "disassociate-fip") {
+        notifyActionSuccess(
+          "Done",
+          "Floating IP disassociated — agent will drop DNAT shortly",
+        );
+      } else {
+        notifyActionSuccess("Done", `VM ${intentSuccessLabel(data.intent)} requested`);
+      }
       refreshNow();
     }
   });
@@ -361,11 +412,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
             leftSection={<IconPlayerStop size={16} />}
             disabled={!canStop(vm) || busy}
             loading={intentBusy("stop")}
-            title={
-              vm.status === "Paused"
-                ? "Unpause the VM before stopping"
-                : undefined
-            }
+            title={vm.status === "Paused" ? "Unpause the VM before stopping" : undefined}
             onClick={() => setConfirmIntent("stop")}
           >
             Stop
@@ -385,12 +432,8 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
                 variant="default"
                 leftSection={<IconRefresh size={16} />}
                 rightSection={<IconChevronDown size={14} />}
-                disabled={
-                  (!canRestart(vm) && !canSoftReboot(vm)) || busy
-                }
-                loading={
-                  intentBusy("restart") || intentBusy("softreboot")
-                }
+                disabled={(!canRestart(vm) && !canSoftReboot(vm)) || busy}
+                loading={intentBusy("restart") || intentBusy("softreboot")}
               >
                 Restart
               </Button>
@@ -455,8 +498,8 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
         <Alert color="orange" variant="light" title="Restart required">
           {vm.restartRequiredMessage?.trim() ||
             "KubeVirt applied a LiveUpdate that still needs a guest reboot to take full effect."}{" "}
-          Use Soft reboot when the guest agent is connected, or Hard restart if
-          the guest is unresponsive.
+          Use Soft reboot when the guest agent is connected, or Hard restart if the guest
+          is unresponsive.
         </Alert>
       )}
 
@@ -548,9 +591,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
                   <Stack gap={2}>
                     {vm.allocatedIpv4.split(",").map((part) => {
                       const s = part.trim();
-                      return s ? (
-                        <Code key={s}>{s}</Code>
-                      ) : null;
+                      return s ? <Code key={s}>{s}</Code> : null;
                     })}
                   </Stack>
                 ) : undefined
@@ -591,9 +632,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
                 <Field
                   label="OS"
                   value={
-                    vm.guestAgent?.osPrettyName ||
-                    vm.guestAgent?.osName ||
-                    undefined
+                    vm.guestAgent?.osPrettyName || vm.guestAgent?.osName || undefined
                   }
                 />
                 <Field label="Version" value={vm.guestAgent?.osVersion} />
@@ -617,9 +656,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
                 <Field
                   label="OS id"
                   value={
-                    vm.guestAgent?.osId ? (
-                      <Code>{vm.guestAgent.osId}</Code>
-                    ) : undefined
+                    vm.guestAgent?.osId ? <Code>{vm.guestAgent.osId}</Code> : undefined
                   }
                 />
               </SimpleGrid>
@@ -655,9 +692,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
                       <Table.Tbody>
                         {vm.guestAgent.filesystems.map((fs) => {
                           const pct =
-                            fs.totalBytes &&
-                            fs.usedBytes != null &&
-                            fs.totalBytes > 0
+                            fs.totalBytes && fs.usedBytes != null && fs.totalBytes > 0
                               ? Math.round((fs.usedBytes / fs.totalBytes) * 100)
                               : null;
                           return (
@@ -703,12 +738,115 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
           )}
           {vm.hasVmi && !vm.guestAgent?.connected && (
             <Text size="xs" c="dimmed" mt="sm">
-              Install and enable qemu-guest-agent in the guest for soft reboot,
-              hostname, filesystems, and richer OS info.
+              Install and enable qemu-guest-agent in the guest for soft reboot, hostname,
+              filesystems, and richer OS info.
             </Text>
           )}
         </DetailCard>
       </SimpleGrid>
+
+      <DetailCard title="Floating IPs">
+        <Group justify="space-between" mb="sm">
+          <Text size="sm" c="dimmed">
+            Public addresses mapped through a VPC NAT gateway to this VM.
+          </Text>
+          <Group gap="xs">
+            <Button
+              component={Link}
+              to={floatingIpsListPath({
+                cluster: vm.cluster,
+                namespace: vm.namespace,
+              })}
+              size="xs"
+              variant="subtle"
+              leftSection={<IconWorldWww size={14} />}
+            >
+              All floating IPs
+            </Button>
+            {vpcPrefill && (
+              <Button
+                component={Link}
+                to={floatingIpCreatePath({
+                  cluster: vpcPrefill.cluster,
+                  namespace: vpcPrefill.namespace,
+                  vpc: vpcPrefill.name,
+                  targetVm: vm.name,
+                })}
+                size="xs"
+                variant="light"
+                color="teal"
+                leftSection={<IconPlus size={14} />}
+              >
+                Associate
+              </Button>
+            )}
+          </Group>
+        </Group>
+        {floatingIps.length === 0 ? (
+          <Text size="sm" c="dimmed">
+            {vpcPrefill
+              ? "No floating IPs associated with this VM."
+              : "Attach this VM to a VPC with a NAT gateway to use floating IPs."}
+          </Text>
+        ) : (
+          <Table.ScrollContainer
+            className="kmc-table-scroll"
+            minWidth={480}
+            type="native"
+          >
+            <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Public</Table.Th>
+                  <Table.Th>Private</Table.Th>
+                  <Table.Th>VPC</Table.Th>
+                  <Table.Th>Agent</Table.Th>
+                  <Table.Th />
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {floatingIps.map((f) => (
+                  <Table.Tr key={`${f.vpcName}/${f.id}`}>
+                    <Table.Td>
+                      <Code>
+                        {f.public}/{f.prefix}
+                      </Code>
+                    </Table.Td>
+                    <Table.Td>
+                      <Code>{f.private}</Code>
+                    </Table.Td>
+                    <Table.Td>
+                      <ResourceLink
+                        to={vpcPath({
+                          cluster: f.cluster,
+                          namespace: f.namespace,
+                          name: f.vpcName,
+                        })}
+                      >
+                        {f.vpcName}
+                      </ResourceLink>
+                    </Table.Td>
+                    <Table.Td>
+                      {f.agentStatus ? <Code>{f.agentStatus}</Code> : "—"}
+                    </Table.Td>
+                    <Table.Td>
+                      <Button
+                        size="compact-xs"
+                        variant="subtle"
+                        color="red"
+                        disabled={busy}
+                        onClick={() => setDisassociateTarget(f)}
+                      >
+                        Disassociate
+                      </Button>
+                    </Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
+        )}
+      </DetailCard>
 
       <DetailCard title="Networks">
         {vm.networks.length === 0 ? (
@@ -979,6 +1117,40 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
           setDeleteOpen(false);
           submitIntent("delete");
         }}
+      />
+
+      <ConfirmActionModal
+        opened={disassociateTarget != null}
+        onClose={() => setDisassociateTarget(null)}
+        title="Disassociate floating IP"
+        confirmLabel="Disassociate"
+        confirmColor="red"
+        loading={busy}
+        onConfirm={() => {
+          if (!disassociateTarget) return;
+          fetcher.submit(
+            {
+              intent: "disassociate-fip",
+              vpcName: disassociateTarget.vpcName,
+              idOrPublic: disassociateTarget.id,
+            },
+            { method: "post" },
+          );
+          setDisassociateTarget(null);
+        }}
+        message={
+          disassociateTarget ? (
+            <>
+              Remove mapping{" "}
+              <Code>
+                {disassociateTarget.public} → {disassociateTarget.private}
+              </Code>{" "}
+              on VPC <Code>{disassociateTarget.vpcName}</Code>?
+            </>
+          ) : (
+            ""
+          )
+        }
       />
     </Stack>
   );

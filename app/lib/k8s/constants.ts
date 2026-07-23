@@ -63,5 +63,26 @@ export const KMC_ROLE_NAT_GATEWAY = "nat-gateway";
 /** VPC NAD name (same namespace as the VM) this role serves. */
 export const KMC_LABEL_VPC = `${KMC_LABEL_NAMESPACE}/vpc`;
 
+/** Value of kmc.ianunruh.com/resource for NAT gateway policy ConfigMaps. */
+export const KMC_RESOURCE_NAT_POLICY = "nat-policy";
+
 /** List selector for kmc-managed VPC NADs. */
 export const KMC_VPC_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_VPC}`;
+
+/** List selector for NAT gateway policy ConfigMaps (floating IPs, etc.). */
+export const KMC_NAT_POLICY_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_NAT_POLICY}`;
+
+/** Policy ConfigMap data key (JSON NatGatewayPolicy). */
+export const KMC_NAT_POLICY_DATA_KEY = "policy.json";
+
+/** Agent status annotations on the policy ConfigMap. */
+export const KMC_ANN_AGENT_STATUS = `${KMC_LABEL_NAMESPACE}/agent-status`;
+export const KMC_ANN_AGENT_OBSERVED_GENERATION = `${KMC_LABEL_NAMESPACE}/agent-observed-generation`;
+export const KMC_ANN_AGENT_LAST_ERROR = `${KMC_LABEL_NAMESPACE}/agent-last-error`;
+export const KMC_ANN_AGENT_APPLIED_AT = `${KMC_LABEL_NAMESPACE}/agent-applied-at`;
+
+/**
+ * Comma-separated floating public IPv4s held by a NAT gateway (IPAM scan).
+ * May include /prefix; used so secondary floats are not double-allocated.
+ */
+export const KMC_ANN_FLOATING_IPV4 = `${KMC_LABEL_NAMESPACE}/floating-ipv4`;

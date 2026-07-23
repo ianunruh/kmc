@@ -67,8 +67,7 @@ export async function loader({ params }: Route.LoaderArgs) {
     session?.user ?? null,
   );
 
-  const suggestedGateway =
-    vpc.gateway?.trim() || defaultGatewayAddress(vpc.cidr);
+  const suggestedGateway = vpc.gateway?.trim() || defaultGatewayAddress(vpc.cidr);
 
   return {
     vpc,
@@ -95,17 +94,13 @@ export async function action({ request, params }: Route.ActionArgs) {
 
   const form = await request.formData();
   const vmName = String(form.get("name") ?? "").trim();
-  const publicMultusNetwork = String(
-    form.get("publicMultusNetwork") ?? "",
-  ).trim();
+  const publicMultusNetwork = String(form.get("publicMultusNetwork") ?? "").trim();
   const sizeMode = String(form.get("sizeMode") ?? "manual");
-  const instanceType =
-    String(form.get("instanceType") ?? "").trim() || undefined;
+  const instanceType = String(form.get("instanceType") ?? "").trim() || undefined;
   const cpuCoresRaw = String(form.get("cpuCores") ?? "").trim();
   const memory = String(form.get("memory") ?? "").trim() || undefined;
   const diskSize = String(form.get("diskSize") ?? "").trim() || "10Gi";
-  const storageClass =
-    String(form.get("storageClass") ?? "").trim() || undefined;
+  const storageClass = String(form.get("storageClass") ?? "").trim() || undefined;
   const imageValue = String(form.get("image") ?? "").trim();
   const sshKeyMode = String(form.get("sshKeyMode") ?? "paste").trim();
   const savedSshKeyId = String(form.get("savedSshKeyId") ?? "").trim();
@@ -248,16 +243,14 @@ export default function AddNatGatewayPage({
       publicMultusNetwork: publicNetOptions[0]?.value ?? "",
       image: defaultImage,
       sizeMode: (instanceTypeOptions.length > 0 ? "instancetype" : "manual") as
-        | "instancetype"
-        | "manual",
+        "instancetype" | "manual",
       instanceType: instanceTypeOptions[0]?.value ?? "",
       cpuCores: 1,
       memory: "1Gi",
       diskSize: "10Gi",
       storageClass: catalog?.defaultStorageClass ?? "",
       sshKeyMode: (signedIn && sshKeys.length > 0 ? "saved" : "paste") as
-        | "saved"
-        | "paste",
+        "saved" | "paste",
       savedSshKeyId: sshKeys[0]?.id ?? "",
       sshPublicKey: "",
     },
@@ -300,8 +293,7 @@ export default function AddNatGatewayPage({
     submit(fd, { method: "post" });
   });
 
-  const blocked =
-    publicNetworks.length === 0 || Boolean(catalogError) || !catalog;
+  const blocked = publicNetworks.length === 0 || Boolean(catalogError) || !catalog;
 
   return (
     <Stack gap="md" pb={80}>
@@ -309,8 +301,8 @@ export default function AddNatGatewayPage({
         title="Add NAT gateway"
         description={
           <Text span size="sm" c="dimmed">
-            {vpc.cluster}/{vpc.namespace}/{vpc.name} · dual-homed Ubuntu VM for
-            VPC egress (ip_forward + MASQUERADE)
+            {vpc.cluster}/{vpc.namespace}/{vpc.name} · dual-homed Ubuntu VM for VPC egress
+            + floating IPs (pod NIC agent, SNAT/DNAT)
           </Text>
         }
       />
@@ -323,8 +315,8 @@ export default function AddNatGatewayPage({
 
       {publicNetworks.length === 0 && (
         <Alert color="yellow" variant="light" title="No egress networks">
-          No public Multus networks with <Code>ipPools</Code> are configured on
-          this cluster. Add an egress pool (e.g. <Code>external</Code>) in{" "}
+          No public Multus networks with <Code>ipPools</Code> are configured on this
+          cluster. Add an egress pool (e.g. <Code>external</Code>) in{" "}
           <Code>clusters.yaml</Code>.
         </Alert>
       )}
@@ -336,10 +328,11 @@ export default function AddNatGatewayPage({
       )}
 
       <Alert color="gray" variant="light">
-        Private NIC is pinned to{" "}
-        <Code>{suggestedGateway}</Code>
-        {vpc.gateway ? "" : " (written as the VPC gateway if not already set)"}.
-        Public NIC uses a Multus pool for the default route and SNAT.
+        Private NIC is pinned to <Code>{suggestedGateway}</Code>
+        {vpc.gateway ? "" : " (written as the VPC gateway if not already set)"}. Public
+        Multus handles the default route and SNAT. A third <Code>pod</Code> NIC reaches
+        the apiserver so the in-guest agent can watch the policy ConfigMap (requires
+        cluster <Code>network.podCIDR</Code> / <Code>serviceCIDR</Code>).
       </Alert>
 
       <form onSubmit={onSubmit}>
@@ -394,8 +387,7 @@ export default function AddNatGatewayPage({
               />
             )}
 
-            {form.values.sizeMode === "instancetype" &&
-            instanceTypeOptions.length > 0 ? (
+            {form.values.sizeMode === "instancetype" && instanceTypeOptions.length > 0 ? (
               <Select
                 label="Instance type"
                 data={instanceTypeOptions}

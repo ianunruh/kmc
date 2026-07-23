@@ -295,13 +295,7 @@ export interface ClusterCatalog {
 }
 
 export type VmLifecycleIntent =
-  | "stop"
-  | "start"
-  | "restart"
-  | "softreboot"
-  | "pause"
-  | "unpause"
-  | "delete";
+  "stop" | "start" | "restart" | "softreboot" | "pause" | "unpause" | "delete";
 
 // --- DataVolumes (cdi.kubevirt.io) ---
 
@@ -466,7 +460,23 @@ export interface VpcAttachedVm {
   isNatGateway?: boolean;
 }
 
-/** Dual-homed Ubuntu NAT gateway launched for a VPC (egress SNAT). */
+/** Agent status reported on the NAT policy ConfigMap. */
+export type NatAgentStatus = "Ready" | "Error" | "Unknown" | "Pending";
+
+/** 1:1 floating public IP mapped through the NAT gateway. */
+export interface FloatingIpAssociation {
+  id: string;
+  /** Public / float address (no prefix). */
+  public: string;
+  /** Prefix length on the public Multus NIC (e.g. 27). */
+  prefix: number;
+  /** Private VPC target address (no prefix). */
+  private: string;
+  /** Optional target VM name (same namespace). */
+  targetVm?: string;
+}
+
+/** Dual-homed (or triple-homed) Ubuntu NAT gateway for a VPC. */
 export interface NatGatewayInfo {
   cluster: ClusterId;
   namespace: string;
@@ -477,6 +487,15 @@ export interface NatGatewayInfo {
   publicIpv4?: string;
   /** Multus NAD used for egress. */
   publicNetwork?: string;
+  /** Policy ConfigMap name (floating IPs), if managed. */
+  policyConfigMap?: string;
+  /** In-guest agent status from policy CM annotations. */
+  agentStatus?: NatAgentStatus;
+  agentObservedGeneration?: string;
+  agentLastError?: string;
+  agentAppliedAt?: string;
+  /** Floating IP associations from the policy ConfigMap. */
+  floatingIps?: FloatingIpAssociation[];
 }
 
 export interface VpcDetail extends VpcSummary {
@@ -491,8 +510,9 @@ export interface VpcDetail extends VpcSummary {
 }
 
 /**
- * Launch a dual-homed NAT gateway VM for a VPC (private Multus + public Multus).
+ * Launch a NAT gateway VM for a VPC (private Multus + public Multus + pod network).
  * Private IP is pinned to the VPC gateway address; public IP from the chosen pool.
+ * Pod NIC is used by the in-guest agent to watch the policy ConfigMap.
  */
 export interface CreateNatGatewayRequest {
   cluster: ClusterId;
@@ -513,6 +533,60 @@ export interface CreateNatGatewayRequest {
     name: string;
   };
   start?: boolean;
+}
+
+/** Associate a floating public IP to a private VPC address via the NAT gateway. */
+export interface AssociateFloatingIpRequest {
+  cluster: ClusterId;
+  namespace: string;
+  vpcName: string;
+  /** Private target IPv4 (no prefix). Defaults from targetVm IPAM when omitted. */
+  privateIpv4?: string;
+  /** Target VM name (same namespace); used to resolve private IP when not set. */
+  targetVm?: string;
+  /** Optional specific public address; otherwise allocate from the public pool. */
+  publicIpv4?: string;
+}
+
+export interface DisassociateFloatingIpRequest {
+  cluster: ClusterId;
+  namespace: string;
+  vpcName: string;
+  /** Floating IP id or public address. */
+  idOrPublic: string;
+}
+
+/** Row for the top-level floating IP list (and embed on VPC/VM detail). */
+export interface FloatingIpSummary {
+  cluster: ClusterId;
+  namespace: string;
+  vpcName: string;
+  id: string;
+  public: string;
+  prefix: number;
+  private: string;
+  targetVm?: string;
+  /** NAT gateway VM name when known from the policy CM labels / VPC. */
+  natGatewayVm?: string;
+  agentStatus?: NatAgentStatus;
+  policyConfigMap?: string;
+}
+
+/** VPC that can accept floating IP associations (has NAT gateway + policy). */
+export interface FloatingIpEligibleVpc {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  cidr?: string;
+  natGatewayName?: string;
+  publicNetwork?: string;
+  agentStatus?: NatAgentStatus;
+  floatingCount: number;
+  /** Non–NAT-gateway attached VMs with private addresses. */
+  targetVms: Array<{
+    name: string;
+    allocatedIpv4?: string;
+  }>;
 }
 
 export interface CreateVpcRequest {
@@ -581,4 +655,3 @@ export interface NetworkTopology {
   vms: TopologyVmNode[];
   edges: TopologyEdge[];
 }
-

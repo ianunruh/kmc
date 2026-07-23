@@ -10,6 +10,12 @@ clusters:
     apiServer: https://kubernetes.sjc1.prod.kcloud.io:6443
     caData: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUMvakNDQWVhZ0F3SUJBZ0lCQURBTkJna3Foa2lHOXcwQkFRc0ZBREFWTVJNd0VRWURWUVFERXdwcmRXSmwKY201bGRHVnpNQjRYRFRJek1ESXlOVEEwTkRrek1sb1hEVE16TURJeU1qQTBORGt6TWxvd0ZURVRNQkVHQTFVRQpBeE1LYTNWaVpYSnVaWFJsY3pDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVBBRENDQVFvQ2dnRUJBTXNqClpjNTg3SHhySCtDN2ZUTWZ6alI4RWtUQmo5eG1pZDdwaUNSbUQ1YW16a2x4YWNPK1kxZ2hrdTFHUENCamZIVzEKaEFLZnBmOWdHWmpNalRHTFQ1SWtkK09PaERid0pPeHo0RWYzWnFXazFUeDdYRkV1VkhyUUVTaU1zWDh1OUo5ZAoxdkRGcjRIWTlPWTA3QkZJT0xWbW1UWXVBbzRaemxEVU1MYXdHVUhxc29DdTRjZTZUcFlkMXFndysvaTFCbXVvCk5sdzc3QkpmZUFpTmtNYzFtdUJjUURubnA3WkY1dnlOWjd6N1dFUG9seXRuUTVTQWNCRjJ0Mi9KM3d3S2hrcXgKMmxQM0FtcHBoREI0V2tIY2tPNDE1VG9uK0dTWFRnQTQ0NEdCVmdheG0wczV3WDZqd0xpVk94dTJYQlFaTmd6bQpGNXJPWERtWEI5MUlrQWFqWlhjQ0F3RUFBYU5aTUZjd0RnWURWUjBQQVFIL0JBUURBZ0trTUE4R0ExVWRFd0VCCi93UUZNQU1CQWY4d0hRWURWUjBPQkJZRUZML2draHZka1doeUdsbVdHSER2MmhtQUV2S1lNQlVHQTFVZEVRUU8KTUF5Q0NtdDFZbVZ5Ym1WMFpYTXdEUVlKS29aSWh2Y05BUUVMQlFBRGdnRUJBSjBNNkVhVm5FcTJxNXlpQjNxTApDRnpVclVoUUhYZ0JTT2llU3lvNzdUaXpueStMYytTZ1dtWjk4Z01vN0VUNkV0djM3SGNsS3M3N0xQRHF6bU1FCk1zaUtCSEZwWjNOYnhwT3VodHUycjd2M3Y5VFFScTVYcHZtYW5TdnR0WHpnQVBaTk9iWWYzcC82aFJZYmo4UkUKNTI1V1RhWlV2ZXNyRnpyNHVWSzZMTEIrbGxhVkkyYUt2TFpsenRCRHlBOTNCWm5SLzJ6Nit1U3BVcnVNNDdSZwpISnc0ZUlEdG12WHlkdkN5UUNnei83ZzZxV2lseTVuV3lZK2k4cmdDNjdZRXpXNGtnaXY1ekthaVFsRGR4L2pUCkhnQ0hhazhvU0tlUWUrWG5lT0pRNitZelRXZGFMQzNYcVNFSklqZDh1NEtKZzB4VVFWZGQ5dkNOZndNdi9Dd2IKazBFPQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==
     tokenFile: config/secrets/prod-sjc1.token
+    # Optional: underlay CIDRs for NAT gateway pod NIC + in-guest agent.
+    # Required to launch NAT gateways that watch policy ConfigMaps.
+    # network:
+    #   podCIDR: 10.95.0.0/16
+    #   serviceCIDR: 10.96.0.0/12
+    #   # dnsIP: 10.96.0.10
     # Optional: scan-derived IPv4 pools for Multus bridge networks.
     # On VM create, kmc picks a free address (from kmc.ianunruh.com/ipv4 annotations + live
     # VMI IPs), stamps annotations, and injects cloud-init networkData (netplan).
@@ -52,3 +58,8 @@ clusters:
     tokenFile: config/secrets/homelab.token
     # Optional: enables VM metrics graphs on the detail page
     prometheusUrl: https://prometheus.k8s.kcloud.zone
+    # Optional: underlay CIDRs for NAT gateway pod NIC + in-guest agent
+    # network:
+    #   podCIDR: 10.19.0.0/16
+    #   serviceCIDR: 10.20.0.0/16
+    #   dnsIP: 10.20.0.10

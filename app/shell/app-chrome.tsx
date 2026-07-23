@@ -23,6 +23,7 @@ import {
   IconServer,
   IconTopologyStar3,
   IconUser,
+  IconWorldWww,
 } from "@tabler/icons-react";
 import { Form, Link, useLocation } from "react-router";
 import type { ReactNode } from "react";
@@ -56,6 +57,12 @@ const NAV = [
     label: "VPCs",
     icon: IconNetwork,
     match: (path: string) => path.startsWith("/vpcs"),
+  },
+  {
+    to: "/floating-ips",
+    label: "Floating IPs",
+    icon: IconWorldWww,
+    match: (path: string) => path.startsWith("/floating-ips"),
   },
   {
     to: "/namespaces",

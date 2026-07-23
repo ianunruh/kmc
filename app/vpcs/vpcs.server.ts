@@ -1,9 +1,14 @@
 import { formatError } from "~/lib/errors";
 import { getRequestSession } from "~/lib/auth/middleware.server";
 import type {
+  AssociateFloatingIpRequest,
   ClusterId,
   CreateNatGatewayRequest,
   CreateVpcRequest,
+  DisassociateFloatingIpRequest,
+  FloatingIpAssociation,
+  FloatingIpEligibleVpc,
+  FloatingIpSummary,
   NatGatewayInfo,
   UpdateVpcRequest,
   VmSummary,
@@ -29,10 +34,7 @@ import {
   MANAGED_BY_LABEL,
   KMC_MANAGED_BY,
 } from "~/lib/k8s/constants";
-import {
-  assertVmNamespaceAllowed,
-  getImagePreference,
-} from "~/lib/k8s/catalog.server";
+import { assertVmNamespaceAllowed, getImagePreference } from "~/lib/k8s/catalog.server";
 import { getClusterClients, getConfiguredContexts } from "~/lib/k8s/clients.server";
 import { ensureStaticMultusNads } from "~/lib/k8s/static-nads.server";
 import { toResourceYaml } from "~/lib/k8s/yaml.server";
@@ -67,6 +69,17 @@ import {
 } from "~/vms/template.server";
 import { listClusters } from "~/vms/vms.server";
 import { buildNetworkAttachmentDefinition } from "./template.server";
+import {
+  agentInfoFromAnnotations,
+  associateFloatingIp as associateFloatingIpCore,
+  disassociateFloatingIp as disassociateFloatingIpCore,
+  ensureNatGatewayControlPlane,
+  floatingIpsFromPolicy,
+  getNatPolicyConfigMap,
+  listFloatingIpsForVm as listFloatingIpsForVmCore,
+  listFloatingIpsFromPolicies,
+  natPolicyConfigMapName,
+} from "./nat-policy.server";
 
 type KubeNad = {
   metadata?: {
@@ -188,8 +201,7 @@ function isVpcNad(nad: KubeNad): boolean {
   const labels = nad.metadata?.labels ?? {};
   return (
     labels[KMC_LABEL_RESOURCE] === KMC_RESOURCE_VPC ||
-    (labels[MANAGED_BY_LABEL] === KMC_MANAGED_BY &&
-      labels[KMC_LABEL_VLAN] != null)
+    (labels[MANAGED_BY_LABEL] === KMC_MANAGED_BY && labels[KMC_LABEL_VLAN] != null)
   );
 }
 
@@ -562,6 +574,7 @@ async function enrichNatGateway(
 ): Promise<NatGatewayInfo | undefined> {
   if (!base) return undefined;
   const { custom } = getClusterClients(cluster);
+  let enriched: NatGatewayInfo = { ...base };
   try {
     const vm = (await custom.getNamespacedCustomObject({
       group: "kubevirt.io",
@@ -571,8 +584,7 @@ async function enrichNatGateway(
       name: base.name,
     })) as KubeVm;
     const ann = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
-    const privateIpv4 =
-      allocatedIpv4ForVpc(ann, vpcCidr) ?? base.privateIpv4;
+    const privateIpv4 = allocatedIpv4ForVpc(ann, vpcCidr) ?? base.privateIpv4;
     const publicIpv4 = publicIpv4FromAnnotation(ann, vpcCidr);
     const networks = vm.spec?.template?.spec?.networks ?? [];
     let publicNetwork: string | undefined;
@@ -583,15 +595,37 @@ async function enrichNatGateway(
       publicNetwork = ref;
       break;
     }
-    return {
+    enriched = {
       ...base,
       privateIpv4,
       publicIpv4,
       publicNetwork,
     };
   } catch {
-    return base;
+    /* keep base */
   }
+
+  try {
+    const policy = await getNatPolicyConfigMap(cluster, namespace, vpcName);
+    if (policy) {
+      enriched = {
+        ...enriched,
+        policyConfigMap: policy.name,
+        floatingIps: floatingIpsFromPolicy(policy.doc),
+        ...agentInfoFromAnnotations(policy.annotations),
+      };
+    } else {
+      enriched = {
+        ...enriched,
+        policyConfigMap: natPolicyConfigMapName(vpcName),
+        agentStatus: "Unknown",
+      };
+    }
+  } catch {
+    /* optional */
+  }
+
+  return enriched;
 }
 
 export async function getVpcYaml(
@@ -679,20 +713,15 @@ export async function updateVpc(input: UpdateVpcRequest): Promise<VpcSummary> {
   }
 
   if (!isVpcNad(existing)) {
-    throw new Error(
-      `${input.namespace}/${input.name} is not a kmc-managed VPC`,
-    );
+    throw new Error(`${input.namespace}/${input.name} is not a kmc-managed VPC`);
   }
 
-  const annotations = applyVpcMutableAnnotations(
-    existing.metadata?.annotations ?? {},
-    {
-      description: input.description,
-      cidr: input.cidr,
-      gateway: input.gateway,
-      dns: input.dns,
-    },
-  );
+  const annotations = applyVpcMutableAnnotations(existing.metadata?.annotations ?? {}, {
+    description: input.description,
+    cidr: input.cidr,
+    gateway: input.gateway,
+    dns: input.dns,
+  });
 
   const body = {
     ...existing,
@@ -731,8 +760,7 @@ export async function deleteVpc(
       .slice(0, 5)
       .map((vm) => `${vm.namespace}/${vm.name}`)
       .join(", ");
-    const more =
-      attached.length > 5 ? ` (+${attached.length - 5} more)` : "";
+    const more = attached.length > 5 ? ` (+${attached.length - 5} more)` : "";
     throw new Error(
       `Cannot delete VPC: ${attached.length} VM(s) still attached (${sample}${more})`,
     );
@@ -754,10 +782,11 @@ export async function deleteVpc(
 }
 
 /**
- * Launch a dual-homed Ubuntu NAT gateway for a VPC:
+ * Launch a triple-homed Ubuntu NAT gateway for a VPC:
  * - net0: VPC Multus, pinned to the VPC gateway IP (no default route)
  * - net1: public Multus from cluster ipPools (default route + MASQUERADE)
- * Stamps the VPC gateway annotation when missing and records the gateway VM.
+ * - pod: KubeVirt pod network for the in-guest agent (ConfigMap watch)
+ * Creates policy ConfigMap + SA/RBAC and stamps the VPC gateway annotation.
  */
 export async function createNatGateway(
   input: CreateNatGatewayRequest,
@@ -790,9 +819,7 @@ export async function createNatGateway(
 
   const vpc = await getVpc(input.cluster, input.namespace, input.vpcName);
   if (!vpc.cidr?.trim()) {
-    throw new Error(
-      "NAT gateway requires private IPAM on the VPC (set a CIDR first)",
-    );
+    throw new Error("NAT gateway requires private IPAM on the VPC (set a CIDR first)");
   }
   if (vpc.natGateway) {
     throw new Error(
@@ -816,8 +843,7 @@ export async function createNatGateway(
     );
   }
 
-  const privateGateway =
-    vpc.gateway?.trim() || defaultGatewayAddress(vpc.cidr);
+  const privateGateway = vpc.gateway?.trim() || defaultGatewayAddress(vpc.cidr);
 
   // Validate gateway is inside the VPC CIDR
   validateVpcIpamFields({
@@ -851,20 +877,28 @@ export async function createNatGateway(
     { extraUsed: [privateAlloc.address] },
   );
   if (!publicAlloc) {
-    throw new Error(
-      `Could not allocate public IP on Multus network "${publicNet}"`,
-    );
+    throw new Error(`Could not allocate public IP on Multus network "${publicNet}"`);
   }
 
-  const allocations = bindAllocationsToNetworks(multusNames, [
-    privateAlloc,
-    publicAlloc,
-  ]);
+  const allocations = bindAllocationsToNetworks(multusNames, [privateAlloc, publicAlloc]);
   const privateBound = allocations[0];
   const publicBound = allocations[1];
   if (!privateBound?.macAddress || !publicBound?.macAddress) {
     throw new Error("NAT gateway requires MACs on both interfaces");
   }
+
+  const vmName = input.name.trim();
+
+  // Policy ConfigMap + agent SA/token (requires cluster network CIDRs)
+  const controlPlane = await ensureNatGatewayControlPlane({
+    cluster: input.cluster,
+    namespace: input.namespace,
+    vpcName: input.vpcName,
+    vmName,
+    publicPrimaryCidr: publicBound.cidrHost,
+    publicGateway: publicPool.gateway,
+    privateCidr: privateBound.cidrHost,
+  });
 
   const preference = await getImagePreference(
     input.cluster,
@@ -875,7 +909,7 @@ export async function createNatGateway(
   const createVmInput = {
     cluster: input.cluster,
     namespace: input.namespace,
-    name: input.name.trim(),
+    name: vmName,
     instanceType: input.instanceType,
     cpuCores: input.cpuCores,
     memory: input.memory,
@@ -892,9 +926,16 @@ export async function createNatGateway(
     sshPublicKey: input.sshPublicKey,
     privateMac: privateBound.macAddress,
     publicMac: publicBound.macAddress,
+    podCIDRs: controlPlane.podCIDRs,
+    serviceCIDRs: controlPlane.serviceCIDRs,
+    dnsIP: controlPlane.network.dnsIP,
+    namespace: input.namespace,
+    policyConfigMap: controlPlane.policyConfigMap,
+    apiServer: controlPlane.apiServer,
+    caData: controlPlane.caData,
+    agentToken: controlPlane.token,
   });
 
-  const vmName = input.name.trim();
   const secretName = cloudInitUserDataSecretName(vmName);
   const roleLabels = {
     [KMC_LABEL_ROLE]: KMC_ROLE_NAT_GATEWAY,
@@ -905,6 +946,7 @@ export async function createNatGateway(
     labels: roleLabels,
     // Inline userData exceeds KubeVirt's 2048-byte admission limit for NAT scripts.
     userDataSecretName: secretName,
+    includePodNetwork: true,
   });
 
   const { custom, core } = getClusterClients(input.cluster);
@@ -981,6 +1023,39 @@ export async function createNatGateway(
           formatError(ownerErr),
         );
       }
+
+      // Best-effort: own policy ConfigMap by the NAT GW VM
+      try {
+        const cm = await core.readNamespacedConfigMap({
+          name: controlPlane.policyConfigMap,
+          namespace: input.namespace,
+        });
+        await core.replaceNamespacedConfigMap({
+          name: controlPlane.policyConfigMap,
+          namespace: input.namespace,
+          body: {
+            ...cm,
+            metadata: {
+              ...cm.metadata,
+              ownerReferences: [
+                {
+                  apiVersion: "kubevirt.io/v1",
+                  kind: "VirtualMachine",
+                  name: vmName,
+                  uid,
+                  controller: false,
+                  blockOwnerDeletion: true,
+                },
+              ],
+            },
+          },
+        });
+      } catch (cmOwnerErr) {
+        console.error(
+          "Failed to set ownerReference on NAT policy ConfigMap:",
+          formatError(cmOwnerErr),
+        );
+      }
     }
 
     // Stamp VPC gateway + nat-gateway pointer (best-effort after VM exists)
@@ -1041,15 +1116,12 @@ async function patchVpcNatGatewayMetadata(
     name,
   })) as KubeNad;
 
-  const annotations = applyVpcMutableAnnotations(
-    existing.metadata?.annotations ?? {},
-    {
-      description: opts.description,
-      cidr: opts.cidr,
-      gateway: opts.gateway,
-      dns: opts.dns,
-    },
-  );
+  const annotations = applyVpcMutableAnnotations(existing.metadata?.annotations ?? {}, {
+    description: opts.description,
+    cidr: opts.cidr,
+    gateway: opts.gateway,
+    dns: opts.dns,
+  });
   annotations[KMC_ANN_NAT_GATEWAY] = opts.natGatewayVm;
 
   const body = {
@@ -1072,3 +1144,160 @@ async function patchVpcNatGatewayMetadata(
 
 export { listVlanPools, clusterHasVlanPools };
 export type { IpPoolUsage };
+
+export { getNatPolicyConfigMap, natPolicyConfigMapName } from "./nat-policy.server";
+
+/**
+ * Associate a floating public IP on this VPC's NAT gateway (updates policy CM).
+ * The in-guest agent applies DNAT/SNAT within its poll interval.
+ */
+export async function associateFloatingIp(
+  input: AssociateFloatingIpRequest,
+): Promise<FloatingIpAssociation> {
+  const vpc = await getVpc(input.cluster, input.namespace, input.vpcName);
+  if (!vpc.cidr?.trim()) {
+    throw new Error("VPC has no private CIDR");
+  }
+  if (!vpc.natGateway) {
+    throw new Error("VPC has no NAT gateway — create one first");
+  }
+  const publicNet = vpc.natGateway.publicNetwork?.trim();
+  if (!publicNet) {
+    throw new Error(
+      "NAT gateway has no public Multus network recorded — check the gateway VM",
+    );
+  }
+  return associateFloatingIpCore({
+    ...input,
+    vpcCidr: vpc.cidr,
+    publicMultusNetwork: publicNet,
+    natGatewayVm: vpc.natGateway.name,
+  });
+}
+
+export async function disassociateFloatingIp(
+  input: DisassociateFloatingIpRequest,
+): Promise<void> {
+  const vpc = await getVpc(input.cluster, input.namespace, input.vpcName);
+  if (!vpc.natGateway) {
+    throw new Error("VPC has no NAT gateway");
+  }
+  return disassociateFloatingIpCore({
+    ...input,
+    natGatewayVm: vpc.natGateway.name,
+  });
+}
+
+/** Cross-cluster floating IP inventory for the top-level list. */
+export async function listFloatingIps(clusterFilter?: ClusterId): Promise<{
+  items: FloatingIpSummary[];
+  clusters: Awaited<ReturnType<typeof listClusters>>;
+}> {
+  const contexts = clusterFilter ? [clusterFilter] : getConfiguredContexts();
+  const clusters = await listClusters();
+  const byId = new Map(clusters.map((c) => [c.id, c]));
+  const items: FloatingIpSummary[] = [];
+
+  await Promise.all(
+    contexts.map(async (id) => {
+      const cluster = byId.get(id);
+      if (cluster && !cluster.reachable) return;
+      try {
+        const rows = await listFloatingIpsFromPolicies(id);
+        const gwCache = new Map<string, string | undefined>();
+        const { custom } = getClusterClients(id);
+        for (const row of rows) {
+          const key = `${row.namespace}/${row.vpcName}`;
+          if (!gwCache.has(key)) {
+            try {
+              const nad = (await custom.getNamespacedCustomObject({
+                group: "k8s.cni.cncf.io",
+                version: "v1",
+                namespace: row.namespace,
+                plural: "network-attachment-definitions",
+                name: row.vpcName,
+              })) as KubeNad;
+              gwCache.set(key, nad.metadata?.annotations?.[KMC_ANN_NAT_GATEWAY]?.trim());
+            } catch {
+              gwCache.set(key, undefined);
+            }
+          }
+          row.natGatewayVm = gwCache.get(key);
+          items.push(row);
+        }
+      } catch (err) {
+        if (cluster) {
+          cluster.reachable = false;
+          cluster.error = formatError(err);
+        }
+      }
+    }),
+  );
+
+  items.sort((a, b) => {
+    const c = a.cluster.localeCompare(b.cluster);
+    if (c) return c;
+    const n = a.namespace.localeCompare(b.namespace);
+    if (n) return n;
+    return a.public.localeCompare(b.public);
+  });
+
+  return { items, clusters };
+}
+
+/**
+ * VPCs that have a NAT gateway / policy CM and can accept floating associations.
+ */
+export async function listFloatingIpEligibleVpcs(
+  clusterFilter?: ClusterId,
+): Promise<FloatingIpEligibleVpc[]> {
+  const { items: vpcs } = await listVpcs(clusterFilter);
+  const out: FloatingIpEligibleVpc[] = [];
+
+  await Promise.all(
+    vpcs.map(async (vpc) => {
+      if (!vpc.cidr?.trim()) return;
+      try {
+        const detail = await getVpc(vpc.cluster, vpc.namespace, vpc.name);
+        if (!detail.natGateway) return;
+        out.push({
+          cluster: vpc.cluster,
+          namespace: vpc.namespace,
+          name: vpc.name,
+          cidr: vpc.cidr,
+          natGatewayName: detail.natGateway.name,
+          publicNetwork: detail.natGateway.publicNetwork,
+          agentStatus: detail.natGateway.agentStatus,
+          floatingCount: detail.natGateway.floatingIps?.length ?? 0,
+          targetVms: detail.attachedVms
+            .filter((vm) => !vm.isNatGateway)
+            .map((vm) => ({
+              name: vm.name,
+              allocatedIpv4: vm.allocatedIpv4,
+            })),
+        });
+      } catch {
+        /* skip unreachable VPC */
+      }
+    }),
+  );
+
+  out.sort((a, b) => {
+    const c = a.cluster.localeCompare(b.cluster);
+    if (c) return c;
+    const n = a.namespace.localeCompare(b.namespace);
+    if (n) return n;
+    return a.name.localeCompare(b.name);
+  });
+  return out;
+}
+
+/** Floating IPs targeting a VM (by name or private IPAM addresses). */
+export async function listFloatingIpsForVm(
+  cluster: ClusterId,
+  namespace: string,
+  vmName: string,
+  privateAddresses: string[] = [],
+): Promise<FloatingIpSummary[]> {
+  return listFloatingIpsForVmCore(cluster, namespace, vmName, privateAddresses);
+}

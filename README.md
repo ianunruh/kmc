@@ -48,9 +48,9 @@ Default **auth mode is `kubeconfig`**: no login, API calls use your local kubeco
 
 ## Auth modes
 
-| Mode                     | `KMC_AUTH_MODE`       | Behavior                                                                                                                       |
-| ------------------------ | --------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| **kubeconfig** (default) | `kubeconfig` or unset | Uses local kubeconfig. Optional GitHub login only for `/me` identity preview.                                                  |
+| Mode                     | `KMC_AUTH_MODE`       | Behavior                                                                                                                                                                                                                        |
+| ------------------------ | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **kubeconfig** (default) | `kubeconfig` or unset | Uses local kubeconfig. Optional GitHub login only for `/me` identity preview.                                                                                                                                                   |
 | **impersonate**          | `impersonate`         | Requires GitHub login. When `KMC_GITHUB_ORGS` is set, login is denied unless the user is a member of one of those orgs. Calls each cluster with a platform ServiceAccount and `Impersonate-User` / `Impersonate-Group` headers. |
 
 ### Identity mapping (impersonate)
@@ -146,20 +146,20 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 
 ## Config
 
-| Env                        | Default                 | Description                                                        |
-| -------------------------- | ----------------------- | ------------------------------------------------------------------ |
-| `KMC_AUTH_MODE`            | `kubeconfig`            | `kubeconfig` \| `impersonate`                                      |
-| `KMC_CLUSTERS_CONFIG`      | `config/clusters.yaml`  | Cluster identity registry                                          |
-| `KMC_SETTINGS_CLUSTER`     | first cluster in YAML   | Cluster for app-level prefs (SSH keys ConfigMaps in `kmc-system`)  |
-| `KMC_CONTEXTS`             | `prod-sjc1,homelab`     | Fallback cluster list when YAML missing (kubeconfig mode)          |
-| `KMC_IMAGE_NAMESPACE`      | `vm-images`             | Namespace scanned for golden image PVCs                            |
-| `KMC_SESSION_SECRET`       | —                       | ≥32 chars; HMAC key for signed session cookies (survives restarts) |
-| `KMC_GITHUB_CLIENT_ID`     | —                       | GitHub OAuth App client id                                         |
-| `KMC_GITHUB_CLIENT_SECRET` | —                       | GitHub OAuth App client secret                                     |
+| Env                        | Default                 | Description                                                                   |
+| -------------------------- | ----------------------- | ----------------------------------------------------------------------------- |
+| `KMC_AUTH_MODE`            | `kubeconfig`            | `kubeconfig` \| `impersonate`                                                 |
+| `KMC_CLUSTERS_CONFIG`      | `config/clusters.yaml`  | Cluster identity registry                                                     |
+| `KMC_SETTINGS_CLUSTER`     | first cluster in YAML   | Cluster for app-level prefs (SSH keys ConfigMaps in `kmc-system`)             |
+| `KMC_CONTEXTS`             | `prod-sjc1,homelab`     | Fallback cluster list when YAML missing (kubeconfig mode)                     |
+| `KMC_IMAGE_NAMESPACE`      | `vm-images`             | Namespace scanned for golden image PVCs                                       |
+| `KMC_SESSION_SECRET`       | —                       | ≥32 chars; HMAC key for signed session cookies (survives restarts)            |
+| `KMC_GITHUB_CLIENT_ID`     | —                       | GitHub OAuth App client id                                                    |
+| `KMC_GITHUB_CLIENT_SECRET` | —                       | GitHub OAuth App client secret                                                |
 | `KMC_GITHUB_ORGS`          | —                       | Comma-separated GitHub orgs allowed to sign in; their teams become k8s groups |
-| `KMC_PUBLIC_URL`           | `http://localhost:5173` | Public origin (OAuth redirect)                                     |
-| `KMC_USERNAME_PREFIX`      | `oidc:`                 | Match apiserver username prefix                                    |
-| `KMC_GROUPS_PREFIX`        | `oidc:`                 | Match apiserver groups prefix                                      |
+| `KMC_PUBLIC_URL`           | `http://localhost:5173` | Public origin (OAuth redirect)                                                |
+| `KMC_USERNAME_PREFIX`      | `oidc:`                 | Match apiserver username prefix                                               |
+| `KMC_GROUPS_PREFIX`        | `oidc:`                 | Match apiserver groups prefix                                                 |
 
 ## Features (MVP)
 
@@ -215,6 +215,40 @@ When a cluster has `vlanPools` in `clusters.yaml` (and hypervisors expose those 
 - Pure L2 by default (VM-to-VM on the VLAN); gateway is only for guest default routes if you provide one
 
 Static Multus networks and `ipPools` entries continue to work unchanged.
+
+### NAT gateway + floating IPs
+
+With private IPAM enabled, a VPC can run a **NAT gateway** VM:
+
+| NIC              | Role                                                     |
+| ---------------- | -------------------------------------------------------- |
+| Multus private   | VPC gateway address; no default route                    |
+| Multus public    | Default route + SNAT (`MASQUERADE`); holds floating IPs  |
+| Pod (masquerade) | Reach apiserver; in-guest agent watches policy ConfigMap |
+
+**Cluster config** (required for new NAT gateways):
+
+```yaml
+network:
+  podCIDR: 10.19.0.0/16
+  serviceCIDR: 10.20.0.0/16
+  # dnsIP: 10.20.0.10   # optional
+```
+
+On create, kmc also provisions:
+
+- ConfigMap `kmc-nat-<vpc>` (`policy.json` — desired floating IP maps)
+- ServiceAccount + Role/RoleBinding (get/watch/patch that ConfigMap)
+- Long-lived SA token embedded in cloud-init for the agent
+
+The agent applies 1:1 DNAT/SNAT and secondary addresses on the public NIC.
+
+**UI**
+
+- **Floating IPs** nav — list/filter all associations; disassociate
+- **Associate floating IP** (`/floating-ips/create`) — pick VPC + target VM (or private IP); optional fixed public address
+- **VPC detail** — floating IP table, associate / disassociate
+- **VM detail** — floating IPs targeting this guest, associate (prefilled VPC) / disassociate
 
 ### User SSH keys
 

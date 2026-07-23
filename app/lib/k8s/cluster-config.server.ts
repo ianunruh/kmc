@@ -69,6 +69,19 @@ export type VlanPoolConfig = {
   exclude?: number[];
 };
 
+/**
+ * Cluster underlay CIDRs used by NAT gateway guests (pod NIC routing).
+ * Required to launch NAT gateways with a pod network + in-guest agent.
+ */
+export type ClusterNetworkConfig = {
+  /** Pod network CIDR(s), e.g. 10.19.0.0/16 — routes via the guest pod NIC */
+  podCIDR: string | string[];
+  /** Service ClusterIP CIDR(s), e.g. 10.20.0.0/16 */
+  serviceCIDR: string | string[];
+  /** Optional CoreDNS / cluster DNS ClusterIP for the guest resolver */
+  dnsIP?: string;
+};
+
 export type ClusterIdentity = {
   id: ClusterId;
   displayName: string;
@@ -80,6 +93,8 @@ export type ClusterIdentity = {
   tokenEnv?: string;
   /** Base URL for Prometheus HTTP API (e.g. https://prometheus.example.com). */
   prometheusUrl?: string;
+  /** Optional underlay CIDRs for NAT gateway pod NIC + agent. */
+  network?: ClusterNetworkConfig;
   /** Optional IPv4 pools for Multus bridge networks. */
   ipPools?: IpPoolConfig[];
   /** Optional VLAN pools for self-service VPCs. */
@@ -103,6 +118,11 @@ type ClustersFile = {
     tokenFile?: string;
     tokenEnv?: string;
     prometheusUrl?: string;
+    network?: {
+      podCIDR?: string | string[];
+      serviceCIDR?: string | string[];
+      dnsIP?: string;
+    };
     ipPools?: Array<{
       id?: string;
       multusNetwork?: string;
@@ -166,12 +186,79 @@ function loadFromYaml(path: string): {
       tokenFile: raw.tokenFile,
       tokenEnv: raw.tokenEnv,
       prometheusUrl: raw.prometheusUrl?.trim() || undefined,
+      network: parseClusterNetwork(raw.network, raw.id),
       ipPools: parseIpPools(raw.ipPools, raw.id),
       vlanPools: parseVlanPools(raw.vlanPools, raw.id),
     });
   }
   const settingsCluster = doc.settingsCluster?.trim() || undefined;
   return { identities: map, settingsCluster };
+}
+
+function parseCidrList(
+  raw: string | string[] | undefined,
+  field: string,
+  clusterId: string,
+): string[] {
+  const list = Array.isArray(raw) ? raw : raw != null ? [raw] : [];
+  const out = list.map((c) => String(c).trim()).filter(Boolean);
+  if (out.length === 0) {
+    throw new Error(
+      `Cluster "${clusterId}": network.${field} is required when network is set`,
+    );
+  }
+  for (const cidr of out) {
+    // Basic shape check; full parse lives in ipam/cidr when used
+    if (!/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/.test(cidr)) {
+      throw new Error(
+        `Cluster "${clusterId}": network.${field} entry "${cidr}" is not a valid IPv4 CIDR`,
+      );
+    }
+  }
+  return out;
+}
+
+function parseClusterNetwork(
+  raw:
+    | {
+        podCIDR?: string | string[];
+        serviceCIDR?: string | string[];
+        dnsIP?: string;
+      }
+    | undefined,
+  clusterId: string,
+): ClusterNetworkConfig | undefined {
+  if (raw == null) return undefined;
+  const podList = parseCidrList(raw.podCIDR, "podCIDR", clusterId);
+  const svcList = parseCidrList(raw.serviceCIDR, "serviceCIDR", clusterId);
+  const dnsIP = raw.dnsIP?.trim() || undefined;
+  if (dnsIP && !/^\d{1,3}(\.\d{1,3}){3}$/.test(dnsIP)) {
+    throw new Error(
+      `Cluster "${clusterId}": network.dnsIP "${dnsIP}" is not a valid IPv4 address`,
+    );
+  }
+  return {
+    podCIDR: podList.length === 1 ? podList[0]! : podList,
+    serviceCIDR: svcList.length === 1 ? svcList[0]! : svcList,
+    dnsIP,
+  };
+}
+
+/** Underlay CIDRs for a cluster, if configured. */
+export function getClusterNetwork(id: ClusterId): ClusterNetworkConfig | null {
+  return getClusterIdentity(id)?.network ?? null;
+}
+
+/** Flatten pod + service CIDRs for guest route installation. */
+export function clusterNetworkCidrList(network: ClusterNetworkConfig): {
+  podCIDRs: string[];
+  serviceCIDRs: string[];
+} {
+  const podCIDRs = Array.isArray(network.podCIDR) ? network.podCIDR : [network.podCIDR];
+  const serviceCIDRs = Array.isArray(network.serviceCIDR)
+    ? network.serviceCIDR
+    : [network.serviceCIDR];
+  return { podCIDRs, serviceCIDRs };
 }
 
 function parseIpPoolCni(

@@ -92,9 +92,7 @@ export function canOpenConsole(vm: Pick<VmSummary, "status">): boolean {
  * cannot apply live surface as RestartRequired on the VM.
  */
 export function canEditVmSpec(vm: Pick<VmSummary, "status">): boolean {
-  return ["Stopped", "Error", "Running", "Paused", "Migrating"].includes(
-    vm.status,
-  );
+  return ["Stopped", "Error", "Running", "Paused", "Migrating"].includes(vm.status);
 }
 
 /** True when the guest is not running — useful for messaging vs LiveUpdate. */
@@ -277,6 +275,28 @@ export function vpcsListPath(
   } = {},
 ): string {
   return withSearch("/vpcs", filters);
+}
+
+export function floatingIpsListPath(
+  filters: {
+    q?: string | null;
+    cluster?: string | null;
+    namespace?: string | null;
+    vpc?: string | null;
+  } = {},
+): string {
+  return withSearch("/floating-ips", filters);
+}
+
+export function floatingIpCreatePath(
+  prefill: {
+    cluster?: string | null;
+    namespace?: string | null;
+    vpc?: string | null;
+    targetVm?: string | null;
+  } = {},
+): string {
+  return withSearch("/floating-ips/create", prefill);
 }
 
 export function namespacePath(

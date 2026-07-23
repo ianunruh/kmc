@@ -10,11 +10,19 @@ import {
   Text,
   Title,
 } from "@mantine/core";
-import { IconArrowLeft, IconPencil, IconRouter, IconTrash } from "@tabler/icons-react";
+import {
+  IconArrowLeft,
+  IconPencil,
+  IconPlus,
+  IconRouter,
+  IconTrash,
+  IconWorldWww,
+} from "@tabler/icons-react";
 import { useState } from "react";
 import { Link, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/vpcs.$cluster.$namespace.$name";
 import {
+  ConfirmActionModal,
   ConfirmDeleteModal,
   DetailField,
   DetailSection,
@@ -27,6 +35,8 @@ import {
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
 import {
+  floatingIpCreatePath,
+  floatingIpsListPath,
   formatAge,
   formatDateTime,
   vmPath,
@@ -34,10 +44,13 @@ import {
   vpcNatGatewayPath,
   vpcsListPath,
 } from "~/lib/format";
+import { useRefresh } from "~/lib/refresh";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
+import type { FloatingIpAssociation } from "~/lib/types";
 import {
   defaultGatewayAddress,
   deleteVpc,
+  disassociateFloatingIp,
   getVpc,
   getVpcYaml,
   listPublicEgressNetworks,
@@ -61,8 +74,7 @@ export async function loader({ params }: Route.LoaderArgs) {
     excludeMultus: name,
   });
   const suggestedGateway =
-    vpc.gateway?.trim() ||
-    (vpc.cidr ? defaultGatewayAddress(vpc.cidr) : undefined);
+    vpc.gateway?.trim() || (vpc.cidr ? defaultGatewayAddress(vpc.cidr) : undefined);
 
   return {
     vpc,
@@ -79,33 +91,74 @@ export async function action({ request, params }: Route.ActionArgs) {
   }
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
-  if (intent !== "delete") {
-    return { ok: false, error: `Unknown intent: ${intent}`, intent };
+  if (intent === "delete") {
+    try {
+      await deleteVpc(cluster, namespace, name);
+      return redirect("/vpcs");
+    } catch (err) {
+      return actionFailure("vpc.delete", err, {
+        intent,
+        cluster,
+        namespace,
+        name,
+      });
+    }
   }
-  try {
-    await deleteVpc(cluster, namespace, name);
-    return redirect("/vpcs");
-  } catch (err) {
-    return actionFailure("vpc.delete", err, {
-      intent,
-      cluster,
-      namespace,
-      name,
-    });
+  if (intent === "disassociate") {
+    const idOrPublic = String(form.get("idOrPublic") ?? "").trim();
+    if (!idOrPublic) {
+      return { ok: false, error: "Missing floating IP id", intent };
+    }
+    try {
+      await disassociateFloatingIp({
+        cluster,
+        namespace,
+        vpcName: name,
+        idOrPublic,
+      });
+      return { ok: true, intent };
+    } catch (err) {
+      return actionFailure("floatingIp.disassociate", err, {
+        intent,
+        cluster,
+        namespace,
+        name,
+        idOrPublic,
+      });
+    }
   }
+  return { ok: false, error: `Unknown intent: ${intent}`, intent };
 }
 
 export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
   const { vpc, yaml, publicNetworkCount, suggestedGateway } = loaderData;
-  const fetcher = useFetcher<{ ok?: boolean; error?: string }>();
+  const fetcher = useFetcher<{
+    ok?: boolean;
+    error?: string;
+    intent?: string;
+  }>();
+  const { refreshNow } = useRefresh();
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [disassociateTarget, setDisassociateTarget] =
+    useState<FloatingIpAssociation | null>(null);
   const busy = fetcher.state !== "idle";
   const hasAttachments = vpc.attachedCount > 0;
   useFetcherResult(fetcher, (data) => {
     if (data.error) {
-      notifyActionError("Delete failed", data.error);
+      notifyActionError(
+        data.intent === "disassociate" ? "Disassociate failed" : "Delete failed",
+        data.error,
+      );
     } else if (data.ok) {
-      notifyActionSuccess("Done", "VPC deleted");
+      if (data.intent === "disassociate") {
+        notifyActionSuccess(
+          "Done",
+          "Floating IP disassociated — agent will drop DNAT shortly",
+        );
+        refreshNow();
+      } else {
+        notifyActionSuccess("Done", "VPC deleted");
+      }
     }
   });
 
@@ -177,8 +230,8 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
 
       {hasAttachments && (
         <Alert color="yellow" variant="light" title="VMs attached">
-          Delete is blocked while {vpc.attachedCount} VM(s) still use this Multus
-          network. Stop and delete or re-attach those VMs first.
+          Delete is blocked while {vpc.attachedCount} VM(s) still use this Multus network.
+          Stop and delete or re-attach those VMs first.
         </Alert>
       )}
 
@@ -250,11 +303,7 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
               <DetailField
                 label="DNS"
                 value={
-                  vpc.dns && vpc.dns.length > 0 ? (
-                    <Code>{vpc.dns.join(", ")}</Code>
-                  ) : (
-                    "—"
-                  )
+                  vpc.dns && vpc.dns.length > 0 ? <Code>{vpc.dns.join(", ")}</Code> : "—"
                 }
               />
               {vpc.ipPool && (
@@ -268,9 +317,8 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
             </SimpleGrid>
           ) : (
             <Text size="sm" c="dimmed">
-              Pure L2 — no private CIDR. Guests are not auto-configured by kmc.
-              Enable IPAM when creating a VPC, or configure guest networking
-              manually.
+              Pure L2 — no private CIDR. Guests are not auto-configured by kmc. Enable
+              IPAM when creating a VPC, or configure guest networking manually.
             </Text>
           )}
         </DetailSection>
@@ -278,63 +326,200 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
 
       <DetailSection title="NAT gateway">
         {vpc.natGateway ? (
-          <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
-            <DetailField
-              label="VM"
-              value={
-                <ResourceLink to={vmPath(vpc.natGateway)}>
-                  {vpc.natGateway.name}
-                </ResourceLink>
-              }
-            />
-            <DetailField
-              label="Private IP"
-              value={
-                vpc.natGateway.privateIpv4 ? (
-                  <Code>{vpc.natGateway.privateIpv4}</Code>
-                ) : (
-                  "—"
-                )
-              }
-            />
-            <DetailField
-              label="Public IP"
-              value={
-                vpc.natGateway.publicIpv4 ? (
-                  <Code>{vpc.natGateway.publicIpv4}</Code>
-                ) : (
-                  "—"
-                )
-              }
-            />
-            <DetailField
-              label="Egress network"
-              value={
-                vpc.natGateway.publicNetwork ? (
-                  <Code>{vpc.natGateway.publicNetwork}</Code>
-                ) : (
-                  "—"
-                )
-              }
-            />
-          </SimpleGrid>
+          <Stack gap="md">
+            <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+              <DetailField
+                label="VM"
+                value={
+                  <ResourceLink to={vmPath(vpc.natGateway)}>
+                    {vpc.natGateway.name}
+                  </ResourceLink>
+                }
+              />
+              <DetailField
+                label="Private IP"
+                value={
+                  vpc.natGateway.privateIpv4 ? (
+                    <Code>{vpc.natGateway.privateIpv4}</Code>
+                  ) : (
+                    "—"
+                  )
+                }
+              />
+              <DetailField
+                label="Public IP"
+                value={
+                  vpc.natGateway.publicIpv4 ? (
+                    <Code>{vpc.natGateway.publicIpv4}</Code>
+                  ) : (
+                    "—"
+                  )
+                }
+              />
+              <DetailField
+                label="Egress network"
+                value={
+                  vpc.natGateway.publicNetwork ? (
+                    <Code>{vpc.natGateway.publicNetwork}</Code>
+                  ) : (
+                    "—"
+                  )
+                }
+              />
+              <DetailField
+                label="Policy ConfigMap"
+                value={
+                  vpc.natGateway.policyConfigMap ? (
+                    <Code>{vpc.natGateway.policyConfigMap}</Code>
+                  ) : (
+                    "—"
+                  )
+                }
+              />
+              <DetailField
+                label="Agent"
+                value={
+                  vpc.natGateway.agentStatus ? (
+                    <Group gap="xs">
+                      <Code>{vpc.natGateway.agentStatus}</Code>
+                      {vpc.natGateway.agentObservedGeneration ? (
+                        <Text size="xs" c="dimmed">
+                          gen {vpc.natGateway.agentObservedGeneration}
+                        </Text>
+                      ) : null}
+                    </Group>
+                  ) : (
+                    "—"
+                  )
+                }
+              />
+              {vpc.natGateway.agentLastError ? (
+                <DetailField
+                  label="Agent error"
+                  value={
+                    <Text size="sm" c="red">
+                      {vpc.natGateway.agentLastError}
+                    </Text>
+                  }
+                />
+              ) : null}
+              {vpc.natGateway.agentAppliedAt ? (
+                <DetailField
+                  label="Agent applied"
+                  value={
+                    <Text size="sm" c="dimmed">
+                      {vpc.natGateway.agentAppliedAt}
+                    </Text>
+                  }
+                />
+              ) : null}
+            </SimpleGrid>
+
+            <div>
+              <Group justify="space-between" mb="xs">
+                <Text size="sm" fw={600}>
+                  Floating IPs
+                </Text>
+                <Group gap="xs">
+                  <Button
+                    component={Link}
+                    to={floatingIpsListPath({
+                      cluster: vpc.cluster,
+                      namespace: vpc.namespace,
+                      vpc: vpc.name,
+                    })}
+                    size="xs"
+                    variant="subtle"
+                    leftSection={<IconWorldWww size={14} />}
+                  >
+                    All floating IPs
+                  </Button>
+                  <Button
+                    component={Link}
+                    to={floatingIpCreatePath({
+                      cluster: vpc.cluster,
+                      namespace: vpc.namespace,
+                      vpc: vpc.name,
+                    })}
+                    size="xs"
+                    variant="light"
+                    color="teal"
+                    leftSection={<IconPlus size={14} />}
+                  >
+                    Associate
+                  </Button>
+                </Group>
+              </Group>
+              {(vpc.natGateway.floatingIps?.length ?? 0) === 0 ? (
+                <Text size="sm" c="dimmed">
+                  None yet. Associate a public Multus address to a private VM; the
+                  in-guest agent applies DNAT/SNAT from the policy ConfigMap.
+                </Text>
+              ) : (
+                <ResourceTable
+                  isEmpty={false}
+                  headers={["Public", "Private", "Target VM", ""]}
+                >
+                  {vpc.natGateway.floatingIps!.map((f) => (
+                    <Table.Tr key={f.id}>
+                      <Table.Td>
+                        <Code>
+                          {f.public}/{f.prefix}
+                        </Code>
+                      </Table.Td>
+                      <Table.Td>
+                        <Code>{f.private}</Code>
+                      </Table.Td>
+                      <Table.Td>
+                        {f.targetVm ? (
+                          <ResourceLink
+                            to={vmPath({
+                              cluster: vpc.cluster,
+                              namespace: vpc.namespace,
+                              name: f.targetVm,
+                            })}
+                          >
+                            {f.targetVm}
+                          </ResourceLink>
+                        ) : (
+                          "—"
+                        )}
+                      </Table.Td>
+                      <Table.Td>
+                        <Button
+                          size="compact-xs"
+                          variant="subtle"
+                          color="red"
+                          disabled={busy}
+                          onClick={() => setDisassociateTarget(f)}
+                        >
+                          Disassociate
+                        </Button>
+                      </Table.Td>
+                    </Table.Tr>
+                  ))}
+                </ResourceTable>
+              )}
+            </div>
+          </Stack>
         ) : !vpc.cidr ? (
           <Text size="sm" c="dimmed">
-            Enable private IPAM (CIDR) on this VPC to add a NAT gateway for
-            egress.
+            Enable private IPAM (CIDR) on this VPC to add a NAT gateway for egress.
           </Text>
         ) : publicNetworkCount === 0 ? (
           <Text size="sm" c="dimmed">
-            No public Multus networks with <Code>ipPools</Code> are configured
-            on this cluster. Add an egress pool (e.g. <Code>external</Code>) in{" "}
+            No public Multus networks with <Code>ipPools</Code> are configured on this
+            cluster. Add an egress pool (e.g. <Code>external</Code>) in{" "}
             <Code>clusters.yaml</Code>.
           </Text>
         ) : (
           <Stack gap="xs">
             <Text size="sm" c="dimmed">
-              Dual-homed Ubuntu VM: private NIC owns the VPC gateway address (
+              Triple-homed Ubuntu VM: private NIC owns the VPC gateway (
               <Code>{suggestedGateway ?? "—"}</Code>
-              ), public NIC on a Multus pool does SNAT (ip_forward + MASQUERADE).
+              ), public Multus does SNAT/floating IPs, pod network runs the policy agent
+              (requires <Code>network.podCIDR</Code> / <Code>serviceCIDR</Code> in{" "}
+              <Code>clusters.yaml</Code>).
             </Text>
             <Group>
               <Button
@@ -358,10 +543,7 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
             No VMs reference this Multus network.
           </Text>
         ) : (
-          <ResourceTable
-            isEmpty={false}
-            headers={["Name", "Namespace", "IPv4", "Role"]}
-          >
+          <ResourceTable isEmpty={false} headers={["Name", "Namespace", "IPv4", "Role"]}>
             {vpc.attachedVms.map((vm) => (
               <Table.Tr key={`${vm.namespace}/${vm.name}`}>
                 <Table.Td>
@@ -413,6 +595,39 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
           fetcher.submit({ intent: "delete" }, { method: "post" });
           setDeleteOpen(false);
         }}
+      />
+
+      <ConfirmActionModal
+        opened={disassociateTarget != null}
+        onClose={() => setDisassociateTarget(null)}
+        title="Disassociate floating IP"
+        confirmLabel="Disassociate"
+        confirmColor="red"
+        loading={busy}
+        onConfirm={() => {
+          if (!disassociateTarget) return;
+          fetcher.submit(
+            {
+              intent: "disassociate",
+              idOrPublic: disassociateTarget.id,
+            },
+            { method: "post" },
+          );
+          setDisassociateTarget(null);
+        }}
+        message={
+          disassociateTarget ? (
+            <>
+              Remove mapping{" "}
+              <Code>
+                {disassociateTarget.public} → {disassociateTarget.private}
+              </Code>
+              ? The NAT agent will drop DNAT/SNAT on its next reconcile.
+            </>
+          ) : (
+            ""
+          )
+        }
       />
     </Stack>
   );
