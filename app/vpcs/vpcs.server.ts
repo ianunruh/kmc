@@ -72,6 +72,7 @@ import { buildNetworkAttachmentDefinition } from "./template.server";
 import {
   agentInfoFromAnnotations,
   associateFloatingIp as associateFloatingIpCore,
+  deleteNatGatewayControlPlane,
   disassociateFloatingIp as disassociateFloatingIpCore,
   ensureNatGatewayControlPlane,
   floatingIpsFromPolicy,
@@ -80,6 +81,7 @@ import {
   listFloatingIpsFromPolicies,
   natPolicyConfigMapName,
   syncAgentScriptInPolicyConfigMap,
+  syncNatGatewayFloatingAnnotation,
 } from "./nat-policy.server";
 
 type KubeNad = {
@@ -457,6 +459,17 @@ export async function getVpc(
     natGatewayBase,
   );
 
+  // Floating IPs live on the policy ConfigMap and outlive the NAT gateway VM.
+  let floatingIps = natGateway?.floatingIps ?? [];
+  if (!natGateway) {
+    try {
+      const policy = await getNatPolicyConfigMap(cluster, namespace, name);
+      floatingIps = floatingIpsFromPolicy(policy?.doc ?? null);
+    } catch {
+      floatingIps = [];
+    }
+  }
+
   return {
     ...summary,
     uid: nad.metadata?.uid,
@@ -478,6 +491,7 @@ export async function getVpc(
         }
       : undefined,
     natGateway,
+    floatingIps,
   };
 }
 
@@ -790,6 +804,10 @@ export async function deleteVpc(
     if (isNotFound(err)) return;
     throw new Error(formatError(err), { cause: err });
   }
+
+  // Policy CM is not owned by the NAT GW VM (floats survive GW delete/recreate).
+  // Tear it down with the VPC so floating IPs are released from IPAM.
+  await deleteNatGatewayControlPlane(cluster, namespace, name);
 }
 
 /**
@@ -1035,36 +1053,28 @@ export async function createNatGateway(
         );
       }
 
-      // Best-effort: own policy ConfigMap by the NAT GW VM
+      // Policy ConfigMap is intentionally not owned by the NAT GW VM so floating
+      // IP associations survive gateway delete/recreate. Re-stamp IPAM annotations
+      // from any preserved policy onto the new VM.
       try {
-        const cm = await core.readNamespacedConfigMap({
-          name: controlPlane.policyConfigMap,
-          namespace: input.namespace,
-        });
-        await core.replaceNamespacedConfigMap({
-          name: controlPlane.policyConfigMap,
-          namespace: input.namespace,
-          body: {
-            ...cm,
-            metadata: {
-              ...cm.metadata,
-              ownerReferences: [
-                {
-                  apiVersion: "kubevirt.io/v1",
-                  kind: "VirtualMachine",
-                  name: vmName,
-                  uid,
-                  controller: false,
-                  blockOwnerDeletion: true,
-                },
-              ],
-            },
-          },
-        });
-      } catch (cmOwnerErr) {
+        const policy = await getNatPolicyConfigMap(
+          input.cluster,
+          input.namespace,
+          input.vpcName,
+        );
+        const floats = floatingIpsFromPolicy(policy?.doc ?? null);
+        if (floats.length > 0) {
+          await syncNatGatewayFloatingAnnotation(
+            input.cluster,
+            input.namespace,
+            vmName,
+            floats,
+          );
+        }
+      } catch (floatAnnErr) {
         console.error(
-          "Failed to set ownerReference on NAT policy ConfigMap:",
-          formatError(cmOwnerErr),
+          "Failed to re-stamp floating IPs on new NAT gateway:",
+          formatError(floatAnnErr),
         );
       }
     }
@@ -1190,12 +1200,10 @@ export async function disassociateFloatingIp(
   input: DisassociateFloatingIpRequest,
 ): Promise<void> {
   const vpc = await getVpc(input.cluster, input.namespace, input.vpcName);
-  if (!vpc.natGateway) {
-    throw new Error("VPC has no NAT gateway");
-  }
+  // Policy CM holds associations; NAT GW VM is optional (e.g. after GW delete).
   return disassociateFloatingIpCore({
     ...input,
-    natGatewayVm: vpc.natGateway.name,
+    natGatewayVm: vpc.natGateway?.name,
   });
 }
 

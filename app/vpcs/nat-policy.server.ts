@@ -443,6 +443,8 @@ export async function ensureNatGatewayControlPlane(input: {
           name: cmName,
           namespace: ns,
           labels,
+          // Intentionally no ownerReference to the NAT GW VM: policy (including
+          // floating IPs) must survive gateway VM delete/recreate.
           annotations: {
             [KMC_ANN_AGENT_STATUS]: "Pending",
           },
@@ -460,8 +462,13 @@ export async function ensureNatGatewayControlPlane(input: {
         { cause: err },
       );
     }
-    // Existing CM (e.g. recreate control plane): push latest agent script.
-    await syncAgentScriptInPolicyConfigMap(input.cluster, ns, vpc);
+    // Existing CM (NAT GW recreate): keep floatingIPs, refresh interfaces + agent.
+    await refreshExistingPolicyConfigMap(input.cluster, ns, vpc, {
+      publicPrimaryCidr: input.publicPrimaryCidr,
+      publicGateway: input.publicGateway,
+      privateCidr: input.privateCidr,
+      labels,
+    });
   }
 
   return {
@@ -477,8 +484,84 @@ export async function ensureNatGatewayControlPlane(input: {
 }
 
 /**
+ * On NAT gateway recreate: preserve floating IP associations, update NIC metadata
+ * for the new primary addresses, strip any ownerReference so GC cannot delete the
+ * policy again, and roll out the latest agent script.
+ */
+async function refreshExistingPolicyConfigMap(
+  cluster: ClusterId,
+  namespace: string,
+  vpcName: string,
+  opts: {
+    publicPrimaryCidr?: string;
+    publicGateway?: string;
+    privateCidr?: string;
+    labels: Record<string, string>;
+  },
+): Promise<void> {
+  const name = natPolicyConfigMapName(vpcName);
+  const { core } = getClusterClients(cluster);
+  const existing = await core.readNamespacedConfigMap({ name, namespace });
+  const parsed = parsePolicyDoc(existing.data?.[KMC_NAT_POLICY_DATA_KEY]);
+  const doc: NatGatewayPolicyDoc = parsed
+    ? {
+        ...parsed,
+        floatingIPs: parsed.floatingIPs ?? [],
+        publicInterface: {
+          ...(parsed.publicInterface ?? {}),
+          ...(opts.publicPrimaryCidr
+            ? { primaryCidr: opts.publicPrimaryCidr }
+            : {}),
+          ...(opts.publicGateway ? { gateway: opts.publicGateway } : {}),
+        },
+        privateInterface: {
+          ...(parsed.privateInterface ?? {}),
+          ...(opts.privateCidr ? { cidr: opts.privateCidr } : {}),
+        },
+      }
+    : emptyPolicyDoc(vpcName, {
+        publicPrimaryCidr: opts.publicPrimaryCidr,
+        publicGateway: opts.publicGateway,
+        privateCidr: opts.privateCidr,
+      });
+
+  // Bump generation so a new agent instance re-applies DNAT/SNAT.
+  doc.metadata.generation = (doc.metadata.generation || 0) + 1;
+  doc.metadata.vpc = vpcName;
+
+  const { ownerReferences: _drop, ...metaRest } = existing.metadata ?? {};
+  void _drop;
+
+  await core.replaceNamespacedConfigMap({
+    name,
+    namespace,
+    body: {
+      ...existing,
+      metadata: {
+        ...metaRest,
+        name,
+        namespace,
+        labels: {
+          ...(existing.metadata?.labels ?? {}),
+          ...opts.labels,
+        },
+        // Drop ownerReferences so deleting a NAT GW VM never GC's policy/floats.
+        ownerReferences: [],
+      },
+      data: {
+        ...(existing.data ?? {}),
+        [KMC_NAT_POLICY_DATA_KEY]: JSON.stringify(doc, null, 2),
+        [KMC_NAT_AGENT_SCRIPT_KEY]: normalizeAgentScript(),
+      },
+    },
+  });
+}
+
+/**
  * Ensure the policy ConfigMap carries the current in-guest agent source so
  * running agents can self-update via watch.
+ * Also detaches any ownerReference to a NAT GW VM so floating IP policy is not
+ * garbage-collected when the gateway instance is deleted.
  */
 export async function syncAgentScriptInPolicyConfigMap(
   cluster: ClusterId,
@@ -491,14 +574,26 @@ export async function syncAgentScriptInPolicyConfigMap(
   try {
     const existing = await core.readNamespacedConfigMap({ name, namespace });
     const current = existing.data?.[KMC_NAT_AGENT_SCRIPT_KEY] ?? "";
-    if (normalizeAgentScript(current) === agentScript) {
+    const scriptCurrent = normalizeAgentScript(current) === agentScript;
+    const owners = existing.metadata?.ownerReferences ?? [];
+    const needsDetach = owners.length > 0;
+    if (scriptCurrent && !needsDetach) {
       return false;
     }
+    const { ownerReferences: _drop, ...metaRest } = existing.metadata ?? {};
+    void _drop;
     await core.replaceNamespacedConfigMap({
       name,
       namespace,
       body: {
         ...existing,
+        metadata: {
+          ...metaRest,
+          name,
+          namespace,
+          // Clear owners so policy/floating IPs outlive the NAT gateway VM.
+          ownerReferences: [],
+        },
         data: {
           ...(existing.data ?? {}),
           [KMC_NAT_AGENT_SCRIPT_KEY]: agentScript,
@@ -778,7 +873,7 @@ export async function associateFloatingIp(
 }
 
 export async function disassociateFloatingIp(
-  input: DisassociateFloatingIpRequest & { natGatewayVm: string },
+  input: DisassociateFloatingIpRequest & { natGatewayVm?: string },
 ): Promise<void> {
   const policy = await getNatPolicyConfigMap(
     input.cluster,
@@ -803,15 +898,17 @@ export async function disassociateFloatingIp(
 
   await writePolicyDoc(input.cluster, input.namespace, input.vpcName, policy.doc);
 
-  try {
-    await syncNatGatewayFloatingAnnotation(
-      input.cluster,
-      input.namespace,
-      input.natGatewayVm,
-      floatingIpsFromPolicy(policy.doc),
-    );
-  } catch (err) {
-    console.error("syncNatGatewayFloatingAnnotation failed:", formatError(err));
+  if (input.natGatewayVm?.trim()) {
+    try {
+      await syncNatGatewayFloatingAnnotation(
+        input.cluster,
+        input.namespace,
+        input.natGatewayVm.trim(),
+        floatingIpsFromPolicy(policy.doc),
+      );
+    } catch (err) {
+      console.error("syncNatGatewayFloatingAnnotation failed:", formatError(err));
+    }
   }
 }
 

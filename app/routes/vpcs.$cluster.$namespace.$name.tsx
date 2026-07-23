@@ -327,200 +327,111 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
 
       <DetailSection title="NAT gateway">
         {vpc.natGateway ? (
-          <Stack gap="md">
-            <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+          <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+            <DetailField
+              label="VM"
+              value={
+                <ResourceLink to={vmPath(vpc.natGateway)}>
+                  {vpc.natGateway.name}
+                </ResourceLink>
+              }
+            />
+            <DetailField
+              label="Private IP"
+              value={
+                vpc.natGateway.privateIpv4 ? (
+                  <Code>{vpc.natGateway.privateIpv4}</Code>
+                ) : (
+                  "—"
+                )
+              }
+            />
+            <DetailField
+              label="Public IP"
+              value={
+                vpc.natGateway.publicIpv4 ? (
+                  <Code>{vpc.natGateway.publicIpv4}</Code>
+                ) : (
+                  "—"
+                )
+              }
+            />
+            <DetailField
+              label="Egress network"
+              value={
+                vpc.natGateway.publicNetwork ? (
+                  <Code>{vpc.natGateway.publicNetwork}</Code>
+                ) : (
+                  "—"
+                )
+              }
+            />
+            <DetailField
+              label="Policy ConfigMap"
+              value={
+                vpc.natGateway.policyConfigMap ? (
+                  <Code>{vpc.natGateway.policyConfigMap}</Code>
+                ) : (
+                  "—"
+                )
+              }
+            />
+            <DetailField
+              label="Agent"
+              value={
+                vpc.natGateway.agentStatus ? (
+                  <Group gap="xs">
+                    <StatusBadge status={vpc.natGateway.agentStatus} />
+                    {vpc.natGateway.agentObservedGeneration ? (
+                      <Text size="xs" c="dimmed">
+                        gen {vpc.natGateway.agentObservedGeneration}
+                      </Text>
+                    ) : null}
+                    {vpc.natGateway.agentVersion ? (
+                      <Text size="xs" c="dimmed" ff="monospace">
+                        {vpc.natGateway.agentVersion}
+                      </Text>
+                    ) : null}
+                  </Group>
+                ) : (
+                  "—"
+                )
+              }
+            />
+            {vpc.natGateway.agentLastError ? (
               <DetailField
-                label="VM"
+                label="Agent error"
                 value={
-                  <ResourceLink to={vmPath(vpc.natGateway)}>
-                    {vpc.natGateway.name}
-                  </ResourceLink>
+                  <Text size="sm" c="red">
+                    {vpc.natGateway.agentLastError}
+                  </Text>
                 }
               />
+            ) : null}
+            {vpc.natGateway.agentHeartbeatAt ? (
               <DetailField
-                label="Private IP"
+                label="Agent heartbeat"
                 value={
-                  vpc.natGateway.privateIpv4 ? (
-                    <Code>{vpc.natGateway.privateIpv4}</Code>
-                  ) : (
-                    "—"
-                  )
-                }
-              />
-              <DetailField
-                label="Public IP"
-                value={
-                  vpc.natGateway.publicIpv4 ? (
-                    <Code>{vpc.natGateway.publicIpv4}</Code>
-                  ) : (
-                    "—"
-                  )
-                }
-              />
-              <DetailField
-                label="Egress network"
-                value={
-                  vpc.natGateway.publicNetwork ? (
-                    <Code>{vpc.natGateway.publicNetwork}</Code>
-                  ) : (
-                    "—"
-                  )
-                }
-              />
-              <DetailField
-                label="Policy ConfigMap"
-                value={
-                  vpc.natGateway.policyConfigMap ? (
-                    <Code>{vpc.natGateway.policyConfigMap}</Code>
-                  ) : (
-                    "—"
-                  )
-                }
-              />
-              <DetailField
-                label="Agent"
-                value={
-                  vpc.natGateway.agentStatus ? (
-                    <Group gap="xs">
-                      <StatusBadge status={vpc.natGateway.agentStatus} />
-                      {vpc.natGateway.agentObservedGeneration ? (
-                        <Text size="xs" c="dimmed">
-                          gen {vpc.natGateway.agentObservedGeneration}
-                        </Text>
-                      ) : null}
-                      {vpc.natGateway.agentVersion ? (
-                        <Text size="xs" c="dimmed" ff="monospace">
-                          {vpc.natGateway.agentVersion}
-                        </Text>
-                      ) : null}
-                    </Group>
-                  ) : (
-                    "—"
-                  )
-                }
-              />
-              {vpc.natGateway.agentLastError ? (
-                <DetailField
-                  label="Agent error"
-                  value={
-                    <Text size="sm" c="red">
-                      {vpc.natGateway.agentLastError}
-                    </Text>
-                  }
-                />
-              ) : null}
-              {vpc.natGateway.agentHeartbeatAt ? (
-                <DetailField
-                  label="Agent heartbeat"
-                  value={
-                    <Text
-                      size="sm"
-                      c={vpc.natGateway.agentStatus === "Stale" ? "orange" : "dimmed"}
-                    >
-                      {vpc.natGateway.agentHeartbeatAt}
-                    </Text>
-                  }
-                />
-              ) : null}
-              {vpc.natGateway.agentAppliedAt ? (
-                <DetailField
-                  label="Agent applied"
-                  value={
-                    <Text size="sm" c="dimmed">
-                      {vpc.natGateway.agentAppliedAt}
-                    </Text>
-                  }
-                />
-              ) : null}
-            </SimpleGrid>
-
-            <div>
-              <Group justify="space-between" mb="xs">
-                <Text size="sm" fw={600}>
-                  Floating IPs
-                </Text>
-                <Group gap="xs">
-                  <Button
-                    component={Link}
-                    to={floatingIpsListPath({
-                      cluster: vpc.cluster,
-                      namespace: vpc.namespace,
-                      vpc: vpc.name,
-                    })}
-                    size="xs"
-                    variant="subtle"
-                    leftSection={<IconWorldWww size={14} />}
+                  <Text
+                    size="sm"
+                    c={vpc.natGateway.agentStatus === "Stale" ? "orange" : "dimmed"}
                   >
-                    All floating IPs
-                  </Button>
-                  <Button
-                    component={Link}
-                    to={floatingIpCreatePath({
-                      cluster: vpc.cluster,
-                      namespace: vpc.namespace,
-                      vpc: vpc.name,
-                    })}
-                    size="xs"
-                    variant="light"
-                    color="teal"
-                    leftSection={<IconPlus size={14} />}
-                  >
-                    Associate
-                  </Button>
-                </Group>
-              </Group>
-              {(vpc.natGateway.floatingIps?.length ?? 0) === 0 ? (
-                <Text size="sm" c="dimmed">
-                  None yet. Associate a public Multus address to a private VM; the
-                  in-guest agent applies DNAT/SNAT from the policy ConfigMap.
-                </Text>
-              ) : (
-                <ResourceTable
-                  isEmpty={false}
-                  headers={["Public", "Private", "Target VM", ""]}
-                >
-                  {vpc.natGateway.floatingIps!.map((f) => (
-                    <Table.Tr key={f.id}>
-                      <Table.Td>
-                        <Code>
-                          {f.public}/{f.prefix}
-                        </Code>
-                      </Table.Td>
-                      <Table.Td>
-                        <Code>{f.private}</Code>
-                      </Table.Td>
-                      <Table.Td>
-                        {f.targetVm ? (
-                          <ResourceLink
-                            to={vmPath({
-                              cluster: vpc.cluster,
-                              namespace: vpc.namespace,
-                              name: f.targetVm,
-                            })}
-                          >
-                            {f.targetVm}
-                          </ResourceLink>
-                        ) : (
-                          "—"
-                        )}
-                      </Table.Td>
-                      <Table.Td>
-                        <Button
-                          size="compact-xs"
-                          variant="subtle"
-                          color="red"
-                          disabled={busy}
-                          onClick={() => setDisassociateTarget(f)}
-                        >
-                          Disassociate
-                        </Button>
-                      </Table.Td>
-                    </Table.Tr>
-                  ))}
-                </ResourceTable>
-              )}
-            </div>
-          </Stack>
+                    {vpc.natGateway.agentHeartbeatAt}
+                  </Text>
+                }
+              />
+            ) : null}
+            {vpc.natGateway.agentAppliedAt ? (
+              <DetailField
+                label="Agent applied"
+                value={
+                  <Text size="sm" c="dimmed">
+                    {vpc.natGateway.agentAppliedAt}
+                  </Text>
+                }
+              />
+            ) : null}
+          </SimpleGrid>
         ) : !vpc.cidr ? (
           <Text size="sm" c="dimmed">
             Enable private IPAM (CIDR) on this VPC to add a NAT gateway for egress.
@@ -552,6 +463,120 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
                 Add NAT gateway
               </Button>
             </Group>
+          </Stack>
+        )}
+      </DetailSection>
+
+      <DetailSection
+        title={`Floating IPs (${vpc.floatingIps.length})`}
+        actions={
+          <Group gap="xs">
+            <Button
+              component={Link}
+              to={floatingIpsListPath({
+                cluster: vpc.cluster,
+                namespace: vpc.namespace,
+                vpc: vpc.name,
+              })}
+              size="xs"
+              variant="subtle"
+              leftSection={<IconWorldWww size={14} />}
+            >
+              All floating IPs
+            </Button>
+            {vpc.natGateway ? (
+              <Button
+                component={Link}
+                to={floatingIpCreatePath({
+                  cluster: vpc.cluster,
+                  namespace: vpc.namespace,
+                  vpc: vpc.name,
+                })}
+                size="xs"
+                variant="light"
+                color="teal"
+                leftSection={<IconPlus size={14} />}
+              >
+                Associate
+              </Button>
+            ) : (
+              <Button
+                size="xs"
+                variant="light"
+                color="teal"
+                leftSection={<IconPlus size={14} />}
+                disabled
+                title="Create a NAT gateway before associating floating IPs"
+              >
+                Associate
+              </Button>
+            )}
+          </Group>
+        }
+      >
+        {!vpc.cidr ? (
+          <Text size="sm" c="dimmed">
+            Enable private IPAM (CIDR) and a NAT gateway to associate floating public
+            addresses with private VMs.
+          </Text>
+        ) : vpc.floatingIps.length === 0 ? (
+          <Text size="sm" c="dimmed">
+            {vpc.natGateway
+              ? "None yet. Associate a public Multus address to a private VM; the in-guest agent applies DNAT/SNAT from the policy ConfigMap."
+              : "None. Associations are stored on the NAT policy ConfigMap and survive gateway delete — recreate a NAT gateway to apply them, or associate after adding one."}
+          </Text>
+        ) : (
+          <Stack gap="sm">
+            {!vpc.natGateway && (
+              <Alert color="yellow" variant="light" title="No NAT gateway">
+                These mappings are reserved in policy but not applied until a NAT
+                gateway is running. Recreate the gateway to restore DNAT/SNAT; Associate
+                stays disabled until then.
+              </Alert>
+            )}
+            <ResourceTable
+              isEmpty={false}
+              headers={["Public", "Private", "Target VM", ""]}
+            >
+              {vpc.floatingIps.map((f) => (
+                <Table.Tr key={f.id}>
+                  <Table.Td>
+                    <Code>
+                      {f.public}/{f.prefix}
+                    </Code>
+                  </Table.Td>
+                  <Table.Td>
+                    <Code>{f.private}</Code>
+                  </Table.Td>
+                  <Table.Td>
+                    {f.targetVm ? (
+                      <ResourceLink
+                        to={vmPath({
+                          cluster: vpc.cluster,
+                          namespace: vpc.namespace,
+                          name: f.targetVm,
+                        })}
+                      >
+                        {f.targetVm}
+                      </ResourceLink>
+                    ) : (
+                      "—"
+                    )}
+                  </Table.Td>
+                  <Table.Td>
+                    <Button
+                      size="compact-xs"
+                      variant="subtle"
+                      color="red"
+                      disabled={busy}
+                      onClick={() => setDisassociateTarget(f)}
+                    >
+                      Disassociate
+                    </Button>
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </ResourceTable>
           </Stack>
         )}
       </DetailSection>

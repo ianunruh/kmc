@@ -243,6 +243,13 @@ On create, kmc also provisions:
 - ServiceAccount + Role/RoleBinding (get/list/watch/patch that ConfigMap)
 - Long-lived SA token embedded in cloud-init for the agent
 
+The policy ConfigMap is **not** owned by the NAT gateway VM: floating IP
+associations survive deleting and recreating the gateway instance. IPAM keeps
+those public addresses reserved via the policy document. Recreating a NAT
+gateway reuses the existing policy, updates primary NIC metadata, and re-stamps
+floating IPs onto the new VM. The control plane (ConfigMap + SA/RBAC) is removed
+when the VPC is deleted (after all attached VMs are gone).
+
 **In-guest agent** (`app/vpcs/kmc-nat-agent.py`, Python 3 stdlib only):
 
 - Bootstrap copy is written by cloud-init; runtime source of truth is ConfigMap `agent.py`

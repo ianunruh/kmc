@@ -514,6 +514,11 @@ export interface VpcDetail extends VpcSummary {
   ipPool?: NetworkIpPoolInfo;
   /** Present when a kmc-managed NAT gateway VM exists for this VPC. */
   natGateway?: NatGatewayInfo;
+  /**
+   * Floating IP associations from the NAT policy ConfigMap.
+   * Present even when the NAT gateway VM is missing (policy survives GW delete).
+   */
+  floatingIps: FloatingIpAssociation[];
 }
 
 /**
