@@ -20,7 +20,11 @@ import {
 import { assertVmNamespaceAllowed } from "~/lib/k8s/catalog.server";
 import { allocateIpv4ForMultus } from "~/lib/ipam/pools.server";
 import { IPAM_ANNOTATION_IPV4 } from "~/lib/ipam/constants";
-import { buildVirtualMachineManifest } from "./template.server";
+import {
+  bindAllocationsToNetworks,
+  buildVirtualMachineManifest,
+  multusNetworksFromRequest,
+} from "./template.server";
 
 interface KubeVm {
   metadata?: {
@@ -540,18 +544,35 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
 
   await assertVmNamespaceAllowed(input.cluster, input.namespace);
 
-  const { custom } = getClusterClients(input.cluster);
-
-  let allocation = null;
-  if (input.network?.multusNetworkName) {
-    allocation = await allocateIpv4ForMultus(
-      input.cluster,
-      input.network.multusNetworkName,
-      input.namespace,
-    );
+  const multusNames = multusNetworksFromRequest(input);
+  const unique = new Set(multusNames);
+  if (unique.size !== multusNames.length) {
+    throw new Error("Duplicate Multus networks are not allowed");
+  }
+  if (multusNames.length > 8) {
+    throw new Error("At most 8 Multus network attachments are supported");
   }
 
-  const body = buildVirtualMachineManifest(input, allocation);
+  const { custom } = getClusterClients(input.cluster);
+
+  // Sequential so multi-attach can reserve prior picks via extraUsed when
+  // two NADs resolve to the same pool (or we add more attachments later).
+  const rawAllocations: Array<Awaited<ReturnType<typeof allocateIpv4ForMultus>>> =
+    [];
+  const extraUsed: string[] = [];
+  for (const name of multusNames) {
+    const alloc = await allocateIpv4ForMultus(
+      input.cluster,
+      name,
+      input.namespace,
+      { extraUsed },
+    );
+    rawAllocations.push(alloc);
+    if (alloc) extraUsed.push(alloc.address);
+  }
+  const allocations = bindAllocationsToNetworks(multusNames, rawAllocations);
+
+  const body = buildVirtualMachineManifest(input, allocations);
 
   try {
     const created = (await custom.createNamespacedCustomObject({

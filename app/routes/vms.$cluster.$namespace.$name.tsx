@@ -470,7 +470,14 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
               label="IPv4 (allocated)"
               value={
                 vm.allocatedIpv4 ? (
-                  <Code>{vm.allocatedIpv4}</Code>
+                  <Stack gap={2}>
+                    {vm.allocatedIpv4.split(",").map((part) => {
+                      const s = part.trim();
+                      return s ? (
+                        <Code key={s}>{s}</Code>
+                      ) : null;
+                    })}
+                  </Stack>
                 ) : undefined
               }
             />

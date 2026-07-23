@@ -1,4 +1,5 @@
 import {
+  ActionIcon,
   Alert,
   Button,
   Group,
@@ -13,6 +14,7 @@ import {
   Title,
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
+import { IconPlus, IconTrash } from "@tabler/icons-react";
 import { useEffect, useMemo } from "react";
 import { Link, redirect, useFetcher, useNavigation, useSubmit } from "react-router";
 import type { Route } from "./+types/vms.create";
@@ -25,6 +27,8 @@ import { listSshKeysOrEmpty } from "~/ssh-keys/ssh-keys.server";
 import { FormActions, FormSection } from "~/ui";
 import { createVm, listClusters } from "~/vms/vms.server";
 import type { ClusterCatalog, CreateVmRequest, NetworkInfo } from "~/lib/types";
+
+const MAX_NETWORK_ATTACHMENTS = 8;
 
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Launch VM · kmc" }];
@@ -62,7 +66,13 @@ export async function action({ request }: Route.ActionArgs) {
   const diskSize = String(form.get("diskSize") ?? "").trim();
   const storageClass = String(form.get("storageClass") ?? "").trim() || undefined;
   const imageValue = String(form.get("image") ?? "").trim();
-  const network = String(form.get("network") ?? "").trim() || undefined;
+  const networksRaw = String(form.get("networks") ?? "").trim();
+  const multusNetworks = networksRaw
+    ? networksRaw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : [];
   const sshKeyMode = String(form.get("sshKeyMode") ?? "paste").trim();
   const savedSshKeyId = String(form.get("savedSshKeyId") ?? "").trim();
   let sshPublicKey = String(form.get("sshPublicKey") ?? "").trim();
@@ -125,8 +135,19 @@ export async function action({ request }: Route.ActionArgs) {
     payload.memory = memory;
   }
 
-  if (network) {
-    payload.network = { multusNetworkName: network };
+  if (multusNetworks.length > 0) {
+    const unique = new Set(multusNetworks);
+    if (unique.size !== multusNetworks.length) {
+      return { error: "Each Multus network can only be attached once" };
+    }
+    if (multusNetworks.length > MAX_NETWORK_ATTACHMENTS) {
+      return {
+        error: `At most ${MAX_NETWORK_ATTACHMENTS} Multus network attachments are supported`,
+      };
+    }
+    payload.networks = multusNetworks.map((multusNetworkName) => ({
+      multusNetworkName,
+    }));
   }
 
   try {
@@ -175,7 +196,8 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       diskSize: "100Gi",
       storageClass: "",
       image: "",
-      network: "",
+      /** Multus NAD names in attachment order; empty = pod network only */
+      networks: [] as string[],
       sshKeyMode: (hasSavedKeys ? "saved" : "paste") as "saved" | "paste",
       savedSshKeyId: hasSavedKeys ? sshKeys[0]!.id : "",
       sshPublicKey: "",
@@ -212,7 +234,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       diskSize: values.diskSize,
       storageClass: values.storageClass,
       image: values.image,
-      network: values.network,
+      networks: values.networks.filter(Boolean).join(","),
       sshKeyMode: values.sshKeyMode,
       savedSshKeyId: values.savedSshKeyId,
       sshPublicKey: values.sshPublicKey,
@@ -267,13 +289,15 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
 
   useEffect(() => {
     const networks = networksFetcher.data?.networks ?? [];
+    // Only seed a default when the user has not chosen attachments yet.
+    if (form.values.networks.length > 0) return;
     const bridge = networks.find((n) => n.name === "bridge-external");
     if (bridge) {
-      form.setFieldValue("network", bridge.name);
+      form.setFieldValue("networks", [bridge.name]);
     } else if (networks[0]) {
-      form.setFieldValue("network", networks[0].name);
+      form.setFieldValue("networks", [networks[0].name]);
     } else {
-      form.setFieldValue("network", "");
+      form.setFieldValue("networks", []);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [networksFetcher.data]);
@@ -326,33 +350,66 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       })),
     [catalog],
   );
-  const networkOptions = useMemo(() => {
-    const nets = networksFetcher.data?.networks ?? [];
-    return [
-      { value: "", label: "Pod network" },
-      ...nets.map((n) => {
-        const vlanPart = n.vlan != null ? `vlan ${n.vlan}` : null;
-        const kindPart = n.kind === "vpc" ? "VPC" : null;
-        if (n.ipPool) {
-          const { cidr, free, total } = n.ipPool;
-          const bits = [
-            n.name,
-            kindPart,
-            vlanPart,
-            `IPAM ${free}/${total} free · ${cidr}`,
-          ].filter(Boolean);
-          return { value: n.name, label: bits.join(" · ") };
-        }
-        const bits = [n.name, kindPart, vlanPart].filter(Boolean);
-        return { value: n.name, label: bits.join(" · ") };
-      }),
-    ];
-  }, [networksFetcher.data]);
+  const availableNetworks = useMemo(
+    () => networksFetcher.data?.networks ?? [],
+    [networksFetcher.data],
+  );
 
-  const selectedNetworkPool = useMemo(() => {
-    const nets = networksFetcher.data?.networks ?? [];
-    return nets.find((n) => n.name === form.values.network)?.ipPool;
-  }, [networksFetcher.data, form.values.network]);
+  const networkLabel = (n: NetworkInfo) => {
+    const vlanPart = n.vlan != null ? `vlan ${n.vlan}` : null;
+    const kindPart = n.kind === "vpc" ? "VPC" : null;
+    if (n.ipPool) {
+      const { cidr, free, total } = n.ipPool;
+      const bits = [
+        n.name,
+        kindPart,
+        vlanPart,
+        `IPAM ${free}/${total} free · ${cidr}`,
+      ].filter(Boolean);
+      return bits.join(" · ");
+    }
+    const bits = [n.name, kindPart, vlanPart].filter(Boolean);
+    return bits.join(" · ");
+  };
+
+  const selectedNetworkInfos = useMemo(() => {
+    return form.values.networks
+      .map((name) => availableNetworks.find((n) => n.name === name))
+      .filter((n): n is NetworkInfo => n != null);
+  }, [availableNetworks, form.values.networks]);
+
+  const setNetworkAt = (index: number, value: string) => {
+    const next = [...form.values.networks];
+    next[index] = value;
+    form.setFieldValue("networks", next);
+  };
+
+  const removeNetworkAt = (index: number) => {
+    form.setFieldValue(
+      "networks",
+      form.values.networks.filter((_, i) => i !== index),
+    );
+  };
+
+  const addNetwork = () => {
+    if (form.values.networks.length >= MAX_NETWORK_ATTACHMENTS) return;
+    const used = new Set(form.values.networks);
+    const next = availableNetworks.find((n) => !used.has(n.name));
+    form.setFieldValue("networks", [
+      ...form.values.networks,
+      next?.name ?? "",
+    ]);
+  };
+
+  const optionsForSlot = (index: number) => {
+    const current = form.values.networks[index] ?? "";
+    const usedElsewhere = new Set(
+      form.values.networks.filter((_, i) => i !== index && form.values.networks[i]),
+    );
+    return availableNetworks
+      .filter((n) => n.name === current || !usedElsewhere.has(n.name))
+      .map((n) => ({ value: n.name, label: networkLabel(n) }));
+  };
 
   return (
     <Stack gap="md" pb={80}>
@@ -388,7 +445,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                   form.setFieldValue("image", "");
                   form.setFieldValue("storageClass", "");
                   form.setFieldValue("instanceType", "");
-                  form.setFieldValue("network", "");
+                  form.setFieldValue("networks", []);
                 }}
               />
               <Select
@@ -401,7 +458,10 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 nothingFoundMessage="No namespaces labeled kmc.ianunruh.com/vm-allowed=true"
                 value={form.values.namespace || null}
                 error={form.errors.namespace}
-                onChange={(v) => form.setFieldValue("namespace", v ?? "")}
+                onChange={(v) => {
+                  form.setFieldValue("namespace", v ?? "");
+                  form.setFieldValue("networks", []);
+                }}
               />
             </SimpleGrid>
             <TextInput
@@ -537,32 +597,128 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 ) : null}
               </Stack>
             )}
-            <Select
-              label="Network"
-              description="Multus NAD in the target namespace, or pod network"
-              data={networkOptions}
-              value={form.values.network}
-              onChange={(v) => form.setFieldValue("network", v ?? "")}
-            />
-            {selectedNetworkPool ? (
-              <Text size="xs" c="dimmed">
-                Auto-assigns a free address from pool{" "}
-                <Text span ff="monospace" c="gray.4">
-                  {selectedNetworkPool.id}
-                </Text>{" "}
-                ({selectedNetworkPool.cidr}
-                {selectedNetworkPool.gateway
-                  ? `, gateway ${selectedNetworkPool.gateway}`
-                  : ", no default route"}
-                ). Configured via cloud-init netplan; released when the VM is
-                deleted.
-              </Text>
-            ) : form.values.network ? (
-              <Text size="xs" c="dimmed">
-                No IP pool configured for this Multus network — guest networking
-                is left unconfigured by kmc.
-              </Text>
-            ) : null}
+            <Stack gap="xs">
+              <div>
+                <Text size="sm" fw={500}>
+                  Networks
+                </Text>
+                <Text size="xs" c="dimmed">
+                  Multus attachments in order (first is primary for the default
+                  route when IPAM applies). Leave empty for pod network only.
+                </Text>
+              </div>
+              {form.values.networks.length === 0 ? (
+                <Text size="sm" c="dimmed">
+                  No Multus attachments — VM will use the pod network.
+                </Text>
+              ) : (
+                form.values.networks.map((name, index) => (
+                  <Group key={`net-${index}`} gap="xs" align="flex-end" wrap="nowrap">
+                    <Select
+                      label={
+                        form.values.networks.length > 1
+                          ? index === 0
+                            ? "Primary"
+                            : `NIC ${index + 1}`
+                          : "Network"
+                      }
+                      placeholder="Select Multus network"
+                      description={
+                        form.values.networks.length > 1 && index === 0
+                          ? "Preferred for default route when the pool has a gateway"
+                          : undefined
+                      }
+                      data={optionsForSlot(index)}
+                      searchable
+                      disabled={
+                        !form.values.namespace ||
+                        networksFetcher.state === "loading"
+                      }
+                      nothingFoundMessage="No Multus NADs in this namespace"
+                      value={name || null}
+                      onChange={(v) => setNetworkAt(index, v ?? "")}
+                      style={{ flex: 1 }}
+                    />
+                    <ActionIcon
+                      variant="subtle"
+                      color="gray"
+                      aria-label={`Remove network ${index + 1}`}
+                      onClick={() => removeNetworkAt(index)}
+                      mb={4}
+                    >
+                      <IconTrash size={16} />
+                    </ActionIcon>
+                  </Group>
+                ))
+              )}
+              <Group gap="sm">
+                <Button
+                  type="button"
+                  variant="light"
+                  size="xs"
+                  leftSection={<IconPlus size={14} />}
+                  disabled={
+                    !form.values.namespace ||
+                    form.values.networks.length >= MAX_NETWORK_ATTACHMENTS ||
+                    (availableNetworks.length > 0 &&
+                      form.values.networks.filter(Boolean).length >=
+                        availableNetworks.length)
+                  }
+                  onClick={addNetwork}
+                >
+                  Add network
+                </Button>
+                {form.values.networks.length > 0 ? (
+                  <Button
+                    type="button"
+                    variant="subtle"
+                    size="xs"
+                    color="gray"
+                    onClick={() => form.setFieldValue("networks", [])}
+                  >
+                    Use pod network only
+                  </Button>
+                ) : null}
+              </Group>
+              {selectedNetworkInfos.some((n) => n.ipPool) ? (
+                <Stack gap={4}>
+                  {selectedNetworkInfos.map((n) =>
+                    n.ipPool ? (
+                      <Text key={n.name} size="xs" c="dimmed">
+                        <Text span ff="monospace" c="gray.4">
+                          {n.name}
+                        </Text>
+                        : auto-assigns from pool{" "}
+                        <Text span ff="monospace" c="gray.4">
+                          {n.ipPool.id}
+                        </Text>{" "}
+                        ({n.ipPool.cidr}
+                        {n.ipPool.gateway
+                          ? `, gateway ${n.ipPool.gateway}`
+                          : ", no default route"}
+                        )
+                      </Text>
+                    ) : n.name ? (
+                      <Text key={n.name} size="xs" c="dimmed">
+                        <Text span ff="monospace" c="gray.4">
+                          {n.name}
+                        </Text>
+                        : no IP pool — guest networking left unconfigured by kmc
+                      </Text>
+                    ) : null,
+                  )}
+                  <Text size="xs" c="dimmed">
+                    Static addresses are injected via cloud-init netplan and
+                    released when the VM is deleted.
+                  </Text>
+                </Stack>
+              ) : form.values.networks.some(Boolean) ? (
+                <Text size="xs" c="dimmed">
+                  No IP pool configured for the selected Multus network(s) —
+                  guest networking is left unconfigured by kmc.
+                </Text>
+              ) : null}
+            </Stack>
           </FormSection>
 
           <FormActions>

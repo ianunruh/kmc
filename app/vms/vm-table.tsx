@@ -29,12 +29,15 @@ import { useFetcherResult } from "~/lib/use-fetcher-result";
 import { ClampedText, ConfirmDeleteModal, ResourceLink } from "~/ui";
 import { StatusBadge } from "~/ui/status-badge";
 
-/** Strip optional /prefix from kmc.ianunruh.com/ipv4 for the list column. */
+/**
+ * Strip optional /prefix from kmc.ianunruh.com/ipv4 for the list column.
+ * Multi-attach stores comma-separated addresses — show the first (primary).
+ */
 function displayAllocatedIpv4(value?: string): string | undefined {
   if (!value) return undefined;
-  const s = value.trim();
-  if (!s) return undefined;
-  return s.includes("/") ? s.slice(0, s.indexOf("/")) : s;
+  const first = value.split(",")[0]?.trim();
+  if (!first) return undefined;
+  return first.includes("/") ? first.slice(0, first.indexOf("/")) : first;
 }
 
 export function VmTable({ vms }: { vms: VmSummary[] }) {

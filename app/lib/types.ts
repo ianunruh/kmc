@@ -106,9 +106,13 @@ export interface CreateVmRequest {
     namespace: string;
     name: string;
   };
-  network?: {
+  /**
+   * Multus network attachments in order (first is primary for default route when IPAM applies).
+   * Empty / omit → pod network only.
+   */
+  networks?: Array<{
     multusNetworkName: string;
-  };
+  }>;
   sshPublicKey: string;
   start?: boolean;
 }

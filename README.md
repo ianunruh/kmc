@@ -117,11 +117,12 @@ clusters:
 
 When a Multus network on create matches a cluster `ipPools` entry **or** a self-service VPC NAD with a `cidr` annotation, kmc:
 
-1. Scans cluster VMs for `kmc.ianunruh.com/ipv4` annotations and live VMI interface IPs in the pool CIDR
+1. Scans cluster VMs for `kmc.ianunruh.com/ipv4` annotations (comma-separated when multi-attach) and live VMI interface IPs in the pool CIDR
 2. Picks the first free address (excluding network, broadcast, gateway, and `exclude`)
 3. Annotates the VM (`kmc.ianunruh.com/ipv4`, `kmc.ianunruh.com/ipam-pool`) and injects cloud-init `networkData` (netplan static config; omits default route if the pool has no gateway)
 4. Frees the address automatically when the VM is deleted (next create re-scans)
 
+**Multi-attach:** Launch VM can attach multiple Multus NADs (up to 8). Each attachment that has a pool gets its own address; netplan matches NICs by MAC. Only one default route is installed (first attachment with a gateway, else the first pooled NIC). Empty network list keeps the historical **pod network only** behavior.
 No separate IPAM database — the cluster is the source of truth. Concurrent creates in a single kmc process are serialized per pool; multi-replica kmc can still race (use one replica or graduate to explicit leases later).
 
 ### GitHub OAuth App (impersonate mode)
@@ -204,7 +205,7 @@ When a cluster has `vlanPools` in `clusters.yaml` (and hypervisors expose those 
 
 1. **Create VPC** — pick cluster, vm-allowed namespace, name; optionally enable private IPAM (CIDR + optional gateway/DNS)
 2. kmc allocates the lowest free VLAN in the pool (scan of existing VPC NAD labels + `exclude`), then creates a Multus `NetworkAttachmentDefinition` with bridge CNI + `vlan`
-3. **Launch VM** — choose the new NAD in the network dropdown; if the VPC has a CIDR, IPAM works like static `ipPools`
+3. **Launch VM** — choose the new NAD (alone or with other Multus networks); if the VPC has a CIDR, IPAM works like static `ipPools`
 4. **Delete VPC** — blocked while any VM still attaches to the NAD; then the NAD is removed and the VLAN returns to the free pool
 
 **Requirements**

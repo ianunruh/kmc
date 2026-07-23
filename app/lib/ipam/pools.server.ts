@@ -33,8 +33,15 @@ export type AllocatedIp = {
   /** When omitted, netplan gets addresses only (no default route). */
   gateway?: string;
   dns: string[];
-  /** cloud-init network-config match: interface name, or virtio driver */
+  /** cloud-init network-config match: interface name (pool.interface) */
   interfaceName?: string;
+  /**
+   * Guest NIC MAC set on the KubeVirt interface and used for netplan match.
+   * Preferred over virtio driver match when multi-attach or when set.
+   */
+  macAddress?: string;
+  /** KubeVirt network/interface name (e.g. default, net0) — netplan ethernet key */
+  networkName?: string;
 };
 
 export type IpPoolUsage = {
@@ -307,8 +314,21 @@ async function listClusterVmsAndVmis(cluster: ClusterId): Promise<{
 }
 
 /**
+ * Parse kmc.ianunruh.com/ipv4 — one address or comma-separated multi-attach list.
+ */
+export function parseIpv4AnnotationList(value: string): string[] {
+  const out: string[] = [];
+  for (const part of value.split(",")) {
+    const addr = addressFromIpv4Annotation(part.trim());
+    if (addr) out.push(addr);
+  }
+  return out;
+}
+
+/**
  * Collect IPs considered in-use for a pool:
- * - kmc.ianunruh.com/ipv4 annotations on any VM (stopped VMs still hold the address)
+ * - kmc.ianunruh.com/ipv4 annotations on any VM (stopped VMs still hold the address;
+ *   multi-attach stores comma-separated addresses)
  * - live VMI interface IPs that fall inside the pool CIDR
  */
 export function collectUsedIpv4(
@@ -322,14 +342,14 @@ export function collectUsedIpv4(
   for (const vm of vms) {
     const ann = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
     if (!ann) continue;
-    const addr = addressFromIpv4Annotation(ann);
-    if (!addr) continue;
-    try {
-      if (containsIpv4(parsed, addr)) {
-        used.add(addr);
+    for (const addr of parseIpv4AnnotationList(ann)) {
+      try {
+        if (containsIpv4(parsed, addr)) {
+          used.add(addr);
+        }
+      } catch {
+        /* skip bad annotation */
       }
-    } catch {
-      /* skip bad annotation */
     }
   }
 
@@ -418,11 +438,14 @@ export async function getIpPoolUsageForMultus(
  * Allocate the next free IPv4 from the pool bound to this Multus NAD.
  * Returns null when the network has no configured pool.
  * Pass `namespace` so self-service VPC NADs (dynamic pools) can be resolved.
+ * `extraUsed` reserves addresses already chosen in the same multi-attach create
+ * (before the VM annotation exists for the cluster scan).
  */
 export async function allocateIpv4ForMultus(
   cluster: ClusterId,
   multusNetworkName: string,
   namespace?: string,
+  opts?: { extraUsed?: string[] },
 ): Promise<AllocatedIp | null> {
   const pool = await resolveIpPoolForMultus(
     cluster,
@@ -438,6 +461,10 @@ export async function allocateIpv4ForMultus(
     const { parsed, range, exclude } = validatePool(pool);
     const { vms, vmis } = await listClusterVmsAndVmis(cluster);
     const used = collectUsedIpv4(pool, parsed, vms, vmis);
+    for (const a of opts?.extraUsed ?? []) {
+      const addr = addressFromIpv4Annotation(a) ?? a.trim();
+      if (addr) used.add(addr);
+    }
 
     const address = firstFreeIpv4(range, used, exclude);
     if (!address) {
@@ -458,44 +485,88 @@ export async function allocateIpv4ForMultus(
   });
 }
 
-export function buildNetworkData(allocation: AllocatedIp): string {
-  const ifaceKey = allocation.interfaceName ? "static0" : "net0";
-  const matchBlock = allocation.interfaceName
-    ? `    match:\n      name: "${allocation.interfaceName}"\n`
-    : `    match:\n      driver: virtio_net\n`;
+/**
+ * Locally administered unicast MAC for a KubeVirt interface (stable for cloud-init match).
+ */
+export function generateLocalMacAddress(): string {
+  const bytes = new Uint8Array(6);
+  crypto.getRandomValues(bytes);
+  // Unicast (bit0 clear) + locally administered (bit1 set)
+  bytes[0] = (bytes[0]! & 0xfe) | 0x02;
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join(":");
+}
 
-  const lines = [
-    "version: 2",
-    "ethernets:",
-    `  ${ifaceKey}:`,
-    ...matchBlock.trimEnd().split("\n"),
-    "    dhcp4: false",
-    "    addresses:",
-    `      - ${allocation.cidrHost}`,
-  ];
+/**
+ * Prefer the first allocation that has a gateway (default route); else the first.
+ */
+export function pickPrimaryAllocation(
+  allocations: AllocatedIp[],
+): AllocatedIp | undefined {
+  return allocations.find((a) => a.gateway?.trim()) ?? allocations[0];
+}
 
-  const gateway = allocation.gateway?.trim();
-  if (gateway) {
-    lines.push(
-      "    routes:",
-      "      - to: default",
-      `        via: ${gateway}`,
-    );
+function ethernetKeyFor(allocation: AllocatedIp, index: number): string {
+  if (allocation.interfaceName) return `static${index}`;
+  if (allocation.networkName) return allocation.networkName;
+  return `net${index}`;
+}
+
+function matchLinesFor(allocation: AllocatedIp): string[] {
+  if (allocation.interfaceName) {
+    return [`    match:`, `      name: "${allocation.interfaceName}"`];
+  }
+  if (allocation.macAddress) {
+    return [
+      `    match:`,
+      `      macaddress: "${allocation.macAddress.toLowerCase()}"`,
+    ];
+  }
+  // Single-NIC fallback when no MAC was stamped (legacy behavior)
+  return [`    match:`, `      driver: virtio_net`];
+}
+
+/**
+ * cloud-init network-config (netplan) for one or more Multus IPAM allocations.
+ * At most one default route is installed (primary = first with gateway, else first).
+ */
+export function buildNetworkData(allocations: AllocatedIp | AllocatedIp[]): string {
+  const list = Array.isArray(allocations) ? allocations : [allocations];
+  if (list.length === 0) {
+    throw new Error("buildNetworkData requires at least one allocation");
   }
 
-  if (allocation.dns.length > 0) {
-    lines.push("    nameservers:", "      addresses:");
-    for (const d of allocation.dns) {
-      lines.push(`        - ${d}`);
+  const primary = pickPrimaryAllocation(list);
+  const lines = ["version: 2", "ethernets:"];
+
+  list.forEach((allocation, index) => {
+    const key = ethernetKeyFor(allocation, index);
+    lines.push(`  ${key}:`);
+    lines.push(...matchLinesFor(allocation));
+    lines.push("    dhcp4: false", "    addresses:", `      - ${allocation.cidrHost}`);
+
+    const gateway = allocation.gateway?.trim();
+    if (gateway && allocation === primary) {
+      lines.push("    routes:", "      - to: default", `        via: ${gateway}`);
     }
-  }
+
+    if (allocation.dns.length > 0) {
+      lines.push("    nameservers:", "      addresses:");
+      for (const d of allocation.dns) {
+        lines.push(`        - ${d}`);
+      }
+    }
+  });
 
   return lines.join("\n") + "\n";
 }
 
-export function ipamAnnotations(allocation: AllocatedIp): Record<string, string> {
+export function ipamAnnotations(
+  allocations: AllocatedIp | AllocatedIp[],
+): Record<string, string> {
+  const list = Array.isArray(allocations) ? allocations : [allocations];
+  if (list.length === 0) return {};
   return {
-    [IPAM_ANNOTATION_IPV4]: allocation.cidrHost,
-    [IPAM_ANNOTATION_POOL]: allocation.poolId,
+    [IPAM_ANNOTATION_IPV4]: list.map((a) => a.cidrHost).join(","),
+    [IPAM_ANNOTATION_POOL]: list.map((a) => a.poolId).join(","),
   };
 }
