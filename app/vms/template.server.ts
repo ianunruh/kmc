@@ -488,8 +488,11 @@ export function buildNatGatewayUserData(input: {
     `KMC_APISERVER=${input.apiServer.replace(/\/$/, "")}`,
     "KUBECONFIG=/etc/kmc/kubeconfig",
     "KMC_CA_FILE=/etc/kmc/ca.crt",
-    "KMC_POLL_SECONDS=15",
+    "KMC_AGENT_PATH=/usr/local/sbin/kmc-nat-agent",
     "KMC_POLICY_KEY=policy.json",
+    "KMC_AGENT_KEY=agent.py",
+    "KMC_HEARTBEAT_SECONDS=30",
+    "KMC_RESYNC_SECONDS=300",
   ].join("\n");
 
   const agentScriptYaml = yamlLiteralScriptBody(KMC_NAT_AGENT_SCRIPT);
@@ -508,7 +511,6 @@ export function buildNatGatewayUserData(input: {
     `  - ${input.sshPublicKey.trim()}`,
     "packages:",
     "  - qemu-guest-agent",
-    "  - curl",
     "  - python3",
     "  - iptables",
     "write_files:",
@@ -532,6 +534,7 @@ export function buildNatGatewayUserData(input: {
     "    permissions: '0755'",
     "    content: |",
     setupScriptYaml,
+    // Bootstrap copy; running agents self-update from ConfigMap data.agent.py.
     "  - path: /usr/local/sbin/kmc-nat-agent",
     "    permissions: '0755'",
     "    content: |",
@@ -558,7 +561,7 @@ export function buildNatGatewayUserData(input: {
     "      [Service]",
     "      Type=simple",
     "      EnvironmentFile=-/etc/kmc/nat-agent.env",
-    "      ExecStart=/usr/local/sbin/kmc-nat-agent run",
+    "      ExecStart=/usr/bin/python3 /usr/local/sbin/kmc-nat-agent run",
     "      Restart=on-failure",
     "      RestartSec=5",
     "      [Install]",

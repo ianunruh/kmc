@@ -20,6 +20,7 @@ import {
   PageHeader,
   ResourceLink,
   ResourceTable,
+  StatusBadge,
   Table,
 } from "~/ui";
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
@@ -254,7 +255,9 @@ export default function FloatingIpsPage({ loaderData }: Route.ComponentProps) {
                   {f.namespace}
                 </Text>
               </Table.Td>
-              <Table.Td>{f.agentStatus ? <Code>{f.agentStatus}</Code> : "—"}</Table.Td>
+              <Table.Td>
+                {f.agentStatus ? <StatusBadge status={f.agentStatus} /> : "—"}
+              </Table.Td>
               <Table.Td style={{ width: 48 }}>
                 <Menu position="bottom-end" withinPortal>
                   <Menu.Target>

@@ -9,6 +9,8 @@
 # Tooling caches
 .eslintcache
 *.tsbuildinfo
+__pycache__/
+*.py[cod]
 
 # Auth secrets
 config/secrets/

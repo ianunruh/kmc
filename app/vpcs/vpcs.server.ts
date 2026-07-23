@@ -79,6 +79,7 @@ import {
   listFloatingIpsForVm as listFloatingIpsForVmCore,
   listFloatingIpsFromPolicies,
   natPolicyConfigMapName,
+  syncAgentScriptInPolicyConfigMap,
 } from "./nat-policy.server";
 
 type KubeNad = {
@@ -603,6 +604,16 @@ async function enrichNatGateway(
     };
   } catch {
     /* keep base */
+  }
+
+  try {
+    // Push latest agent.py so existing gateways self-update without recreate.
+    await syncAgentScriptInPolicyConfigMap(cluster, namespace, vpcName);
+  } catch (err) {
+    console.error(
+      `syncAgentScriptInPolicyConfigMap(${cluster}/${namespace}/${vpcName}):`,
+      err,
+    );
   }
 
   try {

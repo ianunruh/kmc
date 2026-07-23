@@ -827,7 +827,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
                       </ResourceLink>
                     </Table.Td>
                     <Table.Td>
-                      {f.agentStatus ? <Code>{f.agentStatus}</Code> : "—"}
+                      {f.agentStatus ? <StatusBadge status={f.agentStatus} /> : "—"}
                     </Table.Td>
                     <Table.Td>
                       <Button

@@ -75,11 +75,27 @@ export const KMC_NAT_POLICY_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_
 /** Policy ConfigMap data key (JSON NatGatewayPolicy). */
 export const KMC_NAT_POLICY_DATA_KEY = "policy.json";
 
+/**
+ * Policy ConfigMap data key for the in-guest agent source (Python).
+ * Agents self-update when this key changes.
+ */
+export const KMC_NAT_AGENT_SCRIPT_KEY = "agent.py";
+
 /** Agent status annotations on the policy ConfigMap. */
 export const KMC_ANN_AGENT_STATUS = `${KMC_LABEL_NAMESPACE}/agent-status`;
 export const KMC_ANN_AGENT_OBSERVED_GENERATION = `${KMC_LABEL_NAMESPACE}/agent-observed-generation`;
 export const KMC_ANN_AGENT_LAST_ERROR = `${KMC_LABEL_NAMESPACE}/agent-last-error`;
 export const KMC_ANN_AGENT_APPLIED_AT = `${KMC_LABEL_NAMESPACE}/agent-applied-at`;
+/** Periodic liveness timestamp written by the agent (watch/heartbeat). */
+export const KMC_ANN_AGENT_HEARTBEAT_AT = `${KMC_LABEL_NAMESPACE}/agent-heartbeat-at`;
+/** Short sha256 prefix of the running agent script. */
+export const KMC_ANN_AGENT_VERSION = `${KMC_LABEL_NAMESPACE}/agent-version`;
+
+/**
+ * If the agent heartbeat is older than this, surface status as Stale.
+ * Default agent heartbeat interval is 30s; 90s ≈ 3 missed beats.
+ */
+export const KMC_NAT_AGENT_STALE_AFTER_MS = 90_000;
 
 /**
  * Comma-separated floating public IPv4s held by a NAT gateway (IPAM scan).

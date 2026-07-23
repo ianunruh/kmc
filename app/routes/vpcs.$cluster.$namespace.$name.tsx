@@ -29,6 +29,7 @@ import {
   ResourceIdentity,
   ResourceLink,
   ResourceTable,
+  StatusBadge,
   Table,
   YamlPanel,
 } from "~/ui";
@@ -381,10 +382,15 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
                 value={
                   vpc.natGateway.agentStatus ? (
                     <Group gap="xs">
-                      <Code>{vpc.natGateway.agentStatus}</Code>
+                      <StatusBadge status={vpc.natGateway.agentStatus} />
                       {vpc.natGateway.agentObservedGeneration ? (
                         <Text size="xs" c="dimmed">
                           gen {vpc.natGateway.agentObservedGeneration}
+                        </Text>
+                      ) : null}
+                      {vpc.natGateway.agentVersion ? (
+                        <Text size="xs" c="dimmed" ff="monospace">
+                          {vpc.natGateway.agentVersion}
                         </Text>
                       ) : null}
                     </Group>
@@ -399,6 +405,19 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
                   value={
                     <Text size="sm" c="red">
                       {vpc.natGateway.agentLastError}
+                    </Text>
+                  }
+                />
+              ) : null}
+              {vpc.natGateway.agentHeartbeatAt ? (
+                <DetailField
+                  label="Agent heartbeat"
+                  value={
+                    <Text
+                      size="sm"
+                      c={vpc.natGateway.agentStatus === "Stale" ? "orange" : "dimmed"}
+                    >
+                      {vpc.natGateway.agentHeartbeatAt}
                     </Text>
                   }
                 />

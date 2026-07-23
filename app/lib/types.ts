@@ -460,8 +460,11 @@ export interface VpcAttachedVm {
   isNatGateway?: boolean;
 }
 
-/** Agent status reported on the NAT policy ConfigMap. */
-export type NatAgentStatus = "Ready" | "Error" | "Unknown" | "Pending";
+/**
+ * Agent status reported on the NAT policy ConfigMap.
+ * `Stale` is derived server-side when Ready/Pending but heartbeat is too old.
+ */
+export type NatAgentStatus = "Ready" | "Error" | "Unknown" | "Pending" | "Stale";
 
 /** 1:1 floating public IP mapped through the NAT gateway. */
 export interface FloatingIpAssociation {
@@ -489,11 +492,15 @@ export interface NatGatewayInfo {
   publicNetwork?: string;
   /** Policy ConfigMap name (floating IPs), if managed. */
   policyConfigMap?: string;
-  /** In-guest agent status from policy CM annotations. */
+  /** In-guest agent status from policy CM annotations (may be Stale). */
   agentStatus?: NatAgentStatus;
   agentObservedGeneration?: string;
   agentLastError?: string;
   agentAppliedAt?: string;
+  /** Last agent liveness heartbeat (ISO-8601). */
+  agentHeartbeatAt?: string;
+  /** Short hash of the running agent script. */
+  agentVersion?: string;
   /** Floating IP associations from the policy ConfigMap. */
   floatingIps?: FloatingIpAssociation[];
 }
@@ -569,6 +576,7 @@ export interface FloatingIpSummary {
   /** NAT gateway VM name when known from the policy CM labels / VPC. */
   natGatewayVm?: string;
   agentStatus?: NatAgentStatus;
+  agentHeartbeatAt?: string;
   policyConfigMap?: string;
 }
 

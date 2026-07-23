@@ -237,17 +237,24 @@ network:
 
 On create, kmc also provisions:
 
-- ConfigMap `kmc-nat-<vpc>` (`policy.json` — desired floating IP maps)
-- ServiceAccount + Role/RoleBinding (get/watch/patch that ConfigMap)
+- ConfigMap `kmc-nat-<vpc>` with:
+  - `policy.json` — desired floating IP maps
+  - `agent.py` — stdlib Python agent source (self-update target)
+- ServiceAccount + Role/RoleBinding (get/list/watch/patch that ConfigMap)
 - Long-lived SA token embedded in cloud-init for the agent
 
-The agent applies 1:1 DNAT/SNAT and secondary addresses on the public NIC.
+**In-guest agent** (`app/vpcs/kmc-nat-agent.py`, Python 3 stdlib only):
+
+- Bootstrap copy is written by cloud-init; runtime source of truth is ConfigMap `agent.py`
+- Watches the policy ConfigMap (apiserver watch) and applies 1:1 DNAT/SNAT + secondary public addresses
+- Heartbeats via `kmc.ianunruh.com/agent-heartbeat-at` (~30s); kmc marks the agent **Stale** if the heartbeat is older than 90s
+- When kmc updates `agent.py` (VPC detail load, floating IP changes, or control-plane ensure), the agent rewrites itself and re-execs
 
 **UI**
 
 - **Floating IPs** nav — list/filter all associations; disassociate
 - **Associate floating IP** (`/floating-ips/create`) — pick VPC + target VM (or private IP); optional fixed public address
-- **VPC detail** — floating IP table, associate / disassociate
+- **VPC detail** — floating IP table, agent status/heartbeat, associate / disassociate
 - **VM detail** — floating IPs targeting this guest, associate (prefilled VPC) / disassociate
 
 ### User SSH keys

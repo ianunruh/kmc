@@ -10,14 +10,18 @@ import type {
 } from "~/lib/types";
 import {
   KMC_ANN_AGENT_APPLIED_AT,
+  KMC_ANN_AGENT_HEARTBEAT_AT,
   KMC_ANN_AGENT_LAST_ERROR,
   KMC_ANN_AGENT_OBSERVED_GENERATION,
   KMC_ANN_AGENT_STATUS,
+  KMC_ANN_AGENT_VERSION,
   KMC_ANN_FLOATING_IPV4,
   KMC_LABEL_RESOURCE,
   KMC_LABEL_ROLE,
   KMC_LABEL_VPC,
   KMC_MANAGED_BY,
+  KMC_NAT_AGENT_SCRIPT_KEY,
+  KMC_NAT_AGENT_STALE_AFTER_MS,
   KMC_NAT_POLICY_DATA_KEY,
   KMC_NAT_POLICY_LABEL_SELECTOR,
   KMC_RESOURCE_NAT_POLICY,
@@ -39,6 +43,7 @@ import {
   findIpPoolForMultus,
   parseIpv4AnnotationList,
 } from "~/lib/ipam/pools.server";
+import { KMC_NAT_AGENT_SCRIPT } from "~/vpcs/nat-agent-script";
 
 /** JSON document stored in the policy ConfigMap. */
 export type NatGatewayPolicyDoc = {
@@ -114,10 +119,47 @@ export function parsePolicyDoc(raw: string | undefined): NatGatewayPolicyDoc | n
 
 function mapAgentStatus(raw: string | undefined): NatAgentStatus {
   const v = raw?.trim();
-  if (v === "Ready" || v === "Error" || v === "Pending" || v === "Unknown") {
+  if (
+    v === "Ready" ||
+    v === "Error" ||
+    v === "Pending" ||
+    v === "Unknown" ||
+    v === "Stale"
+  ) {
     return v;
   }
   return "Unknown";
+}
+
+/**
+ * Age of the agent heartbeat annotation, or null if missing/unparsable.
+ */
+export function agentHeartbeatAgeMs(
+  annotations: Record<string, string>,
+  nowMs: number = Date.now(),
+): number | null {
+  const raw = annotations[KMC_ANN_AGENT_HEARTBEAT_AT]?.trim() || "";
+  if (!raw) return null;
+  const t = Date.parse(raw);
+  if (Number.isNaN(t)) return null;
+  return Math.max(0, nowMs - t);
+}
+
+/**
+ * Derive effective agent status, including Stale when the heartbeat is missing
+ * (for Ready) or older than the threshold.
+ */
+export function deriveAgentStatus(
+  annotations: Record<string, string>,
+  nowMs: number = Date.now(),
+  staleAfterMs: number = KMC_NAT_AGENT_STALE_AFTER_MS,
+): NatAgentStatus {
+  const base = mapAgentStatus(annotations[KMC_ANN_AGENT_STATUS]);
+  if (base === "Error" || base === "Unknown" || base === "Pending") return base;
+
+  const age = agentHeartbeatAgeMs(annotations, nowMs);
+  if (age === null || age > staleAfterMs) return "Stale";
+  return base;
 }
 
 export function floatingIpsFromPolicy(
@@ -131,6 +173,12 @@ export function floatingIpsFromPolicy(
     private: f.private,
     targetVm: f.targetVm,
   }));
+}
+
+/** Normalize agent script for ConfigMap storage (trailing newline). */
+export function normalizeAgentScript(script: string = KMC_NAT_AGENT_SCRIPT): string {
+  const body = script.replace(/\r\n/g, "\n");
+  return body.endsWith("\n") ? body : `${body}\n`;
 }
 
 /**
@@ -165,16 +213,24 @@ export async function getNatPolicyConfigMap(
 
 export function agentInfoFromAnnotations(
   annotations: Record<string, string>,
+  nowMs: number = Date.now(),
 ): Pick<
   NatGatewayInfo,
-  "agentStatus" | "agentObservedGeneration" | "agentLastError" | "agentAppliedAt"
+  | "agentStatus"
+  | "agentObservedGeneration"
+  | "agentLastError"
+  | "agentAppliedAt"
+  | "agentHeartbeatAt"
+  | "agentVersion"
 > {
   return {
-    agentStatus: mapAgentStatus(annotations[KMC_ANN_AGENT_STATUS]),
+    agentStatus: deriveAgentStatus(annotations, nowMs),
     agentObservedGeneration:
       annotations[KMC_ANN_AGENT_OBSERVED_GENERATION]?.trim() || undefined,
     agentLastError: annotations[KMC_ANN_AGENT_LAST_ERROR]?.trim() || undefined,
     agentAppliedAt: annotations[KMC_ANN_AGENT_APPLIED_AT]?.trim() || undefined,
+    agentHeartbeatAt: annotations[KMC_ANN_AGENT_HEARTBEAT_AT]?.trim() || undefined,
+    agentVersion: annotations[KMC_ANN_AGENT_VERSION]?.trim() || undefined,
   };
 }
 
@@ -375,6 +431,7 @@ export async function ensureNatGatewayControlPlane(input: {
     publicGateway: input.publicGateway,
     privateCidr: input.privateCidr,
   });
+  const agentScript = normalizeAgentScript();
 
   try {
     await core.createNamespacedConfigMap({
@@ -392,6 +449,7 @@ export async function ensureNatGatewayControlPlane(input: {
         },
         data: {
           [KMC_NAT_POLICY_DATA_KEY]: JSON.stringify(doc, null, 2),
+          [KMC_NAT_AGENT_SCRIPT_KEY]: agentScript,
         },
       },
     });
@@ -402,6 +460,8 @@ export async function ensureNatGatewayControlPlane(input: {
         { cause: err },
       );
     }
+    // Existing CM (e.g. recreate control plane): push latest agent script.
+    await syncAgentScriptInPolicyConfigMap(input.cluster, ns, vpc);
   }
 
   return {
@@ -414,6 +474,45 @@ export async function ensureNatGatewayControlPlane(input: {
     podCIDRs,
     serviceCIDRs,
   };
+}
+
+/**
+ * Ensure the policy ConfigMap carries the current in-guest agent source so
+ * running agents can self-update via watch.
+ */
+export async function syncAgentScriptInPolicyConfigMap(
+  cluster: ClusterId,
+  namespace: string,
+  vpcName: string,
+): Promise<boolean> {
+  const name = natPolicyConfigMapName(vpcName);
+  const { core } = getClusterClients(cluster);
+  const agentScript = normalizeAgentScript();
+  try {
+    const existing = await core.readNamespacedConfigMap({ name, namespace });
+    const current = existing.data?.[KMC_NAT_AGENT_SCRIPT_KEY] ?? "";
+    if (normalizeAgentScript(current) === agentScript) {
+      return false;
+    }
+    await core.replaceNamespacedConfigMap({
+      name,
+      namespace,
+      body: {
+        ...existing,
+        data: {
+          ...(existing.data ?? {}),
+          [KMC_NAT_AGENT_SCRIPT_KEY]: agentScript,
+        },
+      },
+    });
+    return true;
+  } catch (err) {
+    if (isNotFound(err)) return false;
+    throw new Error(
+      `Failed to sync agent script on ${namespace}/${name}: ${formatError(err)}`,
+      { cause: err },
+    );
+  }
 }
 
 /** Best-effort cleanup of NAT control-plane objects (CM, SA, Role, RoleBinding). */
@@ -454,6 +553,7 @@ async function writePolicyDoc(
   const existing = await core.readNamespacedConfigMap({ name, namespace });
   const nextGen = (doc.metadata.generation || 0) + 1;
   doc.metadata.generation = nextGen;
+  // Opportunistically refresh agent.py so floating-IP ops also roll out agent updates.
   await core.replaceNamespacedConfigMap({
     name,
     namespace,
@@ -462,6 +562,7 @@ async function writePolicyDoc(
       data: {
         ...(existing.data ?? {}),
         [KMC_NAT_POLICY_DATA_KEY]: JSON.stringify(doc, null, 2),
+        [KMC_NAT_AGENT_SCRIPT_KEY]: normalizeAgentScript(),
       },
     },
   });
@@ -714,14 +815,47 @@ export async function disassociateFloatingIp(
   }
 }
 
+/**
+ * @kubernetes/client-node may surface HTTP status on several shapes
+ * (`statusCode`, nested `response`, or only in the message as `HTTP-Code: 409`).
+ */
+function apiStatusCode(err: unknown): number | undefined {
+  const e = err as {
+    statusCode?: number;
+    code?: number | string;
+    response?: { statusCode?: number; status?: number };
+  };
+  const n =
+    e?.statusCode ??
+    e?.response?.statusCode ??
+    e?.response?.status ??
+    (typeof e?.code === "number" ? e.code : undefined);
+  if (typeof n === "number" && n > 0) return n;
+
+  const msg = formatError(err);
+  const httpCode = msg.match(/HTTP-Code:\s*(\d+)/i);
+  if (httpCode) {
+    const parsed = Number(httpCode[1]);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  const jsonCode = msg.match(/"code"\s*:\s*(\d{3})/);
+  if (jsonCode) {
+    const parsed = Number(jsonCode[1]);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
 function isNotFound(err: unknown): boolean {
-  const e = err as { response?: { statusCode?: number }; statusCode?: number };
-  return e?.response?.statusCode === 404 || e?.statusCode === 404;
+  if (apiStatusCode(err) === 404) return true;
+  const message = formatError(err).toLowerCase();
+  return message.includes("not found");
 }
 
 function isAlreadyExists(err: unknown): boolean {
-  const e = err as { response?: { statusCode?: number }; statusCode?: number };
-  return e?.response?.statusCode === 409 || e?.statusCode === 409;
+  if (apiStatusCode(err) === 409) return true;
+  const message = formatError(err).toLowerCase();
+  return message.includes("already exists") || message.includes("alreadyexists");
 }
 
 /**
@@ -759,6 +893,7 @@ export async function listFloatingIpsFromPolicies(
           targetVm: f.targetVm,
           policyConfigMap: cmName,
           agentStatus: agent.agentStatus,
+          agentHeartbeatAt: agent.agentHeartbeatAt,
         });
       }
     }

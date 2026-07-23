@@ -19,6 +19,10 @@ import { notifyActionError } from "~/lib/action-feedback";
 import { getRequestSession } from "~/lib/auth/middleware.server";
 import { logServerError } from "~/lib/errors";
 import { vpcPath } from "~/lib/format";
+import {
+  instanceTypeSelectData,
+  preferredInstanceTypeName,
+} from "~/instancetypes/options";
 import { getClusterCatalog } from "~/lib/k8s/catalog.server";
 import { listSshKeysOrEmpty } from "~/ssh-keys/ssh-keys.server";
 import {
@@ -224,27 +228,27 @@ export default function AddNatGatewayPage({
     [publicNetworks],
   );
 
-  const instanceTypeOptions = useMemo(() => {
-    if (!catalog) return [];
-    return catalog.instanceTypes.map((it) => ({
-      value: it.name,
-      label: `${it.name}${it.cpu || it.memory ? ` (${[it.cpu, it.memory].filter(Boolean).join(" / ")})` : ""}`,
-    }));
-  }, [catalog]);
+  const hasInstanceTypes = Boolean(catalog?.hasInstanceTypes);
+  const instanceTypeOptions = useMemo(
+    () => instanceTypeSelectData(catalog?.instanceTypes ?? []),
+    [catalog],
+  );
 
   const defaultImage =
     imageOptions.find((o) => o.value.includes("ubuntu"))?.value ??
     imageOptions[0]?.value ??
     "";
+  const defaultInstanceType = preferredInstanceTypeName(catalog?.instanceTypes ?? []);
 
   const form = useForm({
     initialValues: {
       name: `${vpc.name}-nat`.slice(0, 63),
       publicMultusNetwork: publicNetOptions[0]?.value ?? "",
       image: defaultImage,
-      sizeMode: (instanceTypeOptions.length > 0 ? "instancetype" : "manual") as
-        "instancetype" | "manual",
-      instanceType: instanceTypeOptions[0]?.value ?? "",
+      sizeMode: (hasInstanceTypes && defaultInstanceType
+        ? "instancetype"
+        : "manual") as "instancetype" | "manual",
+      instanceType: defaultInstanceType ?? "",
       cpuCores: 1,
       memory: "1Gi",
       diskSize: "10Gi",
@@ -263,6 +267,8 @@ export default function AddNatGatewayPage({
             : null,
       publicMultusNetwork: (v) => (!v ? "Required" : null),
       image: (v) => (!v ? "Required" : null),
+      instanceType: (v, values) =>
+        values.sizeMode === "instancetype" && !v.trim() ? "Required" : null,
       sshPublicKey: (v, values) =>
         values.sshKeyMode === "paste" && !v.trim() ? "Required" : null,
       savedSshKeyId: (v, values) =>
@@ -375,31 +381,31 @@ export default function AddNatGatewayPage({
               {...form.getInputProps("image")}
             />
 
-            {instanceTypeOptions.length > 0 && (
+            {hasInstanceTypes && (
               <Select
-                label="Size mode"
-                data={[
-                  { value: "instancetype", label: "Instance type" },
-                  { value: "manual", label: "Manual CPU / memory" },
-                ]}
+                label="Instance type"
+                description="Grouped by common-instancetypes class (u1 general purpose is a good default). Clear to set CPU/memory manually."
+                data={instanceTypeOptions}
+                searchable
+                clearable
+                nothingFoundMessage="No instance types match"
                 disabled={blocked}
-                {...form.getInputProps("sizeMode")}
+                required={form.values.sizeMode === "instancetype"}
+                value={form.values.instanceType || null}
+                error={form.errors.instanceType}
+                onChange={(v) => {
+                  form.setFieldValue("instanceType", v ?? "");
+                  form.setFieldValue("sizeMode", v ? "instancetype" : "manual");
+                }}
               />
             )}
 
-            {form.values.sizeMode === "instancetype" && instanceTypeOptions.length > 0 ? (
-              <Select
-                label="Instance type"
-                data={instanceTypeOptions}
-                searchable
-                disabled={blocked}
-                {...form.getInputProps("instanceType")}
-              />
-            ) : (
+            {(!hasInstanceTypes || form.values.sizeMode === "manual") && (
               <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
                 <NumberInput
                   label="CPU cores"
                   min={1}
+                  max={64}
                   disabled={blocked}
                   {...form.getInputProps("cpuCores")}
                 />
