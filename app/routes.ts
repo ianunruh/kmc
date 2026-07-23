@@ -42,6 +42,8 @@ export default [
   ),
   route("vpcs/:cluster/:namespace/:name", "routes/vpcs.$cluster.$namespace.$name.tsx"),
 
+  route("topology", "routes/topology._index.tsx"),
+
   route("instancetypes", "routes/instancetypes._index.tsx"),
   route("instancetypes/create", "routes/instancetypes.create.tsx"),
   route("instancetypes/:cluster/:name", "routes/instancetypes.$cluster.$name.tsx"),

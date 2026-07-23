@@ -231,6 +231,15 @@ export function vpcsListPath(
   return withSearch("/vpcs", filters);
 }
 
+export function topologyPath(
+  filters: {
+    cluster?: string | null;
+    namespace?: string | null;
+  } = {},
+): string {
+  return withSearch("/topology", filters);
+}
+
 export const DNS1123_LABEL = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 
 export function validateDns1123Label(value: string): string | null {

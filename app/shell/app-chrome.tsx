@@ -20,6 +20,7 @@ import {
   IconPlus,
   IconRoute,
   IconServer,
+  IconTopologyStar3,
   IconUser,
 } from "@tabler/icons-react";
 import { Form, Link, useLocation } from "react-router";
@@ -54,6 +55,12 @@ const NAV = [
     label: "VPCs",
     icon: IconNetwork,
     match: (path: string) => path.startsWith("/vpcs"),
+  },
+  {
+    to: "/topology",
+    label: "Network map",
+    icon: IconTopologyStar3,
+    match: (path: string) => path.startsWith("/topology"),
   },
   {
     to: "/instancetypes",

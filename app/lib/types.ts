@@ -402,3 +402,43 @@ export interface UpdateVpcRequest {
   dns?: string[];
 }
 
+// --- Network topology (VPCs / Multus NADs ↔ VMs) ---
+
+export type TopologyNetworkKind = "vpc" | "multus" | "pod";
+
+export interface TopologyNetworkNode {
+  /** Stable id: `cluster/namespace/name` or `cluster/namespace/__pod__` */
+  id: string;
+  kind: TopologyNetworkKind;
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  vlan?: number;
+  cidr?: string;
+  /** True when a Multus NAD was found for this node (false for orphaned refs). */
+  exists?: boolean;
+}
+
+export interface TopologyVmNode {
+  id: string;
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  status: string;
+  ready: boolean;
+}
+
+export interface TopologyEdge {
+  id: string;
+  networkId: string;
+  vmId: string;
+  /** Interface name on the VM template (e.g. default, net1). */
+  interfaceName?: string;
+}
+
+export interface NetworkTopology {
+  networks: TopologyNetworkNode[];
+  vms: TopologyVmNode[];
+  edges: TopologyEdge[];
+}
+
