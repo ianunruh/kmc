@@ -6,6 +6,7 @@ import {
   IconPlayerPlay,
   IconPlayerStop,
   IconRefresh,
+  IconTerminal2,
   IconTrash,
 } from "@tabler/icons-react";
 import { useState } from "react";
@@ -13,6 +14,7 @@ import { Link, useFetcher } from "react-router";
 import type { VmLifecycleIntent, VmSummary } from "~/lib/types";
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import {
+  canOpenConsole,
   canPause,
   canRestart,
   canStart,
@@ -20,6 +22,7 @@ import {
   canUnpause,
   formatAge,
   sizeLabel,
+  vmConsolePath,
   vmEditPath,
   vmPath,
   vmsListPath,
@@ -166,6 +169,19 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                         </ActionIcon>
                       </Menu.Target>
                       <Menu.Dropdown>
+                        <Menu.Item
+                          component={Link}
+                          to={vmConsolePath(vm)}
+                          leftSection={<IconTerminal2 size={14} />}
+                          disabled={!canOpenConsole(vm)}
+                          title={
+                            canOpenConsole(vm)
+                              ? "Open serial console"
+                              : "Serial console requires a live VMI (Running)"
+                          }
+                        >
+                          Console
+                        </Menu.Item>
                         <Menu.Item
                           component={Link}
                           to={vmEditPath(vm)}
