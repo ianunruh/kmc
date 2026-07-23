@@ -203,6 +203,34 @@ export function ingressesListPath(
   return withSearch("/ingresses", filters);
 }
 
+export function vpcPath(
+  vpc: Pick<
+    { cluster: string; namespace: string; name: string },
+    "cluster" | "namespace" | "name"
+  >,
+): string {
+  return `/vpcs/${encodeURIComponent(vpc.cluster)}/${encodeURIComponent(vpc.namespace)}/${encodeURIComponent(vpc.name)}`;
+}
+
+export function vpcEditPath(
+  vpc: Pick<
+    { cluster: string; namespace: string; name: string },
+    "cluster" | "namespace" | "name"
+  >,
+): string {
+  return `${vpcPath(vpc)}/edit`;
+}
+
+export function vpcsListPath(
+  filters: {
+    q?: string | null;
+    cluster?: string | null;
+    namespace?: string | null;
+  } = {},
+): string {
+  return withSearch("/vpcs", filters);
+}
+
 export const DNS1123_LABEL = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 
 export function validateDns1123Label(value: string): string | null {

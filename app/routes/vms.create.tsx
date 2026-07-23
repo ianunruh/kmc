@@ -331,14 +331,20 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
     return [
       { value: "", label: "Pod network" },
       ...nets.map((n) => {
+        const vlanPart = n.vlan != null ? `vlan ${n.vlan}` : null;
+        const kindPart = n.kind === "vpc" ? "VPC" : null;
         if (n.ipPool) {
-          const { id, cidr, free, total } = n.ipPool;
-          return {
-            value: n.name,
-            label: `${n.name} · IPAM ${id} (${free}/${total} free · ${cidr})`,
-          };
+          const { cidr, free, total } = n.ipPool;
+          const bits = [
+            n.name,
+            kindPart,
+            vlanPart,
+            `IPAM ${free}/${total} free · ${cidr}`,
+          ].filter(Boolean);
+          return { value: n.name, label: bits.join(" · ") };
         }
-        return { value: n.name, label: n.name };
+        const bits = [n.name, kindPart, vlanPart].filter(Boolean);
+        return { value: n.name, label: bits.join(" · ") };
       }),
     ];
   }, [networksFetcher.data]);
@@ -544,7 +550,10 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 <Text span ff="monospace" c="gray.4">
                   {selectedNetworkPool.id}
                 </Text>{" "}
-                ({selectedNetworkPool.cidr}, gateway {selectedNetworkPool.gateway}
+                ({selectedNetworkPool.cidr}
+                {selectedNetworkPool.gateway
+                  ? `, gateway ${selectedNetworkPool.gateway}`
+                  : ", no default route"}
                 ). Configured via cloud-init netplan; released when the VM is
                 deleted.
               </Text>

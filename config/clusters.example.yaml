@@ -29,6 +29,16 @@ clusters:
         # end: 74.82.62.200
         # Optional guest interface name for netplan (default: match virtio_net)
         # interface: enp1s0
+    # Optional: VLAN pool for self-service VPCs (Multus bridge + vlan on hypervisors).
+    # Create VPC in the UI allocates the next free VLAN and creates a namespace NAD.
+    # vlanPools:
+    #   - id: default
+    #     start: 3000
+    #     end: 3100
+    #     bridge: br0
+    #     dns: [1.1.1.1]
+    #     # Never allocate these (hand-managed segments)
+    #     exclude: [3000]
   - id: homelab
     displayName: homelab
     apiServer: https://kubernetes.den1.kcloud.zone:6443

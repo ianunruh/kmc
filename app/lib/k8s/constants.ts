@@ -34,3 +34,21 @@ export const KMC_LABEL_INGRESS = `${KMC_LABEL_NAMESPACE}/ingress`;
 
 /** List selector for kmc-managed Ingresses bound to a single VM. */
 export const KMC_INGRESS_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_TARGET_KIND}=${KMC_TARGET_KIND_VM}`;
+
+/** Value of kmc.ianunruh.com/resource for self-service VPC NADs. */
+export const KMC_RESOURCE_VPC = "vpc";
+
+/** Labels on kmc-managed VPC NetworkAttachmentDefinitions. */
+export const KMC_LABEL_RESOURCE = `${KMC_LABEL_NAMESPACE}/resource`;
+export const KMC_LABEL_VLAN = `${KMC_LABEL_NAMESPACE}/vlan`;
+export const KMC_LABEL_VLAN_POOL = `${KMC_LABEL_NAMESPACE}/vlan-pool`;
+
+/** Annotations on kmc-managed VPC NADs (optional IPAM + metadata). */
+export const KMC_ANN_CIDR = `${KMC_LABEL_NAMESPACE}/cidr`;
+export const KMC_ANN_GATEWAY = `${KMC_LABEL_NAMESPACE}/gateway`;
+export const KMC_ANN_DNS = `${KMC_LABEL_NAMESPACE}/dns`;
+export const KMC_ANN_DESCRIPTION = `${KMC_LABEL_NAMESPACE}/description`;
+export const KMC_ANN_OWNER = `${KMC_LABEL_NAMESPACE}/owner`;
+
+/** List selector for kmc-managed VPC NADs. */
+export const KMC_VPC_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_VPC}`;

@@ -547,6 +547,7 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
     allocation = await allocateIpv4ForMultus(
       input.cluster,
       input.network.multusNetworkName,
+      input.namespace,
     );
   }
 

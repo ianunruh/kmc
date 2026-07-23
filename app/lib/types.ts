@@ -179,7 +179,7 @@ export interface NetworkIpPoolInfo {
   cidr: string;
   free: number;
   total: number;
-  gateway: string;
+  gateway?: string;
 }
 
 export interface NetworkInfo {
@@ -187,6 +187,10 @@ export interface NetworkInfo {
   namespace: string;
   /** Present when this Multus NAD is bound to a configured IP pool */
   ipPool?: NetworkIpPoolInfo;
+  /** Self-service VPC vs hand-managed Multus NAD */
+  kind?: "vpc" | "multus";
+  /** VLAN id when this is a kmc VPC */
+  vlan?: number;
 }
 
 export interface ClusterCatalog {
@@ -332,5 +336,65 @@ export interface CreateIngressRequest {
   servicePort?: number;
   targetPort?: number;
   ingressClassName?: string;
+}
+
+// --- VPCs (Multus NAD + VLAN from cluster vlanPools) ---
+
+export interface VpcSummary {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  vlan: number;
+  vlanPoolId?: string;
+  bridge?: string;
+  /** Present when private IPAM is enabled on the VPC */
+  cidr?: string;
+  gateway?: string;
+  dns?: string[];
+  description?: string;
+  owner?: string;
+  age: string;
+}
+
+export interface VpcAttachedVm {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+}
+
+export interface VpcDetail extends VpcSummary {
+  uid?: string;
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
+  attachedVms: VpcAttachedVm[];
+  attachedCount: number;
+  ipPool?: NetworkIpPoolInfo;
+}
+
+export interface CreateVpcRequest {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  description?: string;
+  /** When set, enables scan-derived IPAM for this VPC NAD */
+  cidr?: string;
+  gateway?: string;
+  dns?: string[];
+  /** Prefer a specific vlanPools entry; default = first pool */
+  vlanPoolId?: string;
+}
+
+/**
+ * Mutable VPC fields (name, namespace, VLAN, bridge are immutable).
+ * IPAM: set cidr to enable; omit/empty cidr to disable and clear gateway/dns.
+ */
+export interface UpdateVpcRequest {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  description?: string;
+  cidr?: string;
+  gateway?: string;
+  dns?: string[];
 }
 

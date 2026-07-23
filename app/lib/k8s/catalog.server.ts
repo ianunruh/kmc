@@ -8,10 +8,16 @@ import type {
   PreferenceInfo,
   StorageClassInfo,
 } from "~/lib/types";
-import { findIpPoolForMultus, getIpPoolUsage } from "~/lib/ipam/pools.server";
+import {
+  getIpPoolUsageForConfig,
+  resolveIpPoolForMultus,
+} from "~/lib/ipam/pools.server";
 import { getClusterClients } from "./clients.server";
 import {
   IMAGE_PREFERENCE_LABEL,
+  KMC_LABEL_RESOURCE,
+  KMC_LABEL_VLAN,
+  KMC_RESOURCE_VPC,
   VM_ALLOWED_LABEL,
   VM_ALLOWED_LABEL_SELECTOR,
 } from "./constants";
@@ -85,30 +91,45 @@ export async function listNetworks(
       namespace,
       plural: "network-attachment-definitions",
     })) as {
-      items?: Array<{ metadata?: { name?: string; namespace?: string } }>;
+      items?: Array<{
+        metadata?: {
+          name?: string;
+          namespace?: string;
+          labels?: Record<string, string>;
+        };
+      }>;
     };
     const networks = (res.items ?? [])
-      .map((item) => ({
-        name: item.metadata?.name ?? "",
-        namespace: item.metadata?.namespace ?? namespace,
-      }))
+      .map((item) => {
+        const labels = item.metadata?.labels ?? {};
+        const isVpc = labels[KMC_LABEL_RESOURCE] === KMC_RESOURCE_VPC;
+        const vlanRaw = labels[KMC_LABEL_VLAN];
+        const vlan = vlanRaw ? Number(vlanRaw) : undefined;
+        return {
+          name: item.metadata?.name ?? "",
+          namespace: item.metadata?.namespace ?? namespace,
+          kind: isVpc ? ("vpc" as const) : ("multus" as const),
+          vlan:
+            vlan != null && Number.isInteger(vlan) && vlan > 0 ? vlan : undefined,
+        };
+      })
       .filter((n) => n.name)
       .sort((a, b) => a.name.localeCompare(b.name));
 
-    // Attach scan-derived IP pool usage when a Multus NAD is configured in ipPools.
+    // Attach IP pool usage from static ipPools and/or VPC NAD annotations.
     const usageByPoolId = new Map<
       string,
-      Awaited<ReturnType<typeof getIpPoolUsage>>
+      Awaited<ReturnType<typeof getIpPoolUsageForConfig>> | null
     >();
 
     return Promise.all(
       networks.map(async (n) => {
-        const pool = findIpPoolForMultus(cluster, n.name);
+        const pool = await resolveIpPoolForMultus(cluster, n.name, namespace);
         if (!pool) return n as NetworkInfo;
         let usage = usageByPoolId.get(pool.id);
         if (usage === undefined) {
           try {
-            usage = await getIpPoolUsage(cluster, pool.id);
+            usage = await getIpPoolUsageForConfig(cluster, pool);
           } catch {
             usage = null;
           }

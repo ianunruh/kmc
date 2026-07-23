@@ -3,6 +3,13 @@ import { getClusterIdentity } from "~/lib/k8s/cluster-config.server";
 import type { IpPoolConfig } from "~/lib/k8s/cluster-config.server";
 import { getClusterClients } from "~/lib/k8s/clients.server";
 import {
+  KMC_ANN_CIDR,
+  KMC_ANN_DNS,
+  KMC_ANN_GATEWAY,
+  KMC_LABEL_RESOURCE,
+  KMC_RESOURCE_VPC,
+} from "~/lib/k8s/constants";
+import {
   addressFromIpv4Annotation,
   containsIpv4,
   countUsableHosts,
@@ -23,7 +30,8 @@ export type AllocatedIp = {
   prefix: number;
   /** address/prefix */
   cidrHost: string;
-  gateway: string;
+  /** When omitted, netplan gets addresses only (no default route). */
+  gateway?: string;
   dns: string[];
   /** cloud-init network-config match: interface name, or virtio driver */
   interfaceName?: string;
@@ -105,6 +113,45 @@ export function findIpPoolForMultus(
   return null;
 }
 
+/**
+ * Static pools first; then VPC NAD annotations when `namespace` is known.
+ */
+export async function resolveIpPoolForMultus(
+  cluster: ClusterId,
+  multusNetworkName: string,
+  namespace?: string,
+): Promise<IpPoolConfig | null> {
+  const staticPool = findIpPoolForMultus(cluster, multusNetworkName);
+  if (staticPool) return staticPool;
+
+  const name = multusNetworkName.trim();
+  if (!name || !namespace?.trim()) return null;
+
+  const ref = parseMultusNetworkRef(name, namespace);
+  const nad = await loadNamespacedNad(cluster, ref.namespace, ref.name);
+  if (!nad) return null;
+  return ipPoolFromVpcNad(nad, ref.namespace);
+}
+
+/** Resolve by dynamic pool id `vpc:namespace/name`. */
+export async function resolveIpPoolById(
+  cluster: ClusterId,
+  poolId: string,
+): Promise<IpPoolConfig | null> {
+  const staticPool = listIpPools(cluster).find((p) => p.id === poolId);
+  if (staticPool) return staticPool;
+
+  if (!poolId.startsWith("vpc:")) return null;
+  const rest = poolId.slice("vpc:".length);
+  const slash = rest.indexOf("/");
+  if (slash <= 0) return null;
+  const ns = rest.slice(0, slash);
+  const name = rest.slice(slash + 1);
+  const nad = await loadNamespacedNad(cluster, ns, name);
+  if (!nad) return null;
+  return ipPoolFromVpcNad(nad, ns);
+}
+
 /** NAD name may be `bridge-external` or `namespace/bridge-external`. */
 export function multusNetworkMatches(poolNetwork: string, selected: string): boolean {
   const a = poolNetwork.trim();
@@ -118,10 +165,13 @@ export function multusNetworkMatches(poolNetwork: string, selected: string): boo
 
 function buildExcludeSet(pool: IpPoolConfig, parsed: ParsedCidr): Set<string> {
   const exclude = new Set<string>();
-  try {
-    exclude.add(pool.gateway.trim());
-  } catch {
-    /* validated earlier */
+  const gw = pool.gateway?.trim();
+  if (gw) {
+    try {
+      exclude.add(gw);
+    } catch {
+      /* validated earlier */
+    }
   }
   for (const e of pool.exclude ?? []) {
     const addr = addressFromIpv4Annotation(e) ?? e.trim();
@@ -141,15 +191,92 @@ function validatePool(pool: IpPoolConfig): {
   exclude: Set<string>;
 } {
   const parsed = parseCidr(pool.cidr);
-  parseIpv4(pool.gateway);
-  if (!containsIpv4(parsed, pool.gateway)) {
-    throw new Error(
-      `IP pool "${pool.id}": gateway ${pool.gateway} is outside ${parsed.cidr}`,
-    );
+  const gw = pool.gateway?.trim();
+  if (gw) {
+    parseIpv4(gw);
+    if (!containsIpv4(parsed, gw)) {
+      throw new Error(
+        `IP pool "${pool.id}": gateway ${gw} is outside ${parsed.cidr}`,
+      );
+    }
   }
   const range = usableHostRange(parsed, { start: pool.start, end: pool.end });
   const exclude = buildExcludeSet(pool, parsed);
   return { parsed, range, exclude };
+}
+
+type NadForPool = {
+  metadata?: {
+    name?: string;
+    namespace?: string;
+    labels?: Record<string, string>;
+    annotations?: Record<string, string>;
+  };
+};
+
+/** Build an IpPoolConfig from a VPC NAD when it has a cidr annotation. */
+export function ipPoolFromVpcNad(
+  nad: NadForPool,
+  namespaceHint?: string,
+): IpPoolConfig | null {
+  const labels = nad.metadata?.labels ?? {};
+  const ann = nad.metadata?.annotations ?? {};
+  if (labels[KMC_LABEL_RESOURCE] !== KMC_RESOURCE_VPC) return null;
+  const cidr = ann[KMC_ANN_CIDR]?.trim();
+  if (!cidr) return null;
+  const name = nad.metadata?.name?.trim();
+  if (!name) return null;
+  const ns = nad.metadata?.namespace?.trim() || namespaceHint?.trim() || "";
+  const gateway = ann[KMC_ANN_GATEWAY]?.trim() || undefined;
+  const dns = (ann[KMC_ANN_DNS] ?? "")
+    .split(",")
+    .map((d) => d.trim())
+    .filter(Boolean);
+  return {
+    id: `vpc:${ns}/${name}`,
+    multusNetwork: name,
+    cidr,
+    gateway,
+    dns: dns.length > 0 ? dns : undefined,
+  };
+}
+
+async function loadNamespacedNad(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+): Promise<NadForPool | null> {
+  const { custom } = getClusterClients(cluster);
+  try {
+    return (await custom.getNamespacedCustomObject({
+      group: "k8s.cni.cncf.io",
+      version: "v1",
+      namespace,
+      plural: "network-attachment-definitions",
+      name,
+    })) as NadForPool;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve Multus network name relative to a VM namespace.
+ * Accepts `bridge-external` or `other-ns/bridge-external`.
+ */
+export function parseMultusNetworkRef(
+  multusNetworkName: string,
+  defaultNamespace: string,
+): { namespace: string; name: string } {
+  const raw = multusNetworkName.trim();
+  const slash = raw.indexOf("/");
+  if (slash > 0) {
+    return {
+      namespace: raw.slice(0, slash),
+      name: raw.slice(slash + 1),
+    };
+  }
+  return { namespace: defaultNamespace, name: raw };
 }
 
 async function listClusterVmsAndVmis(cluster: ClusterId): Promise<{
@@ -228,12 +355,10 @@ export function collectUsedIpv4(
   return used;
 }
 
-export async function getIpPoolUsage(
+export async function getIpPoolUsageForConfig(
   cluster: ClusterId,
-  poolId: string,
-): Promise<IpPoolUsage | null> {
-  const pool = listIpPools(cluster).find((p) => p.id === poolId);
-  if (!pool) return null;
+  pool: IpPoolConfig,
+): Promise<IpPoolUsage> {
   const { parsed, range, exclude } = validatePool(pool);
   const { vms, vmis } = await listClusterVmsAndVmis(cluster);
   const usedSet = collectUsedIpv4(pool, parsed, vms, vmis);
@@ -250,7 +375,6 @@ export async function getIpPoolUsage(
     }
   }
 
-  // free = usable hosts not in used and not excluded
   let free = 0;
   for (let n = range.start; n <= range.end; n++) {
     const ip = formatIpv4(n);
@@ -267,28 +391,50 @@ export async function getIpPoolUsage(
   };
 }
 
+export async function getIpPoolUsage(
+  cluster: ClusterId,
+  poolId: string,
+): Promise<IpPoolUsage | null> {
+  const pool = await resolveIpPoolById(cluster, poolId);
+  if (!pool) return null;
+  return getIpPoolUsageForConfig(cluster, pool);
+}
+
 export async function getIpPoolUsageForMultus(
   cluster: ClusterId,
   multusNetworkName: string,
+  namespace?: string,
 ): Promise<IpPoolUsage | null> {
-  const pool = findIpPoolForMultus(cluster, multusNetworkName);
+  const pool = await resolveIpPoolForMultus(
+    cluster,
+    multusNetworkName,
+    namespace,
+  );
   if (!pool) return null;
-  return getIpPoolUsage(cluster, pool.id);
+  return getIpPoolUsageForConfig(cluster, pool);
 }
 
 /**
  * Allocate the next free IPv4 from the pool bound to this Multus NAD.
  * Returns null when the network has no configured pool.
+ * Pass `namespace` so self-service VPC NADs (dynamic pools) can be resolved.
  */
 export async function allocateIpv4ForMultus(
   cluster: ClusterId,
   multusNetworkName: string,
+  namespace?: string,
 ): Promise<AllocatedIp | null> {
-  const pool = findIpPoolForMultus(cluster, multusNetworkName);
+  const pool = await resolveIpPoolForMultus(
+    cluster,
+    multusNetworkName,
+    namespace,
+  );
   if (!pool) return null;
 
   const lockKey = `${cluster}::${pool.id}`;
   return withPoolLock(lockKey, async () => {
+    // Re-resolve inside the lock so concurrent creates see fresh used set;
+    // pool config is stable for the NAD.
     const { parsed, range, exclude } = validatePool(pool);
     const { vms, vmis } = await listClusterVmsAndVmis(cluster);
     const used = collectUsedIpv4(pool, parsed, vms, vmis);
@@ -305,7 +451,7 @@ export async function allocateIpv4ForMultus(
       address,
       prefix: parsed.prefix,
       cidrHost: `${address}/${parsed.prefix}`,
-      gateway: pool.gateway.trim(),
+      gateway: pool.gateway?.trim() || undefined,
       dns: (pool.dns ?? []).map((d) => d.trim()).filter(Boolean),
       interfaceName: pool.interface?.trim() || undefined,
     };
@@ -326,10 +472,16 @@ export function buildNetworkData(allocation: AllocatedIp): string {
     "    dhcp4: false",
     "    addresses:",
     `      - ${allocation.cidrHost}`,
-    "    routes:",
-    "      - to: default",
-    `        via: ${allocation.gateway}`,
   ];
+
+  const gateway = allocation.gateway?.trim();
+  if (gateway) {
+    lines.push(
+      "    routes:",
+      "      - to: default",
+      `        via: ${gateway}`,
+    );
+  }
 
   if (allocation.dns.length > 0) {
     lines.push("    nameservers:", "      addresses:");

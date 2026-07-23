@@ -16,6 +16,7 @@ import {
   IconCpu,
   IconKey,
   IconLogout,
+  IconNetwork,
   IconPlus,
   IconRoute,
   IconServer,
@@ -47,6 +48,12 @@ const NAV = [
     label: "Ingresses",
     icon: IconRoute,
     match: (path: string) => path.startsWith("/ingresses"),
+  },
+  {
+    to: "/vpcs",
+    label: "VPCs",
+    icon: IconNetwork,
+    match: (path: string) => path.startsWith("/vpcs"),
   },
   {
     to: "/instancetypes",

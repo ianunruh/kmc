@@ -15,7 +15,11 @@ export type IpPoolConfig = {
   multusNetwork: string;
   /** e.g. 74.82.62.0/24 */
   cidr: string;
-  gateway: string;
+  /**
+   * Default gateway for guest netplan routes.
+   * Optional for pure-L2 VPC pools (addresses only, no default route).
+   */
+  gateway?: string;
   dns?: string[];
   /** Extra addresses never allocated (routers, VIPs, etc.) */
   exclude?: string[];
@@ -27,6 +31,24 @@ export type IpPoolConfig = {
    * When omitted, match virtio_net driver.
    */
   interface?: string;
+};
+
+/**
+ * Operator-defined VLAN range for self-service VPCs (Multus bridge + vlan).
+ * See app/vpcs and app/lib/ipam/vlan-pools.server.ts.
+ */
+export type VlanPoolConfig = {
+  id: string;
+  /** Inclusive start VLAN id (e.g. 3000) */
+  start: number;
+  /** Inclusive end VLAN id (e.g. 3100) */
+  end: number;
+  /** Linux bridge on hypervisors (e.g. br0) */
+  bridge: string;
+  /** Default DNS for VPC IPAM when the user does not override */
+  dns?: string[];
+  /** VLANs never allocated (hand-managed segments, etc.) */
+  exclude?: number[];
 };
 
 export type ClusterIdentity = {
@@ -42,6 +64,8 @@ export type ClusterIdentity = {
   prometheusUrl?: string;
   /** Optional IPv4 pools for Multus bridge networks. */
   ipPools?: IpPoolConfig[];
+  /** Optional VLAN pools for self-service VPCs. */
+  vlanPools?: VlanPoolConfig[];
 };
 
 type ClustersFile = {
@@ -71,6 +95,14 @@ type ClustersFile = {
       start?: string;
       end?: string;
       interface?: string;
+    }>;
+    vlanPools?: Array<{
+      id?: string;
+      start?: number;
+      end?: number;
+      bridge?: string;
+      dns?: string[];
+      exclude?: number[];
     }>;
   }>;
 };
@@ -112,6 +144,7 @@ function loadFromYaml(path: string): {
       tokenEnv: raw.tokenEnv,
       prometheusUrl: raw.prometheusUrl?.trim() || undefined,
       ipPools: parseIpPools(raw.ipPools, raw.id),
+      vlanPools: parseVlanPools(raw.vlanPools, raw.id),
     });
   }
   const settingsCluster = doc.settingsCluster?.trim() || undefined;
@@ -161,6 +194,61 @@ function parseIpPools(
       start: p.start?.trim() || undefined,
       end: p.end?.trim() || undefined,
       interface: p.interface?.trim() || undefined,
+    });
+  }
+  return pools;
+}
+
+function parseVlanPools(
+  raw:
+    | Array<{
+        id?: string;
+        start?: number;
+        end?: number;
+        bridge?: string;
+        dns?: string[];
+        exclude?: number[];
+      }>
+    | undefined,
+  clusterId: string,
+): VlanPoolConfig[] | undefined {
+  if (!raw?.length) return undefined;
+  const pools: VlanPoolConfig[] = [];
+  const seenIds = new Set<string>();
+  for (const p of raw) {
+    const id = p.id?.trim();
+    const bridge = p.bridge?.trim();
+    const start = p.start;
+    const end = p.end;
+    if (!id || !bridge || start == null || end == null) {
+      throw new Error(
+        `Cluster "${clusterId}": each vlanPools entry needs id, bridge, start, and end`,
+      );
+    }
+    if (!Number.isInteger(start) || !Number.isInteger(end)) {
+      throw new Error(
+        `Cluster "${clusterId}": vlanPools "${id}" start/end must be integers`,
+      );
+    }
+    if (start < 1 || end > 4094 || start > end) {
+      throw new Error(
+        `Cluster "${clusterId}": vlanPools "${id}" range invalid (got ${start}-${end}; need 1–4094 and start ≤ end)`,
+      );
+    }
+    if (seenIds.has(id)) {
+      throw new Error(`Cluster "${clusterId}": duplicate vlanPools id "${id}"`);
+    }
+    seenIds.add(id);
+    const exclude = (p.exclude ?? [])
+      .map((v) => Number(v))
+      .filter((v) => Number.isInteger(v) && v >= start && v <= end);
+    pools.push({
+      id,
+      start,
+      end,
+      bridge,
+      dns: p.dns?.map((d) => d.trim()).filter(Boolean),
+      exclude: exclude.length > 0 ? exclude : undefined,
     });
   }
   return pools;

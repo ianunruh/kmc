@@ -103,15 +103,23 @@ clusters:
         cidr: 74.82.62.0/24
         gateway: 74.82.62.1
         dns: [8.8.8.8, 1.1.1.1]
+    # Optional — VLAN pool for self-service VPCs (Multus NAD on bridge + vlan)
+    vlanPools:
+      - id: default
+        start: 3000
+        end: 3100
+        bridge: br0
+        dns: [1.1.1.1]
+        exclude: [3000] # hand-managed VLANs
 ```
 
 ### IPAM (scan-derived)
 
-When a Multus network on create matches a cluster `ipPools` entry, kmc:
+When a Multus network on create matches a cluster `ipPools` entry **or** a self-service VPC NAD with a `cidr` annotation, kmc:
 
 1. Scans cluster VMs for `kmc.ianunruh.com/ipv4` annotations and live VMI interface IPs in the pool CIDR
 2. Picks the first free address (excluding network, broadcast, gateway, and `exclude`)
-3. Annotates the VM (`kmc.ianunruh.com/ipv4`, `kmc.ianunruh.com/ipam-pool`) and injects cloud-init `networkData` (netplan static config)
+3. Annotates the VM (`kmc.ianunruh.com/ipv4`, `kmc.ianunruh.com/ipam-pool`) and injects cloud-init `networkData` (netplan static config; omits default route if the pool has no gateway)
 4. Frees the address automatically when the VM is deleted (next create re-scans)
 
 No separate IPAM database — the cluster is the source of truth. Concurrent creates in a single kmc process are serialized per pool; multi-replica kmc can still race (use one replica or graduate to explicit leases later).
@@ -156,6 +164,7 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 
 - **Virtual machines** — list, create, detail, edit (labels always; size / preference / run strategy when stopped), stop/start/restart/pause/unpause/delete, **serial console** (full-page xterm via app-proxied WebSocket)
 - **IPAM** — optional per-cluster IPv4 pools for Multus NADs; auto-allocate + netplan cloud-init on create
+- **VPCs** — self-service Multus networks from a cluster VLAN pool (`vlanPools`); optional private CIDR for IPAM
 - **SSH keys** — signed-in users save named public keys (ConfigMap on the settings cluster); select when creating a VM
 - **Ingresses** — create/list/detail/delete HTTP Ingresses bound to a VM (companion ClusterIP Service selects `kubevirt.io/vm`)
 
@@ -188,6 +197,23 @@ For **pod-network** VMs, kmc can create a Kubernetes Ingress that routes to the 
 **Delete** removes both the Ingress and the companion Service; the VM is left intact.
 
 **Future:** bind one Ingress/Service to a group of VMs via label selector (same object model; only the Service selector source changes).
+
+### VPCs (self-service Multus + VLAN)
+
+When a cluster has `vlanPools` in `clusters.yaml` (and hypervisors expose those VLANs on the configured bridge, e.g. `br0` with VLAN filtering), users can create **VPCs** from the console:
+
+1. **Create VPC** — pick cluster, vm-allowed namespace, name; optionally enable private IPAM (CIDR + optional gateway/DNS)
+2. kmc allocates the lowest free VLAN in the pool (scan of existing VPC NAD labels + `exclude`), then creates a Multus `NetworkAttachmentDefinition` with bridge CNI + `vlan`
+3. **Launch VM** — choose the new NAD in the network dropdown; if the VPC has a CIDR, IPAM works like static `ipPools`
+4. **Delete VPC** — blocked while any VM still attaches to the NAD; then the NAD is removed and the VLAN returns to the free pool
+
+**Requirements**
+
+- TOR / underlay already carries the VLAN range; nodes have the bridge with VLAN filtering
+- Caller needs RBAC to create/list/delete `network-attachment-definitions.k8s.cni.cncf.io` in the target namespace
+- Pure L2 by default (VM-to-VM on the VLAN); gateway is only for guest default routes if you provide one
+
+Static Multus networks and `ipPools` entries continue to work unchanged.
 
 ### User SSH keys
 
