@@ -250,6 +250,12 @@ gateway reuses the existing policy, updates primary NIC metadata, and re-stamps
 floating IPs onto the new VM. The control plane (ConfigMap + SA/RBAC) is removed
 when the VPC is deleted (after all attached VMs are gone).
 
+**Disassociate vs release:** Disassociating a floating IP unmaps it from the
+private target but **keeps** the public address held for the VPC (secondary IP
+stays on the NAT gateway; IPAM still reserves it). **Release** removes the
+policy entry so the address returns to the public pool. Held addresses can be
+re-associated later without re-allocating.
+
 **In-guest agent** (`app/vpcs/kmc-nat-agent.py`, Python 3 stdlib only):
 
 - Bootstrap copy is written by cloud-init; runtime source of truth is ConfigMap `agent.py`

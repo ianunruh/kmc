@@ -263,6 +263,7 @@ async function loadClusterTopology(
     const floats = await listFloatingIpsFromPolicies(cluster);
     const pools = listIpPools(cluster);
     for (const f of floats) {
+      if (f.state !== "associated") continue;
       const publicAddr =
         addressFromIpv4Annotation(f.public) ?? f.public.trim();
       if (!publicAddr) continue;
@@ -271,7 +272,7 @@ async function loadClusterTopology(
       if (f.targetVm?.trim()) {
         targetVmId = vmByNsName.get(`${f.namespace}/${f.targetVm.trim()}`)?.id;
       }
-      if (!targetVmId) {
+      if (!targetVmId && f.private?.trim()) {
         const priv = addressFromIpv4Annotation(f.private) ?? f.private.trim();
         if (priv) {
           targetVmId = vmIdsByPrivate.get(`${f.namespace}|${priv}`);

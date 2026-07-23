@@ -24,6 +24,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       namespace: getSearchParam(url.searchParams, "namespace") ?? "",
       vpc: getSearchParam(url.searchParams, "vpc") ?? "",
       targetVm: getSearchParam(url.searchParams, "targetVm") ?? "",
+      publicIpv4: getSearchParam(url.searchParams, "publicIpv4") ?? "",
     },
   };
 }
@@ -92,7 +93,7 @@ export default function AssociateFloatingIpPage({
           : "",
       targetVm: prefill.targetVm,
       privateIpv4: "",
-      publicIpv4: "",
+      publicIpv4: prefill.publicIpv4,
       targetMode: (prefill.targetVm ? "vm" : "vm") as "vm" | "ip",
     },
     validate: {
@@ -132,6 +133,14 @@ export default function AssociateFloatingIpPage({
     return selected.targetVms.map((vm) => ({
       value: vm.name,
       label: vm.allocatedIpv4 ? `${vm.name} (${vm.allocatedIpv4})` : vm.name,
+    }));
+  }, [selected]);
+
+  const publicOptions = useMemo(() => {
+    const held = selected?.heldPublicIps ?? [];
+    return held.map((ip) => ({
+      value: ip,
+      label: `${ip} (held)`,
     }));
   }, [selected]);
 
@@ -259,13 +268,27 @@ export default function AssociateFloatingIpPage({
           </FormSection>
 
           <FormSection title="Public address">
-            <TextInput
-              label="Public IPv4 (optional)"
-              description="Leave empty to allocate the next free address from the NAT gateway’s public Multus pool."
-              placeholder="auto"
-              disabled={blocked}
-              {...form.getInputProps("publicIpv4")}
-            />
+            {(selected?.heldPublicIps.length ?? 0) > 0 ? (
+              <Select
+                label="Public IPv4"
+                description="Clear to allocate a new free address. Held entries were disassociated but not released."
+                placeholder="Allocate new from pool"
+                data={publicOptions}
+                searchable
+                clearable
+                disabled={blocked}
+                value={form.values.publicIpv4 || null}
+                onChange={(v) => form.setFieldValue("publicIpv4", v ?? "")}
+              />
+            ) : (
+              <TextInput
+                label="Public IPv4 (optional)"
+                description="Leave empty to allocate the next free address from the NAT gateway’s public Multus pool."
+                placeholder="auto"
+                disabled={blocked}
+                {...form.getInputProps("publicIpv4")}
+              />
+            )}
           </FormSection>
 
           <FormActions>

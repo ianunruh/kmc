@@ -327,11 +327,14 @@ def apply_policy_json(policy_raw: str, public_if: str) -> str:
             continue
         pub = str(f.get("public", "")).split("/")[0].strip()
         priv = str(f.get("private", "")).split("/")[0].strip()
-        if not pub or not priv:
+        if not pub:
             continue
-        # Always track/install as /32 on the public NIC
+        # Always track/install as /32 on the public NIC (held + associated).
+        # Held FIPs keep the secondary address reserved without DNAT/SNAT.
         new_floats.append(f"{pub}/32")
         ensure_float_addr(public_if, pub)
+        if not priv:
+            continue
         iptables(
             "-t", "nat", "-A", "KMC_FLOAT_PRE",
             "-d", f"{pub}/32", "-j", "DNAT", "--to-destination", priv,

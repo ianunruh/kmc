@@ -4,9 +4,11 @@ import type {
   ClusterId,
   DisassociateFloatingIpRequest,
   FloatingIpAssociation,
+  FloatingIpState,
   FloatingIpSummary,
   NatAgentStatus,
   NatGatewayInfo,
+  ReleaseFloatingIpRequest,
 } from "~/lib/types";
 import {
   KMC_ANN_AGENT_APPLIED_AT,
@@ -64,11 +66,19 @@ export type NatGatewayPolicyDoc = {
     id: string;
     public: string;
     prefix: number;
-    private: string;
+    /** Private target when associated; empty/omitted when held. */
+    private?: string;
     targetVm?: string;
     protocol?: string;
   }>;
 };
+
+/** Associated when a private target is set; otherwise held (reserved, unmapped). */
+export function floatingIpState(f: {
+  private?: string;
+}): FloatingIpState {
+  return f.private?.trim() ? "associated" : "held";
+}
 
 export function natPolicyConfigMapName(vpcName: string): string {
   return `kmc-nat-${vpcName}`.slice(0, 63);
@@ -166,13 +176,17 @@ export function floatingIpsFromPolicy(
   doc: NatGatewayPolicyDoc | null,
 ): FloatingIpAssociation[] {
   if (!doc) return [];
-  return doc.floatingIPs.map((f) => ({
-    id: f.id,
-    public: f.public,
-    prefix: f.prefix,
-    private: f.private,
-    targetVm: f.targetVm,
-  }));
+  return doc.floatingIPs.map((f) => {
+    const privateAddr = f.private?.trim() || undefined;
+    return {
+      id: f.id,
+      public: f.public,
+      prefix: f.prefix,
+      private: privateAddr,
+      targetVm: privateAddr ? f.targetVm : undefined,
+      state: floatingIpState({ private: privateAddr }),
+    };
+  });
 }
 
 /** Normalize agent script for ConfigMap storage (trailing newline). */
@@ -751,8 +765,42 @@ async function resolvePrivateTarget(
   return { privateIpv4: match, targetVm: vmName };
 }
 
+function findFloatEntry(
+  doc: NatGatewayPolicyDoc,
+  idOrPublic: string,
+): { index: number; entry: NatGatewayPolicyDoc["floatingIPs"][number] } | null {
+  const key = idOrPublic.trim();
+  if (!key) return null;
+  const index = doc.floatingIPs.findIndex((f) => {
+    const pub = addressFromIpv4Annotation(f.public) ?? f.public;
+    return f.id === key || pub === key;
+  });
+  if (index < 0) return null;
+  return { index, entry: doc.floatingIPs[index]! };
+}
+
+async function syncFloatAnnotationBestEffort(
+  cluster: ClusterId,
+  namespace: string,
+  natGatewayVm: string | undefined,
+  doc: NatGatewayPolicyDoc,
+): Promise<void> {
+  if (!natGatewayVm?.trim()) return;
+  try {
+    await syncNatGatewayFloatingAnnotation(
+      cluster,
+      namespace,
+      natGatewayVm.trim(),
+      floatingIpsFromPolicy(doc),
+    );
+  } catch (err) {
+    console.error("syncNatGatewayFloatingAnnotation failed:", formatError(err));
+  }
+}
+
 /**
- * Allocate (or use provided) public IP and add a floating association to the policy CM.
+ * Allocate (or use provided / held) public IP and map it to a private target.
+ * Held FIPs (disassociated but not released) can be re-bound by public address.
  */
 export async function associateFloatingIp(
   input: AssociateFloatingIpRequest & {
@@ -783,13 +831,15 @@ export async function associateFloatingIp(
     },
   );
 
-  // One float per private IP for v1
-  const existing = policy.doc.floatingIPs.find(
-    (f) => (addressFromIpv4Annotation(f.private) ?? f.private) === privateIpv4,
-  );
-  if (existing) {
+  // One associated float per private IP for v1 (held entries have no private).
+  const existingPrivate = policy.doc.floatingIPs.find((f) => {
+    const priv = f.private?.trim();
+    if (!priv) return false;
+    return (addressFromIpv4Annotation(priv) ?? priv) === privateIpv4;
+  });
+  if (existingPrivate) {
     throw new Error(
-      `Private address ${privateIpv4} already has floating IP ${existing.public}`,
+      `Private address ${privateIpv4} already has floating IP ${existingPrivate.public}`,
     );
   }
 
@@ -798,6 +848,52 @@ export async function associateFloatingIp(
     throw new Error(`No ipPools entry for public Multus "${input.publicMultusNetwork}"`);
   }
   const prefix = parseCidr(publicPool.cidr).prefix;
+  const doc = policy.doc;
+
+  // Re-associate a held public address when requested.
+  if (input.publicIpv4?.trim()) {
+    const wanted =
+      addressFromIpv4Annotation(input.publicIpv4.trim()) ?? input.publicIpv4.trim();
+    const heldIdx = doc.floatingIPs.findIndex((f) => {
+      const pub = addressFromIpv4Annotation(f.public) ?? f.public;
+      return pub === wanted && !f.private?.trim();
+    });
+    if (heldIdx >= 0) {
+      const held = doc.floatingIPs[heldIdx]!;
+      doc.floatingIPs[heldIdx] = {
+        ...held,
+        private: privateIpv4,
+        targetVm,
+        protocol: held.protocol ?? "all",
+      };
+      await writePolicyDoc(input.cluster, input.namespace, input.vpcName, doc);
+      await syncFloatAnnotationBestEffort(
+        input.cluster,
+        input.namespace,
+        input.natGatewayVm,
+        doc,
+      );
+      return {
+        id: held.id,
+        public: addressFromIpv4Annotation(held.public) ?? held.public,
+        prefix: held.prefix || prefix,
+        private: privateIpv4,
+        targetVm,
+        state: "associated",
+      };
+    }
+
+    // Already associated to another private?
+    const already = doc.floatingIPs.find((f) => {
+      const pub = addressFromIpv4Annotation(f.public) ?? f.public;
+      return pub === wanted && Boolean(f.private?.trim());
+    });
+    if (already) {
+      throw new Error(
+        `Public address ${wanted} is already associated to ${already.private}`,
+      );
+    }
+  }
 
   let publicAddr: string;
   if (input.publicIpv4?.trim()) {
@@ -826,9 +922,9 @@ export async function associateFloatingIp(
     publicAddr = alloc.address;
   }
 
-  // Re-check not already associated as float
+  // Defensive: policy entry already present (e.g. race)
   if (
-    policy.doc.floatingIPs.some(
+    doc.floatingIPs.some(
       (f) => (addressFromIpv4Annotation(f.public) ?? f.public) === publicAddr,
     )
   ) {
@@ -842,9 +938,9 @@ export async function associateFloatingIp(
     prefix,
     private: privateIpv4,
     targetVm,
+    state: "associated",
   };
 
-  const doc = policy.doc;
   doc.floatingIPs = [
     ...doc.floatingIPs,
     {
@@ -857,21 +953,21 @@ export async function associateFloatingIp(
     },
   ];
   await writePolicyDoc(input.cluster, input.namespace, input.vpcName, doc);
-
-  try {
-    await syncNatGatewayFloatingAnnotation(
-      input.cluster,
-      input.namespace,
-      input.natGatewayVm,
-      floatingIpsFromPolicy(doc),
-    );
-  } catch (err) {
-    console.error("syncNatGatewayFloatingAnnotation failed:", formatError(err));
-  }
+  await syncFloatAnnotationBestEffort(
+    input.cluster,
+    input.namespace,
+    input.natGatewayVm,
+    doc,
+  );
 
   return assoc;
 }
 
+/**
+ * Unmap a floating IP from its private target but keep the public address
+ * reserved for this VPC (held). Use {@link releaseFloatingIp} to return it
+ * to the pool.
+ */
 export async function disassociateFloatingIp(
   input: DisassociateFloatingIpRequest & { natGatewayVm?: string },
 ): Promise<void> {
@@ -886,30 +982,64 @@ export async function disassociateFloatingIp(
     );
   }
 
-  const key = input.idOrPublic.trim();
-  const before = policy.doc.floatingIPs.length;
-  policy.doc.floatingIPs = policy.doc.floatingIPs.filter((f) => {
-    const pub = addressFromIpv4Annotation(f.public) ?? f.public;
-    return f.id !== key && pub !== key;
-  });
-  if (policy.doc.floatingIPs.length === before) {
-    throw new Error(`Floating IP "${key}" not found on this VPC`);
+  const found = findFloatEntry(policy.doc, input.idOrPublic);
+  if (!found) {
+    throw new Error(`Floating IP "${input.idOrPublic.trim()}" not found on this VPC`);
   }
+  if (!found.entry.private?.trim()) {
+    throw new Error(
+      `Floating IP ${found.entry.public} is already held (not associated). Release it to return it to the pool.`,
+    );
+  }
+
+  policy.doc.floatingIPs[found.index] = {
+    id: found.entry.id,
+    public: found.entry.public,
+    prefix: found.entry.prefix,
+    protocol: found.entry.protocol ?? "all",
+    // Clear private/target → held
+  };
 
   await writePolicyDoc(input.cluster, input.namespace, input.vpcName, policy.doc);
+  await syncFloatAnnotationBestEffort(
+    input.cluster,
+    input.namespace,
+    input.natGatewayVm,
+    policy.doc,
+  );
+}
 
-  if (input.natGatewayVm?.trim()) {
-    try {
-      await syncNatGatewayFloatingAnnotation(
-        input.cluster,
-        input.namespace,
-        input.natGatewayVm.trim(),
-        floatingIpsFromPolicy(policy.doc),
-      );
-    } catch (err) {
-      console.error("syncNatGatewayFloatingAnnotation failed:", formatError(err));
-    }
+/**
+ * Remove a floating IP from policy entirely so the public address returns to
+ * the IPAM pool. Works for held or associated entries.
+ */
+export async function releaseFloatingIp(
+  input: ReleaseFloatingIpRequest & { natGatewayVm?: string },
+): Promise<void> {
+  const policy = await getNatPolicyConfigMap(
+    input.cluster,
+    input.namespace,
+    input.vpcName,
+  );
+  if (!policy?.doc) {
+    throw new Error(
+      `No NAT policy ConfigMap for VPC ${input.namespace}/${input.vpcName}`,
+    );
   }
+
+  const found = findFloatEntry(policy.doc, input.idOrPublic);
+  if (!found) {
+    throw new Error(`Floating IP "${input.idOrPublic.trim()}" not found on this VPC`);
+  }
+
+  policy.doc.floatingIPs = policy.doc.floatingIPs.filter((_, i) => i !== found.index);
+  await writePolicyDoc(input.cluster, input.namespace, input.vpcName, policy.doc);
+  await syncFloatAnnotationBestEffort(
+    input.cluster,
+    input.namespace,
+    input.natGatewayVm,
+    policy.doc,
+  );
 }
 
 /**
@@ -979,6 +1109,7 @@ export async function listFloatingIpsFromPolicies(
       if (!doc) continue;
       const agent = agentInfoFromAnnotations(cm.metadata?.annotations ?? {});
       for (const f of doc.floatingIPs) {
+        const privateAddr = f.private?.trim() || undefined;
         items.push({
           cluster,
           namespace: ns,
@@ -986,8 +1117,9 @@ export async function listFloatingIpsFromPolicies(
           id: f.id,
           public: f.public,
           prefix: f.prefix,
-          private: f.private,
-          targetVm: f.targetVm,
+          private: privateAddr,
+          targetVm: privateAddr ? f.targetVm : undefined,
+          state: floatingIpState({ private: privateAddr }),
           policyConfigMap: cmName,
           agentStatus: agent.agentStatus,
           agentHeartbeatAt: agent.agentHeartbeatAt,
@@ -1015,9 +1147,12 @@ export async function listFloatingIpsForVm(
   );
   return all.filter((f) => {
     if (f.namespace !== namespace) return false;
+    if (f.state !== "associated") return false;
     if (f.targetVm && f.targetVm === vmName) return true;
-    const priv = addressFromIpv4Annotation(f.private) ?? f.private;
-    return privSet.has(priv);
+    const priv = f.private
+      ? (addressFromIpv4Annotation(f.private) ?? f.private)
+      : "";
+    return priv ? privSet.has(priv) : false;
   });
 }
 

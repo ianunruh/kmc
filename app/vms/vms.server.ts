@@ -738,13 +738,14 @@ export async function listVms(clusterFilter?: ClusterId): Promise<{
           }
         }
         for (const f of floats) {
+          if (f.state !== "associated") continue;
           const publicAddr =
             addressFromIpv4Annotation(f.public) ?? f.public.trim();
           if (!publicAddr) continue;
           let key: string | undefined;
           if (f.targetVm?.trim()) {
             key = `${f.namespace}/${f.targetVm.trim()}`;
-          } else {
+          } else if (f.private?.trim()) {
             const priv = addressFromIpv4Annotation(f.private) ?? f.private.trim();
             if (priv) key = privateToVmKey.get(`${f.namespace}|${priv}`);
           }

@@ -468,17 +468,25 @@ export interface VpcAttachedVm {
  */
 export type NatAgentStatus = "Ready" | "Error" | "Unknown" | "Pending" | "Stale";
 
-/** 1:1 floating public IP mapped through the NAT gateway. */
+/**
+ * Floating IP lifecycle:
+ * - `associated` — public IP mapped to a private target (DNAT/SNAT active)
+ * - `held` — public IP reserved for this VPC but not mapped (kept out of the pool)
+ */
+export type FloatingIpState = "associated" | "held";
+
+/** 1:1 floating public IP mapped through the NAT gateway (or held unmapped). */
 export interface FloatingIpAssociation {
   id: string;
   /** Public / float address (no prefix). */
   public: string;
   /** Prefix length on the public Multus NIC (e.g. 27). */
   prefix: number;
-  /** Private VPC target address (no prefix). */
-  private: string;
+  /** Private VPC target address (no prefix). Absent when held. */
+  private?: string;
   /** Optional target VM name (same namespace). */
   targetVm?: string;
+  state: FloatingIpState;
 }
 
 /** Dual-homed (or triple-homed) Ubuntu NAT gateway for a VPC. */
@@ -570,6 +578,15 @@ export interface DisassociateFloatingIpRequest {
   idOrPublic: string;
 }
 
+/** Release a held (or associated) floating IP back to the public pool. */
+export interface ReleaseFloatingIpRequest {
+  cluster: ClusterId;
+  namespace: string;
+  vpcName: string;
+  /** Floating IP id or public address. */
+  idOrPublic: string;
+}
+
 /** Row for the top-level floating IP list (and embed on VPC/VM detail). */
 export interface FloatingIpSummary {
   cluster: ClusterId;
@@ -578,8 +595,10 @@ export interface FloatingIpSummary {
   id: string;
   public: string;
   prefix: number;
-  private: string;
+  /** Private target when associated; omitted when held. */
+  private?: string;
   targetVm?: string;
+  state: FloatingIpState;
   /** NAT gateway VM name when known from the policy CM labels / VPC. */
   natGatewayVm?: string;
   agentStatus?: NatAgentStatus;
@@ -597,6 +616,8 @@ export interface FloatingIpEligibleVpc {
   publicNetwork?: string;
   agentStatus?: NatAgentStatus;
   floatingCount: number;
+  /** Held public addresses available to re-associate without allocating. */
+  heldPublicIps: string[];
   /** Non–NAT-gateway attached VMs with private addresses. */
   targetVms: Array<{
     name: string;

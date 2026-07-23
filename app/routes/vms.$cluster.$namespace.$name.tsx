@@ -317,7 +317,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
       if (data.intent === "disassociate-fip") {
         notifyActionSuccess(
           "Done",
-          "Floating IP disassociated — agent will drop DNAT shortly",
+          "Floating IP disassociated — public address is held (not released)",
         );
       } else {
         notifyActionSuccess("Done", `VM ${intentSuccessLabel(data.intent)} requested`);
@@ -833,7 +833,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
                       <Button
                         size="compact-xs"
                         variant="subtle"
-                        color="red"
+                        color="orange"
                         disabled={busy}
                         onClick={() => setDisassociateTarget(f)}
                       >
@@ -1124,7 +1124,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
         onClose={() => setDisassociateTarget(null)}
         title="Disassociate floating IP"
         confirmLabel="Disassociate"
-        confirmColor="red"
+        confirmColor="orange"
         loading={busy}
         onConfirm={() => {
           if (!disassociateTarget) return;
@@ -1141,11 +1141,12 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
         message={
           disassociateTarget ? (
             <>
-              Remove mapping{" "}
+              Unmap{" "}
               <Code>
                 {disassociateTarget.public} → {disassociateTarget.private}
               </Code>{" "}
-              on VPC <Code>{disassociateTarget.vpcName}</Code>?
+              on VPC <Code>{disassociateTarget.vpcName}</Code>? The public address stays
+              reserved (held) until released from the floating IPs list or VPC page.
             </>
           ) : (
             ""

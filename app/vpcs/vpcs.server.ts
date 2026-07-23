@@ -10,6 +10,7 @@ import type {
   FloatingIpEligibleVpc,
   FloatingIpSummary,
   NatGatewayInfo,
+  ReleaseFloatingIpRequest,
   UpdateVpcRequest,
   VmSummary,
   VpcAttachedVm,
@@ -81,6 +82,7 @@ import {
   listFloatingIpsForVm as listFloatingIpsForVmCore,
   listFloatingIpsFromPolicies,
   natPolicyConfigMapName,
+  releaseFloatingIp as releaseFloatingIpCore,
   syncAgentScriptInPolicyConfigMap,
   syncNatGatewayFloatingAnnotation,
 } from "./nat-policy.server";
@@ -1215,6 +1217,17 @@ export async function disassociateFloatingIp(
   });
 }
 
+/** Drop a floating IP from policy so the public address returns to the pool. */
+export async function releaseFloatingIp(
+  input: ReleaseFloatingIpRequest,
+): Promise<void> {
+  const vpc = await getVpc(input.cluster, input.namespace, input.vpcName);
+  return releaseFloatingIpCore({
+    ...input,
+    natGatewayVm: vpc.natGateway?.name,
+  });
+}
+
 /** Cross-cluster floating IP inventory for the top-level list. */
 export async function listFloatingIps(clusterFilter?: ClusterId): Promise<{
   items: FloatingIpSummary[];
@@ -1287,6 +1300,7 @@ export async function listFloatingIpEligibleVpcs(
       try {
         const detail = await getVpc(vpc.cluster, vpc.namespace, vpc.name);
         if (!detail.natGateway) return;
+        const floats = detail.floatingIps ?? [];
         out.push({
           cluster: vpc.cluster,
           namespace: vpc.namespace,
@@ -1295,7 +1309,10 @@ export async function listFloatingIpEligibleVpcs(
           natGatewayName: detail.natGateway.name,
           publicNetwork: detail.natGateway.publicNetwork,
           agentStatus: detail.natGateway.agentStatus,
-          floatingCount: detail.natGateway.floatingIps?.length ?? 0,
+          floatingCount: floats.length,
+          heldPublicIps: floats
+            .filter((f) => f.state === "held")
+            .map((f) => f.public),
           targetVms: detail.attachedVms
             .filter((vm) => !vm.isNatGateway)
             .map((vm) => ({

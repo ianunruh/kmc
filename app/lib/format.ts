@@ -294,6 +294,8 @@ export function floatingIpCreatePath(
     namespace?: string | null;
     vpc?: string | null;
     targetVm?: string | null;
+    /** Prefer a held public address when re-associating. */
+    publicIpv4?: string | null;
   } = {},
 ): string {
   return withSearch("/floating-ips/create", prefill);

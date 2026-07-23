@@ -55,6 +55,7 @@ import {
   getVpc,
   getVpcYaml,
   listPublicEgressNetworks,
+  releaseFloatingIp,
 } from "~/vpcs/vpcs.server";
 
 export function meta({ params }: Route.MetaArgs) {
@@ -105,21 +106,30 @@ export async function action({ request, params }: Route.ActionArgs) {
       });
     }
   }
-  if (intent === "disassociate") {
+  if (intent === "disassociate" || intent === "release") {
     const idOrPublic = String(form.get("idOrPublic") ?? "").trim();
     if (!idOrPublic) {
       return { ok: false, error: "Missing floating IP id", intent };
     }
     try {
-      await disassociateFloatingIp({
-        cluster,
-        namespace,
-        vpcName: name,
-        idOrPublic,
-      });
+      if (intent === "disassociate") {
+        await disassociateFloatingIp({
+          cluster,
+          namespace,
+          vpcName: name,
+          idOrPublic,
+        });
+      } else {
+        await releaseFloatingIp({
+          cluster,
+          namespace,
+          vpcName: name,
+          idOrPublic,
+        });
+      }
       return { ok: true, intent };
     } catch (err) {
-      return actionFailure("floatingIp.disassociate", err, {
+      return actionFailure(`floatingIp.${intent}`, err, {
         intent,
         cluster,
         namespace,
@@ -142,19 +152,31 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [disassociateTarget, setDisassociateTarget] =
     useState<FloatingIpAssociation | null>(null);
+  const [releaseTarget, setReleaseTarget] = useState<FloatingIpAssociation | null>(
+    null,
+  );
   const busy = fetcher.state !== "idle";
   const hasAttachments = vpc.attachedCount > 0;
   useFetcherResult(fetcher, (data) => {
     if (data.error) {
-      notifyActionError(
-        data.intent === "disassociate" ? "Disassociate failed" : "Delete failed",
-        data.error,
-      );
+      const title =
+        data.intent === "disassociate"
+          ? "Disassociate failed"
+          : data.intent === "release"
+            ? "Release failed"
+            : "Delete failed";
+      notifyActionError(title, data.error);
     } else if (data.ok) {
       if (data.intent === "disassociate") {
         notifyActionSuccess(
           "Done",
-          "Floating IP disassociated — agent will drop DNAT shortly",
+          "Floating IP disassociated — public address is held (not released)",
+        );
+        refreshNow();
+      } else if (data.intent === "release") {
+        notifyActionSuccess(
+          "Done",
+          "Floating IP released — public address returned to the pool",
         );
         refreshNow();
       } else {
@@ -536,7 +558,7 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
             )}
             <ResourceTable
               isEmpty={false}
-              headers={["Public", "Private", "Target VM", ""]}
+              headers={["Public", "State", "Private", "Target VM", ""]}
             >
               {vpc.floatingIps.map((f) => (
                 <Table.Tr key={f.id}>
@@ -546,7 +568,22 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
                     </Code>
                   </Table.Td>
                   <Table.Td>
-                    <Code>{f.private}</Code>
+                    <Badge
+                      size="sm"
+                      variant="light"
+                      color={f.state === "associated" ? "teal" : "yellow"}
+                    >
+                      {f.state}
+                    </Badge>
+                  </Table.Td>
+                  <Table.Td>
+                    {f.private ? (
+                      <Code>{f.private}</Code>
+                    ) : (
+                      <Text size="sm" c="dimmed">
+                        —
+                      </Text>
+                    )}
                   </Table.Td>
                   <Table.Td>
                     {f.targetVm ? (
@@ -564,15 +601,43 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
                     )}
                   </Table.Td>
                   <Table.Td>
-                    <Button
-                      size="compact-xs"
-                      variant="subtle"
-                      color="red"
-                      disabled={busy}
-                      onClick={() => setDisassociateTarget(f)}
-                    >
-                      Disassociate
-                    </Button>
+                    <Group gap={4} justify="flex-end" wrap="nowrap">
+                      {f.state === "associated" ? (
+                        <Button
+                          size="compact-xs"
+                          variant="subtle"
+                          color="orange"
+                          disabled={busy}
+                          onClick={() => setDisassociateTarget(f)}
+                        >
+                          Disassociate
+                        </Button>
+                      ) : vpc.natGateway ? (
+                        <Button
+                          component={Link}
+                          to={floatingIpCreatePath({
+                            cluster: vpc.cluster,
+                            namespace: vpc.namespace,
+                            vpc: vpc.name,
+                            publicIpv4: f.public,
+                          })}
+                          size="compact-xs"
+                          variant="subtle"
+                          color="teal"
+                        >
+                          Associate
+                        </Button>
+                      ) : null}
+                      <Button
+                        size="compact-xs"
+                        variant="subtle"
+                        color="red"
+                        disabled={busy}
+                        onClick={() => setReleaseTarget(f)}
+                      >
+                        Release
+                      </Button>
+                    </Group>
                   </Table.Td>
                 </Table.Tr>
               ))}
@@ -646,7 +711,7 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
         onClose={() => setDisassociateTarget(null)}
         title="Disassociate floating IP"
         confirmLabel="Disassociate"
-        confirmColor="red"
+        confirmColor="orange"
         loading={busy}
         onConfirm={() => {
           if (!disassociateTarget) return;
@@ -662,11 +727,47 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
         message={
           disassociateTarget ? (
             <>
-              Remove mapping{" "}
+              Unmap{" "}
               <Code>
                 {disassociateTarget.public} → {disassociateTarget.private}
               </Code>
-              ? The NAT agent will drop DNAT/SNAT on its next reconcile.
+              ? The public address stays reserved (held) until you release it. The NAT
+              agent will drop DNAT/SNAT on its next reconcile.
+            </>
+          ) : (
+            ""
+          )
+        }
+      />
+
+      <ConfirmActionModal
+        opened={releaseTarget != null}
+        onClose={() => setReleaseTarget(null)}
+        title="Release floating IP"
+        confirmLabel="Release"
+        confirmColor="red"
+        loading={busy}
+        onConfirm={() => {
+          if (!releaseTarget) return;
+          fetcher.submit(
+            {
+              intent: "release",
+              idOrPublic: releaseTarget.id,
+            },
+            { method: "post" },
+          );
+          setReleaseTarget(null);
+        }}
+        message={
+          releaseTarget ? (
+            <>
+              Return <Code>{releaseTarget.public}</Code> to the public IP pool?
+              {releaseTarget.private ? (
+                <>
+                  {" "}
+                  This also drops the mapping to <Code>{releaseTarget.private}</Code>.
+                </>
+              ) : null}
             </>
           ) : (
             ""
