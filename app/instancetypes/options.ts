@@ -1,4 +1,5 @@
 import type { InstanceTypeInfo } from "~/lib/types";
+import { KMC_MANAGED_BY, MANAGED_BY_LABEL } from "~/lib/k8s/constants";
 
 /** Display order for common-instancetypes classes (then custom / unknown). */
 const CLASS_ORDER = [
@@ -40,9 +41,55 @@ const SIZE_RANK: Record<string, number> = {
   "8xlarge1gi": 91,
 };
 
+/** Labels that identify common-instancetypes / operator-deployed bundles. */
+const BUILTIN_MANAGED_BY = new Set([
+  "ssp-operator",
+  "virt-operator",
+  "common-instancetypes",
+]);
+
 export function instanceTypeClassLabel(className?: string): string {
   if (!className) return "Other";
   return CLASS_LABELS[className] ?? className;
+}
+
+/**
+ * Size from the explicit label, or the suffix after the last dot
+ * (`u1.medium` → `medium`) when it matches a known size token.
+ */
+export function deriveInstanceTypeSize(
+  name?: string,
+  sizeLabel?: string,
+): string | undefined {
+  if (sizeLabel?.trim()) return sizeLabel.trim();
+  if (!name?.includes(".")) return undefined;
+  const suffix = name.slice(name.lastIndexOf(".") + 1);
+  return suffix && SIZE_RANK[suffix] != null ? suffix : undefined;
+}
+
+/**
+ * Operator / common-instancetypes resources are built-in: not editable or
+ * deletable via kmc. kmc-managed types are always custom.
+ */
+export function isBuiltinClusterInstanceType(
+  labels: Record<string, string | undefined> | undefined,
+): boolean {
+  if (!labels) return false;
+  if (labels[MANAGED_BY_LABEL] === KMC_MANAGED_BY) return false;
+
+  const appName = labels["app.kubernetes.io/name"];
+  if (appName === "common-instancetypes") return true;
+
+  const vendor = labels["instancetype.kubevirt.io/vendor"];
+  if (vendor) return true;
+
+  const managedBy = labels[MANAGED_BY_LABEL];
+  if (managedBy && BUILTIN_MANAGED_BY.has(managedBy)) return true;
+
+  // Class is only stamped by the common-instancetypes scheme.
+  if (labels["instancetype.kubevirt.io/class"]) return true;
+
+  return false;
 }
 
 function classRank(className?: string): number {
@@ -53,13 +100,19 @@ function classRank(className?: string): number {
 
 function sizeRank(size?: string, name?: string): number {
   if (size && SIZE_RANK[size] != null) return SIZE_RANK[size]!;
-  // Fall back to parsing suffix after the last dot (u1.medium → medium).
-  const suffix = name?.includes(".") ? name.slice(name.lastIndexOf(".") + 1) : name;
-  if (suffix && SIZE_RANK[suffix] != null) return SIZE_RANK[suffix]!;
+  const derived = deriveInstanceTypeSize(name);
+  if (derived && SIZE_RANK[derived] != null) return SIZE_RANK[derived]!;
   return 500;
 }
 
-export function sortInstanceTypes(items: InstanceTypeInfo[]): InstanceTypeInfo[] {
+type SortableInstanceType = {
+  name: string;
+  class?: string;
+  size?: string;
+  cpu?: string | number;
+};
+
+export function sortInstanceTypes<T extends SortableInstanceType>(items: T[]): T[] {
   return [...items].sort((a, b) => {
     const ca = classRank(a.class) - classRank(b.class);
     if (ca !== 0) return ca;

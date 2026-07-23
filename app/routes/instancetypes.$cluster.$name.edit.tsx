@@ -21,7 +21,12 @@ export async function loader({ params }: Route.LoaderArgs) {
   if (!cluster || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
-  return { it: await getClusterInstanceType(cluster, name) };
+  const it = await getClusterInstanceType(cluster, name);
+  if (it.builtin) {
+    // Operator / common-instancetypes types are immutable via kmc.
+    throw redirect(instanceTypePath({ cluster, name }));
+  }
+  return { it };
 }
 
 export async function action({ request, params }: Route.ActionArgs) {

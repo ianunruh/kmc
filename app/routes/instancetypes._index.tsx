@@ -1,6 +1,7 @@
 import {
   ActionIcon,
   Alert,
+  Badge,
   Button,
   Menu,
   Select,
@@ -42,6 +43,7 @@ import {
   deleteClusterInstanceType,
   listClusterInstanceTypes,
 } from "~/instancetypes/instancetypes.server";
+import { instanceTypeClassLabel } from "~/instancetypes/options";
 import { useRefresh } from "~/lib/refresh";
 import type { ClusterInstanceTypeSummary } from "~/lib/types";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
@@ -83,6 +85,8 @@ export default function InstanceTypesPage({ loaderData }: Route.ComponentProps) 
   const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
   const { refreshNow } = useRefresh();
   const { filters, qDraft, setQ, setFilter } = useListFilters();
+  const [classFilter, setClassFilter] = useState<string | null>(null);
+  const [sourceFilter, setSourceFilter] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ClusterInstanceTypeSummary | null>(
     null,
   );
@@ -96,21 +100,45 @@ export default function InstanceTypesPage({ loaderData }: Route.ComponentProps) 
     }
   });
 
+  const classOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const it of items) {
+      if (it.class) set.add(it.class);
+    }
+    return [...set]
+      .sort((a, b) => instanceTypeClassLabel(a).localeCompare(instanceTypeClassLabel(b)))
+      .map((c) => ({ value: c, label: instanceTypeClassLabel(c) }));
+  }, [items]);
+
   const filtered = useMemo(() => {
     return items.filter((it) => {
       if (filters.cluster && it.cluster !== filters.cluster) return false;
-      return matchesQuery(qDraft, [it.name, it.cluster, it.memory, String(it.cpu)]);
+      if (classFilter && it.class !== classFilter) return false;
+      if (sourceFilter === "builtin" && !it.builtin) return false;
+      if (sourceFilter === "custom" && it.builtin) return false;
+      return matchesQuery(qDraft, [
+        it.name,
+        it.cluster,
+        it.memory,
+        String(it.cpu),
+        it.class,
+        it.size,
+        it.vendor,
+        instanceTypeClassLabel(it.class),
+        it.builtin ? "builtin built-in" : "custom",
+      ]);
     });
-  }, [items, filters.cluster, qDraft]);
+  }, [items, filters.cluster, classFilter, sourceFilter, qDraft]);
 
   const busy = fetcher.state !== "idle";
   const unreachable = clusters.filter((c) => !c.reachable);
+  const builtinCount = items.filter((it) => it.builtin).length;
 
   return (
     <Stack gap="md">
       <PageHeader
         title="Instance Types"
-        description={`${filtered.length} shown · ${items.length} total · VirtualMachineClusterInstancetype`}
+        description={`${filtered.length} shown · ${items.length} total · ${builtinCount} built-in (common-instancetypes)`}
         actions={
           <Button
             component={Link}
@@ -131,7 +159,7 @@ export default function InstanceTypesPage({ loaderData }: Route.ComponentProps) 
       <ConsolePaper>
         <FilterBar>
           <TextInput
-            placeholder="Search name, cluster…"
+            placeholder="Search name, class, size…"
             leftSection={<IconSearch size={14} />}
             value={qDraft}
             onChange={(e) => setQ(e.currentTarget.value)}
@@ -145,12 +173,34 @@ export default function InstanceTypesPage({ loaderData }: Route.ComponentProps) 
             onChange={(v) => setFilter("cluster", v)}
             w={180}
           />
+          {classOptions.length > 0 && (
+            <Select
+              placeholder="Class"
+              clearable
+              searchable
+              data={classOptions}
+              value={classFilter}
+              onChange={setClassFilter}
+              w={200}
+            />
+          )}
+          <Select
+            placeholder="Source"
+            clearable
+            data={[
+              { value: "builtin", label: "Built-in" },
+              { value: "custom", label: "Custom" },
+            ]}
+            value={sourceFilter}
+            onChange={setSourceFilter}
+            w={140}
+          />
         </FilterBar>
 
         <ResourceTable
           isEmpty={filtered.length === 0}
           emptyMessage="No cluster instance types found (homelab may have none)."
-          headers={["Name", "Cluster", "CPU", "Memory", "Age", ""]}
+          headers={["Name", "Class", "Size", "CPU", "Memory", "Source", "Cluster", "Age", ""]}
         >
           {filtered.map((it) => {
             const key = `${it.cluster}/${it.name}`;
@@ -158,6 +208,41 @@ export default function InstanceTypesPage({ loaderData }: Route.ComponentProps) 
               <Table.Tr key={key}>
                 <Table.Td>
                   <ResourceLink to={instanceTypePath(it)}>{it.name}</ResourceLink>
+                  {it.vendor && (
+                    <Text size="xs" c="dimmed">
+                      {it.vendor}
+                    </Text>
+                  )}
+                </Table.Td>
+                <Table.Td>
+                  <Text size="sm">
+                    {it.class ? instanceTypeClassLabel(it.class) : "—"}
+                  </Text>
+                  {it.class && (
+                    <Text size="xs" c="dimmed">
+                      {it.class}
+                    </Text>
+                  )}
+                </Table.Td>
+                <Table.Td>
+                  <Text size="sm">{it.size || "—"}</Text>
+                </Table.Td>
+                <Table.Td>
+                  <Text size="sm">{it.cpu ? `${it.cpu}c` : "—"}</Text>
+                </Table.Td>
+                <Table.Td>
+                  <Text size="sm">{it.memory || "—"}</Text>
+                </Table.Td>
+                <Table.Td>
+                  {it.builtin ? (
+                    <Badge variant="light" color="blue" size="sm">
+                      Built-in
+                    </Badge>
+                  ) : (
+                    <Badge variant="light" color="gray" size="sm">
+                      Custom
+                    </Badge>
+                  )}
                 </Table.Td>
                 <Table.Td>
                   <ResourceLink
@@ -168,12 +253,6 @@ export default function InstanceTypesPage({ loaderData }: Route.ComponentProps) 
                   </ResourceLink>
                 </Table.Td>
                 <Table.Td>
-                  <Text size="sm">{it.cpu}c</Text>
-                </Table.Td>
-                <Table.Td>
-                  <Text size="sm">{it.memory || "—"}</Text>
-                </Table.Td>
-                <Table.Td>
                   <Tooltip label={it.age || "unknown"}>
                     <Text size="sm" c="dimmed">
                       {formatAge(it.age)}
@@ -181,34 +260,42 @@ export default function InstanceTypesPage({ loaderData }: Route.ComponentProps) 
                   </Tooltip>
                 </Table.Td>
                 <Table.Td>
-                  <Menu shadow="md" width={150} position="bottom-end">
-                    <Menu.Target>
-                      <ActionIcon
-                        variant="subtle"
-                        color="gray"
-                        aria-label={`Actions for ${it.name}`}
-                      >
-                        <IconDotsVertical size={16} />
-                      </ActionIcon>
-                    </Menu.Target>
-                    <Menu.Dropdown>
-                      <Menu.Item
-                        leftSection={<IconPencil size={14} />}
-                        component={Link}
-                        to={instanceTypeEditPath(it)}
-                      >
-                        Edit
-                      </Menu.Item>
-                      <Menu.Item
-                        color="red"
-                        leftSection={<IconTrash size={14} />}
-                        disabled={busy}
-                        onClick={() => setDeleteTarget(it)}
-                      >
-                        Delete
-                      </Menu.Item>
-                    </Menu.Dropdown>
-                  </Menu>
+                  {it.builtin ? (
+                    <Tooltip label="Built-in types are managed by the KubeVirt operator and cannot be edited">
+                      <Text size="xs" c="dimmed">
+                        —
+                      </Text>
+                    </Tooltip>
+                  ) : (
+                    <Menu shadow="md" width={150} position="bottom-end">
+                      <Menu.Target>
+                        <ActionIcon
+                          variant="subtle"
+                          color="gray"
+                          aria-label={`Actions for ${it.name}`}
+                        >
+                          <IconDotsVertical size={16} />
+                        </ActionIcon>
+                      </Menu.Target>
+                      <Menu.Dropdown>
+                        <Menu.Item
+                          leftSection={<IconPencil size={14} />}
+                          component={Link}
+                          to={instanceTypeEditPath(it)}
+                        >
+                          Edit
+                        </Menu.Item>
+                        <Menu.Item
+                          color="red"
+                          leftSection={<IconTrash size={14} />}
+                          disabled={busy}
+                          onClick={() => setDeleteTarget(it)}
+                        >
+                          Delete
+                        </Menu.Item>
+                      </Menu.Dropdown>
+                    </Menu>
+                  )}
                 </Table.Td>
               </Table.Tr>
             );

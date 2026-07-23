@@ -31,6 +31,7 @@ import {
   canStop,
   canUnpause,
   formatAge,
+  instanceTypePath,
   sizeLabel,
   vmConsolePath,
   vmEditPath,
@@ -111,8 +112,8 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
               <Table.Th>Cluster</Table.Th>
               <Table.Th>Namespace</Table.Th>
               <Table.Th>Status</Table.Th>
-              <Table.Th>Size</Table.Th>
               <Table.Th>IPv4</Table.Th>
+              <Table.Th>Instance type</Table.Th>
               <Table.Th>Disk</Table.Th>
               <Table.Th>Age</Table.Th>
               <Table.Th w={48} />
@@ -168,9 +169,6 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                     </Group>
                   </Table.Td>
                   <Table.Td>
-                    <Text size="sm">{sizeLabel(vm)}</Text>
-                  </Table.Td>
-                  <Table.Td>
                     <Stack gap={2}>
                       <Text size="sm" ff="monospace" c={ipv4 ? undefined : "dimmed"}>
                         {ipv4 ?? "—"}
@@ -184,6 +182,27 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                           </Text>
                         </Tooltip>
                       ) : null}
+                    </Stack>
+                  </Table.Td>
+                  <Table.Td>
+                    <Stack gap={2}>
+                      {vm.instanceType ? (
+                        <ResourceLink
+                          to={instanceTypePath({
+                            cluster: vm.cluster,
+                            name: vm.instanceType,
+                          })}
+                        >
+                          {vm.instanceType}
+                        </ResourceLink>
+                      ) : (
+                        <Text size="sm" c="dimmed">
+                          Custom
+                        </Text>
+                      )}
+                      <Text size="xs" c="dimmed">
+                        {sizeLabel(vm)}
+                      </Text>
                     </Stack>
                   </Table.Td>
                   <Table.Td>

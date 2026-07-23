@@ -6,7 +6,13 @@ import type {
   UpsertClusterInstanceTypeRequest,
 } from "~/lib/types";
 import { getClusterClients, getConfiguredContexts } from "~/lib/k8s/clients.server";
+import { KMC_MANAGED_BY, MANAGED_BY_LABEL } from "~/lib/k8s/constants";
 import { listClusters } from "~/vms/vms.server";
+import {
+  deriveInstanceTypeSize,
+  isBuiltinClusterInstanceType,
+  sortInstanceTypes,
+} from "./options";
 
 const GROUP = "instancetype.kubevirt.io";
 const VERSION = "v1beta1";
@@ -31,12 +37,34 @@ function mapSummary(
   cluster: ClusterId,
   it: KubeClusterInstanceType,
 ): ClusterInstanceTypeSummary {
+  const labels = it.metadata?.labels ?? {};
+  const name = it.metadata?.name ?? "unknown";
+  const className = labels["instancetype.kubevirt.io/class"] || undefined;
+  const size = deriveInstanceTypeSize(
+    name,
+    labels["instancetype.kubevirt.io/size"],
+  );
+  const vendor = labels["instancetype.kubevirt.io/vendor"] || undefined;
+  const commonVersion =
+    labels["instancetype.kubevirt.io/common-instancetypes-version"] || undefined;
+  const cpuFromSpec = it.spec?.cpu?.guest;
+  const cpuFromLabel = labels["instancetype.kubevirt.io/cpu"];
+  const cpu =
+    cpuFromSpec ??
+    (cpuFromLabel != null && cpuFromLabel !== "" ? Number(cpuFromLabel) : 0);
+
   return {
     cluster,
-    name: it.metadata?.name ?? "unknown",
-    cpu: it.spec?.cpu?.guest ?? 0,
-    memory: it.spec?.memory?.guest ?? "",
+    name,
+    cpu: Number.isFinite(cpu) ? cpu : 0,
+    memory:
+      it.spec?.memory?.guest ?? labels["instancetype.kubevirt.io/memory"] ?? "",
     age: it.metadata?.creationTimestamp ?? "",
+    class: className,
+    size,
+    vendor,
+    commonVersion,
+    builtin: isBuiltinClusterInstanceType(labels),
   };
 }
 
@@ -63,7 +91,7 @@ function buildBody(input: UpsertClusterInstanceTypeRequest) {
     metadata: {
       name: input.name,
       labels: {
-        "app.kubernetes.io/managed-by": "kmc",
+        [MANAGED_BY_LABEL]: KMC_MANAGED_BY,
         "instancetype.kubevirt.io/cpu": String(input.cpu),
         "instancetype.kubevirt.io/memory": input.memory,
       },
@@ -73,6 +101,15 @@ function buildBody(input: UpsertClusterInstanceTypeRequest) {
       memory: { guest: input.memory },
     },
   };
+}
+
+function assertMutable(it: KubeClusterInstanceType, action: "update" | "delete") {
+  if (isBuiltinClusterInstanceType(it.metadata?.labels)) {
+    const name = it.metadata?.name ?? "unknown";
+    throw new Error(
+      `Instance type "${name}" is built-in (provided by the KubeVirt operator / common-instancetypes) and cannot be ${action === "update" ? "edited" : "deleted"}`,
+    );
+  }
 }
 
 export async function listClusterInstanceTypes(clusterFilter?: ClusterId): Promise<{
@@ -116,13 +153,19 @@ export async function listClusterInstanceTypes(clusterFilter?: ClusterId): Promi
     }),
   );
 
-  items.sort((a, b) => {
-    const c = a.cluster.localeCompare(b.cluster);
-    if (c) return c;
-    return a.name.localeCompare(b.name);
-  });
+  // Cluster first, then common-instancetypes class/size order within a cluster.
+  const byCluster = new Map<string, ClusterInstanceTypeSummary[]>();
+  for (const it of items) {
+    const list = byCluster.get(it.cluster) ?? [];
+    list.push(it);
+    byCluster.set(it.cluster, list);
+  }
+  const sorted: ClusterInstanceTypeSummary[] = [];
+  for (const clusterId of [...byCluster.keys()].sort()) {
+    sorted.push(...sortInstanceTypes(byCluster.get(clusterId)!));
+  }
 
-  return { items, clusters };
+  return { items: sorted, clusters };
 }
 
 export async function getClusterInstanceType(
@@ -177,6 +220,7 @@ export async function updateClusterInstanceType(
       plural: PLURAL,
       name: input.name,
     })) as KubeClusterInstanceType;
+    assertMutable(existing, "update");
 
     const body = {
       ...existing,
@@ -184,7 +228,7 @@ export async function updateClusterInstanceType(
         ...existing.metadata,
         labels: {
           ...(existing.metadata?.labels ?? {}),
-          "app.kubernetes.io/managed-by": "kmc",
+          [MANAGED_BY_LABEL]: KMC_MANAGED_BY,
           "instancetype.kubevirt.io/cpu": String(input.cpu),
           "instancetype.kubevirt.io/memory": input.memory,
         },
@@ -215,6 +259,14 @@ export async function deleteClusterInstanceType(
 ): Promise<void> {
   const { custom } = getClusterClients(cluster);
   try {
+    const existing = (await custom.getClusterCustomObject({
+      group: GROUP,
+      version: VERSION,
+      plural: PLURAL,
+      name,
+    })) as KubeClusterInstanceType;
+    assertMutable(existing, "delete");
+
     await custom.deleteClusterCustomObject({
       group: GROUP,
       version: VERSION,

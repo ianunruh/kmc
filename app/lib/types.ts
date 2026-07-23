@@ -354,6 +354,19 @@ export interface ClusterInstanceTypeSummary {
   cpu: number;
   memory: string;
   age: string;
+  /** common-instancetypes class, e.g. general.purpose */
+  class?: string;
+  /** Size label or name suffix, e.g. medium, xlarge */
+  size?: string;
+  /** e.g. kubevirt.io when from common-instancetypes */
+  vendor?: string;
+  /** common-instancetypes package version when labeled */
+  commonVersion?: string;
+  /**
+   * Operator / common-instancetypes provided types are treated as built-in:
+   * not editable or deletable via kmc.
+   */
+  builtin: boolean;
 }
 
 export interface ClusterInstanceTypeDetail extends ClusterInstanceTypeSummary {

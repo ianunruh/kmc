@@ -1,4 +1,6 @@
 import {
+  Alert,
+  Badge,
   Button,
   Code,
   Group,
@@ -36,6 +38,7 @@ import {
   deleteClusterInstanceType,
   getClusterInstanceType,
 } from "~/instancetypes/instancetypes.server";
+import { instanceTypeClassLabel } from "~/instancetypes/options";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 
 export function meta({ params }: Route.MetaArgs) {
@@ -109,10 +112,19 @@ export default function InstanceTypeDetailPage({ loaderData }: Route.ComponentPr
               Instance Types
             </Group>
           </Anchor>
-          <Group gap="sm" mt={6}>
+          <Group gap="sm" mt={6} align="center">
             <Title order={2} size="h3">
               {it.name}
             </Title>
+            {it.builtin ? (
+              <Badge variant="light" color="blue">
+                Built-in
+              </Badge>
+            ) : (
+              <Badge variant="light" color="gray">
+                Custom
+              </Badge>
+            )}
           </Group>
           <ResourceIdentity
             separator=" · "
@@ -122,29 +134,44 @@ export default function InstanceTypeDetailPage({ loaderData }: Route.ComponentPr
                 to: instanceTypesListPath({ cluster: it.cluster }),
               },
               { label: "VirtualMachineClusterInstancetype" },
+              ...(it.class
+                ? [{ label: instanceTypeClassLabel(it.class) }]
+                : []),
             ]}
           />
         </div>
         <Group>
-          <Button
-            component={Link}
-            to={instanceTypeEditPath(it)}
-            variant="default"
-            leftSection={<IconPencil size={16} />}
-          >
-            Edit
-          </Button>
-          <Button
-            color="red"
-            variant="light"
-            leftSection={<IconTrash size={16} />}
-            disabled={busy}
-            onClick={() => setDeleteOpen(true)}
-          >
-            Delete
-          </Button>
+          {!it.builtin && (
+            <>
+              <Button
+                component={Link}
+                to={instanceTypeEditPath(it)}
+                variant="default"
+                leftSection={<IconPencil size={16} />}
+              >
+                Edit
+              </Button>
+              <Button
+                color="red"
+                variant="light"
+                leftSection={<IconTrash size={16} />}
+                disabled={busy}
+                onClick={() => setDeleteOpen(true)}
+              >
+                Delete
+              </Button>
+            </>
+          )}
         </Group>
       </Group>
+
+      {it.builtin && (
+        <Alert color="blue" variant="light" title="Built-in instance type">
+          Provided by the KubeVirt operator / common-instancetypes
+          {it.vendor ? ` (${it.vendor})` : ""}. These types are managed outside
+          kmc and cannot be edited or deleted here.
+        </Alert>
+      )}
 
       <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
         <DetailSection title="Overview">
@@ -158,8 +185,29 @@ export default function InstanceTypeDetailPage({ loaderData }: Route.ComponentPr
               }
             />
             <DetailField label="Name" value={it.name} />
-            <DetailField label="CPU" value={`${it.cpu} cores`} />
-            <DetailField label="Memory" value={it.memory} />
+            <DetailField
+              label="Class"
+              value={
+                it.class ? (
+                  <Stack gap={2}>
+                    <Text size="sm">{instanceTypeClassLabel(it.class)}</Text>
+                    <Text size="xs" c="dimmed">
+                      {it.class}
+                    </Text>
+                  </Stack>
+                ) : (
+                  "—"
+                )
+              }
+            />
+            <DetailField label="Size" value={it.size || "—"} />
+            <DetailField label="CPU" value={it.cpu ? `${it.cpu} cores` : "—"} />
+            <DetailField label="Memory" value={it.memory || "—"} />
+            <DetailField label="Vendor" value={it.vendor || "—"} />
+            <DetailField
+              label="common-instancetypes"
+              value={it.commonVersion || (it.builtin ? "yes" : "—")}
+            />
             <DetailField label="Age" value={formatAge(it.age)} />
             <DetailField label="Created" value={formatDateTime(it.age)} />
             <DetailField
@@ -202,19 +250,21 @@ export default function InstanceTypeDetailPage({ loaderData }: Route.ComponentPr
       <EventsPanel events={events} />
       <YamlPanel yaml={yaml} />
 
-      <ConfirmDeleteModal
-        opened={deleteOpen}
-        resourceName={it.name}
-        identity={`${it.cluster}/${it.name}`}
-        title="Delete instance type"
-        confirmLabel="Delete Instance Type"
-        loading={busy}
-        onClose={() => setDeleteOpen(false)}
-        onConfirm={() => {
-          setDeleteOpen(false);
-          fetcher.submit({ intent: "delete" }, { method: "post" });
-        }}
-      />
+      {!it.builtin && (
+        <ConfirmDeleteModal
+          opened={deleteOpen}
+          resourceName={it.name}
+          identity={`${it.cluster}/${it.name}`}
+          title="Delete instance type"
+          confirmLabel="Delete Instance Type"
+          loading={busy}
+          onClose={() => setDeleteOpen(false)}
+          onConfirm={() => {
+            setDeleteOpen(false);
+            fetcher.submit({ intent: "delete" }, { method: "post" });
+          }}
+        />
+      )}
     </Stack>
   );
 }
