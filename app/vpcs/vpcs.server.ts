@@ -26,10 +26,12 @@ import { assertVmNamespaceAllowed } from "~/lib/k8s/catalog.server";
 import { getClusterClients, getConfiguredContexts } from "~/lib/k8s/clients.server";
 import { toResourceYaml } from "~/lib/k8s/yaml.server";
 import {
+  addressFromIpv4Annotation,
   containsIpv4,
   parseCidr,
   parseIpv4,
 } from "~/lib/ipam/cidr";
+import { IPAM_ANNOTATION_IPV4 } from "~/lib/ipam/constants";
 import {
   getIpPoolUsage,
   type IpPoolUsage,
@@ -62,6 +64,7 @@ type KubeVm = {
   metadata?: {
     name?: string;
     namespace?: string;
+    annotations?: Record<string, string>;
   };
   spec?: {
     template?: {
@@ -74,6 +77,39 @@ type KubeVm = {
     };
   };
 };
+
+/**
+ * Pick the IPAM address for this VPC from a VM's ipv4 annotation.
+ * Multi-attach stores comma-separated cidrHost values — prefer the one inside
+ * the VPC CIDR when known; otherwise the sole / first entry.
+ */
+function allocatedIpv4ForVpc(
+  annotation: string | undefined,
+  vpcCidr: string | undefined,
+): string | undefined {
+  if (!annotation?.trim()) return undefined;
+  const parts = annotation
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return undefined;
+
+  if (vpcCidr?.trim()) {
+    try {
+      const parsed = parseCidr(vpcCidr.trim());
+      for (const part of parts) {
+        const addr = addressFromIpv4Annotation(part);
+        if (addr && containsIpv4(parsed, addr)) return part;
+      }
+      // No annotation address falls in this VPC's CIDR (pod-only IPAM, etc.)
+      return undefined;
+    } catch {
+      /* fall through to first entry */
+    }
+  }
+
+  return parts[0];
+}
 
 function isNotFound(err: unknown): boolean {
   const message = formatError(err).toLowerCase();
@@ -284,6 +320,7 @@ export async function listAttachedVms(
   cluster: ClusterId,
   namespace: string,
   name: string,
+  opts?: { cidr?: string },
 ): Promise<VpcAttachedVm[]> {
   const { custom } = getClusterClients(cluster);
   const res = (await custom.listClusterCustomObject({
@@ -305,10 +342,12 @@ export async function listAttachedVms(
         // explicit ns/name refs from anywhere.
         const ref = net.multus?.networkName?.trim() ?? "";
         if (ref === name && vmNs !== namespace) continue;
+        const ann = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
         attached.push({
           cluster,
           namespace: vmNs,
           name: vmName,
+          allocatedIpv4: allocatedIpv4ForVpc(ann, opts?.cidr),
         });
         break;
       }
@@ -350,7 +389,7 @@ export async function getVpc(
 
   const summary = mapSummary(cluster, nad);
   const [attachedVms, ipUsage] = await Promise.all([
-    listAttachedVms(cluster, namespace, name),
+    listAttachedVms(cluster, namespace, name, { cidr: summary.cidr }),
     summary.cidr
       ? getIpPoolUsage(cluster, `vpc:${namespace}/${name}`).catch(() => null)
       : Promise.resolve(null),

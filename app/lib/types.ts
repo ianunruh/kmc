@@ -364,6 +364,11 @@ export interface VpcAttachedVm {
   cluster: ClusterId;
   namespace: string;
   name: string;
+  /**
+   * Static IPv4 from kmc.ianunruh.com/ipv4 for this VPC attachment
+   * (may include /prefix). Multi-attach VMs pick the address in the VPC CIDR.
+   */
+  allocatedIpv4?: string;
 }
 
 export interface VpcDetail extends VpcSummary {

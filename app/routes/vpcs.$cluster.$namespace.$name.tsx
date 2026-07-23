@@ -264,7 +264,7 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
         ) : (
           <ResourceTable
             isEmpty={false}
-            headers={["Name", "Namespace"]}
+            headers={["Name", "Namespace", "IPv4"]}
           >
             {vpc.attachedVms.map((vm) => (
               <Table.Tr key={`${vm.namespace}/${vm.name}`}>
@@ -274,6 +274,15 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
                 <Table.Td>
                   <Text size="sm" c="dimmed">
                     {vm.namespace}
+                  </Text>
+                </Table.Td>
+                <Table.Td>
+                  <Text
+                    size="sm"
+                    ff="monospace"
+                    c={vm.allocatedIpv4 ? undefined : "dimmed"}
+                  >
+                    {vm.allocatedIpv4 ?? "—"}
                   </Text>
                 </Table.Td>
               </Table.Tr>
