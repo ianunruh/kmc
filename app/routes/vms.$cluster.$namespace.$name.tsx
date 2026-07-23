@@ -51,6 +51,7 @@ import {
   sizeLabel,
   vmConsolePath,
   vmEditPath,
+  vpcPath,
   vmsListPath,
 } from "~/lib/format";
 import { hasClusterPrometheus } from "~/lib/k8s/cluster-config.server";
@@ -510,11 +511,24 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
                     <Table.Tr key={net.name}>
                       <Table.Td>{net.name}</Table.Td>
                       <Table.Td>
-                        {net.multusNetworkName
-                          ? `multus:${net.multusNetworkName}`
-                          : net.pod
-                            ? "pod"
-                            : "—"}
+                        {net.multusNetworkName ? (
+                          net.vpc ? (
+                            <Group gap={4} wrap="nowrap">
+                              <Text size="sm" component="span">
+                                multus:
+                              </Text>
+                              <ResourceLink to={vpcPath(net.vpc)}>
+                                {net.multusNetworkName}
+                              </ResourceLink>
+                            </Group>
+                          ) : (
+                            `multus:${net.multusNetworkName}`
+                          )
+                        ) : net.pod ? (
+                          "pod"
+                        ) : (
+                          "—"
+                        )}
                       </Table.Td>
                       <Table.Td>
                         <Text size="sm" c="dimmed">

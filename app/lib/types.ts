@@ -71,6 +71,11 @@ export interface VmNetworkInfo {
   pod?: boolean;
   mac?: string;
   ipAddresses?: string[];
+  /**
+   * When the Multus attachment is a kmc-managed VPC NAD, coordinates for the
+   * VPC detail page (resolved relative to the VM namespace for bare names).
+   */
+  vpc?: { cluster: string; namespace: string; name: string };
 }
 
 export interface VmDetail extends VmSummary {

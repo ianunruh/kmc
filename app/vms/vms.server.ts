@@ -19,8 +19,18 @@ import {
 } from "~/lib/k8s/clients.server";
 import { assertVmNamespaceAllowed } from "~/lib/k8s/catalog.server";
 import { ensureStaticMultusNads } from "~/lib/k8s/static-nads.server";
-import { allocateIpv4ForMultus } from "~/lib/ipam/pools.server";
+import {
+  allocateIpv4ForMultus,
+  parseMultusNetworkRef,
+} from "~/lib/ipam/pools.server";
 import { IPAM_ANNOTATION_IPV4 } from "~/lib/ipam/constants";
+import {
+  KMC_LABEL_RESOURCE,
+  KMC_LABEL_VLAN,
+  KMC_MANAGED_BY,
+  KMC_RESOURCE_VPC,
+  MANAGED_BY_LABEL,
+} from "~/lib/k8s/constants";
 import {
   bindAllocationsToNetworks,
   buildVirtualMachineManifest,
@@ -344,6 +354,50 @@ function mapNetworks(vm: KubeVm, vmi?: KubeVmi | null): VmNetworkInfo[] {
   });
 }
 
+function isVpcNadLabels(labels: Record<string, string>): boolean {
+  return (
+    labels[KMC_LABEL_RESOURCE] === KMC_RESOURCE_VPC ||
+    (labels[MANAGED_BY_LABEL] === KMC_MANAGED_BY &&
+      labels[KMC_LABEL_VLAN] != null)
+  );
+}
+
+/** Attach VPC detail coords for Multus networks that resolve to kmc VPC NADs. */
+async function resolveNetworkVpcs(
+  cluster: ClusterId,
+  vmNamespace: string,
+  networks: VmNetworkInfo[],
+): Promise<VmNetworkInfo[]> {
+  const { custom } = getClusterClients(cluster);
+  return Promise.all(
+    networks.map(async (net) => {
+      if (!net.multusNetworkName?.trim()) return net;
+      const ref = parseMultusNetworkRef(net.multusNetworkName, vmNamespace);
+      if (!ref.name) return net;
+      try {
+        const nad = (await custom.getNamespacedCustomObject({
+          group: "k8s.cni.cncf.io",
+          version: "v1",
+          namespace: ref.namespace,
+          plural: "network-attachment-definitions",
+          name: ref.name,
+        })) as { metadata?: { labels?: Record<string, string> } };
+        if (!isVpcNadLabels(nad.metadata?.labels ?? {})) return net;
+        return {
+          ...net,
+          vpc: {
+            cluster,
+            namespace: ref.namespace,
+            name: ref.name,
+          },
+        };
+      } catch {
+        return net;
+      }
+    }),
+  );
+}
+
 function mapVmDetail(
   cluster: ClusterId,
   vm: KubeVm,
@@ -419,7 +473,13 @@ export async function getVm(
   }
 
   const instanceTypes = await loadInstanceTypeSizes(cluster);
-  return mapVmDetail(cluster, vm, vmi, instanceTypes);
+  const detail = mapVmDetail(cluster, vm, vmi, instanceTypes);
+  const networks = await resolveNetworkVpcs(
+    cluster,
+    namespace,
+    detail.networks,
+  );
+  return { ...detail, networks };
 }
 
 async function probeCluster(id: ClusterId): Promise<ClusterInfo> {
