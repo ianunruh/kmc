@@ -33,62 +33,89 @@ import { ClusterHealth } from "./cluster-health";
 import { RefreshControl } from "./refresh-control";
 import { TopLoadingBar } from "./top-loading-bar";
 
-const NAV = [
+type NavItem = {
+  to: string;
+  label: string;
+  icon: typeof IconServer;
+  match: (path: string) => boolean;
+};
+
+type NavSection = {
+  label: string;
+  items: NavItem[];
+};
+
+const NAV_SECTIONS: NavSection[] = [
   {
-    to: "/",
-    label: "Virtual Machines",
-    icon: IconServer,
-    match: (path: string) => path === "/" || path.startsWith("/vms"),
+    label: "Compute",
+    items: [
+      {
+        to: "/",
+        label: "Virtual Machines",
+        icon: IconServer,
+        match: (path: string) => path === "/" || path.startsWith("/vms"),
+      },
+      {
+        to: "/datavolumes",
+        label: "Data Volumes",
+        icon: IconDatabase,
+        match: (path: string) => path.startsWith("/datavolumes"),
+      },
+      {
+        to: "/ssh-keys",
+        label: "SSH Keys",
+        icon: IconKey,
+        match: (path: string) => path.startsWith("/ssh-keys"),
+      },
+    ],
   },
   {
-    to: "/datavolumes",
-    label: "Data Volumes",
-    icon: IconDatabase,
-    match: (path: string) => path.startsWith("/datavolumes"),
+    label: "Network",
+    items: [
+      {
+        to: "/vpcs",
+        label: "VPCs",
+        icon: IconNetwork,
+        match: (path: string) => path.startsWith("/vpcs"),
+      },
+      {
+        to: "/floating-ips",
+        label: "Floating IPs",
+        icon: IconWorldWww,
+        match: (path: string) => path.startsWith("/floating-ips"),
+      },
+      {
+        to: "/ingresses",
+        label: "Ingresses",
+        icon: IconRoute,
+        match: (path: string) => path.startsWith("/ingresses"),
+      },
+      {
+        to: "/topology",
+        label: "Network Map",
+        icon: IconTopologyStar3,
+        match: (path: string) => path.startsWith("/topology"),
+      },
+    ],
   },
   {
-    to: "/ingresses",
-    label: "Ingresses",
-    icon: IconRoute,
-    match: (path: string) => path.startsWith("/ingresses"),
+    label: "Admin",
+    items: [
+      {
+        to: "/namespaces",
+        label: "Namespaces",
+        icon: IconFolder,
+        match: (path: string) => path.startsWith("/namespaces"),
+      },
+      {
+        to: "/instancetypes",
+        label: "Instance Types",
+        icon: IconCpu,
+        match: (path: string) => path.startsWith("/instancetypes"),
+      },
+    ],
   },
-  {
-    to: "/vpcs",
-    label: "VPCs",
-    icon: IconNetwork,
-    match: (path: string) => path.startsWith("/vpcs"),
-  },
-  {
-    to: "/floating-ips",
-    label: "Floating IPs",
-    icon: IconWorldWww,
-    match: (path: string) => path.startsWith("/floating-ips"),
-  },
-  {
-    to: "/namespaces",
-    label: "Namespaces",
-    icon: IconFolder,
-    match: (path: string) => path.startsWith("/namespaces"),
-  },
-  {
-    to: "/topology",
-    label: "Network map",
-    icon: IconTopologyStar3,
-    match: (path: string) => path.startsWith("/topology"),
-  },
-  {
-    to: "/instancetypes",
-    label: "Instance Types",
-    icon: IconCpu,
-    match: (path: string) => path.startsWith("/instancetypes"),
-  },
-  {
-    to: "/ssh-keys",
-    label: "SSH Keys",
-    icon: IconKey,
-    match: (path: string) => path.startsWith("/ssh-keys"),
-  },
-] as const;
+];
 
 export function AppChrome({
   children,
@@ -211,17 +238,32 @@ export function AppChrome({
       <Form id="kmc-logout" method="post" action="/auth/logout" />
 
       <AppShell.Navbar p="sm">
-        {NAV.map((item) => (
-          <NavLink
-            key={item.to}
-            component={Link}
-            to={item.to}
-            label={item.label}
-            leftSection={<item.icon size={16} />}
-            active={item.match(location.pathname)}
-            variant="filled"
-            mb={4}
-          />
+        {NAV_SECTIONS.map((section) => (
+          <Box key={section.label} mb="sm">
+            <Text
+              size="xs"
+              fw={600}
+              c="dimmed"
+              tt="uppercase"
+              lts={0.5}
+              px="sm"
+              mb={4}
+            >
+              {section.label}
+            </Text>
+            {section.items.map((item) => (
+              <NavLink
+                key={item.to}
+                component={Link}
+                to={item.to}
+                label={item.label}
+                leftSection={<item.icon size={16} />}
+                active={item.match(location.pathname)}
+                variant="filled"
+                mb={4}
+              />
+            ))}
+          </Box>
         ))}
         <NavLink
           component={Link}
@@ -230,7 +272,7 @@ export function AppChrome({
           leftSection={<IconPlus size={16} />}
           active={location.pathname === "/vms/create"}
           variant="subtle"
-          mt="sm"
+          mt="xs"
         />
         <Box mt="auto" p="xs">
           <Text size="xs" c="dimmed">
