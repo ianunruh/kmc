@@ -20,11 +20,13 @@ import { logServerError } from "~/lib/errors";
 import {
   canEditVmSpec,
   formatLabelsText,
+  isVmStopped,
   parseCpuCores,
   parseLabelsText,
   vmPath,
 } from "~/lib/format";
 import { getClusterCatalog } from "~/lib/k8s/catalog.server";
+import { instanceTypeSelectData } from "~/instancetypes/options";
 import type { UpdateVmRequest } from "~/lib/types";
 import { VM_RUN_STRATEGIES } from "~/lib/types";
 import { getVm, updateVm } from "~/vms/vms.server";
@@ -149,16 +151,10 @@ export default function EditVmPage({ loaderData, actionData }: Route.ComponentPr
   }, [actionData]);
 
   const instanceTypeOptions = useMemo(
-    () =>
-      (catalog.instanceTypes ?? []).map((it) => ({
-        value: it.name,
-        label:
-          it.cpu || it.memory
-            ? `${it.name} · ${it.cpu ?? "?"}c / ${it.memory ?? "?"}`
-            : it.name,
-      })),
+    () => instanceTypeSelectData(catalog.instanceTypes ?? []),
     [catalog.instanceTypes],
   );
+  const guestStopped = isVmStopped(vm);
 
   const preferenceOptions = useMemo(
     () => (catalog.preferences ?? []).map((p) => p.name),
@@ -193,7 +189,15 @@ export default function EditVmPage({ loaderData, actionData }: Route.ComponentPr
       />
 
       <Alert
-        color={specEditable ? "gray" : "yellow"}
+        color={
+          !specEditable
+            ? "yellow"
+            : vm.restartRequired
+              ? "orange"
+              : guestStopped
+                ? "gray"
+                : "blue"
+        }
         variant="light"
         title={
           <Group gap="xs" wrap="nowrap">
@@ -202,15 +206,29 @@ export default function EditVmPage({ loaderData, actionData }: Route.ComponentPr
             </Text>
             <StatusBadge status={vm.status} />
             <Text span size="sm" c="dimmed">
-              {specEditable ? "· size & run strategy editable" : "· labels only"}
+              {specEditable
+                ? guestStopped
+                  ? "· size & run strategy editable"
+                  : "· LiveUpdate — size may apply without stop"
+                : "· labels only"}
             </Text>
           </Group>
         }
       >
-        {specEditable
-          ? "Size, preference, and run strategy can be changed while the VM is stopped. Labels can always be updated."
-          : "This VM is not stopped. Only labels can be changed. Stop the VM to edit size, preference, or run strategy."}
+        {!specEditable
+          ? `Cannot edit size, preference, or run strategy while status is ${vm.status}. Labels can always be updated.`
+          : guestStopped
+            ? "Size, preference, and run strategy can be changed while the VM is stopped. Labels can always be updated."
+            : "This VM is running. Size and instance type changes use KubeVirt LiveUpdate when possible; otherwise a RestartRequired condition is set. Labels can always be updated."}
       </Alert>
+
+      {vm.restartRequired && (
+        <Alert color="orange" variant="light" title="Restart required">
+          {vm.restartRequiredMessage?.trim() ||
+            "A previous change is waiting on a guest reboot."}{" "}
+          Soft or hard restart the VM from the detail page after saving.
+        </Alert>
+      )}
 
       {actionData && "error" in actionData && actionData.error && (
         <Alert color="red" title="Update failed" variant="light">
@@ -259,8 +277,10 @@ export default function EditVmPage({ loaderData, actionData }: Route.ComponentPr
             {form.values.sizeMode === "instancetype" && catalog.hasInstanceTypes ? (
               <Select
                 label="Instance type"
+                description="Grouped by common-instancetypes class"
                 data={instanceTypeOptions}
                 searchable
+                nothingFoundMessage="No instance types match"
                 disabled={!specEditable}
                 required={specEditable}
                 value={form.values.instanceType || null}

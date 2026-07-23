@@ -13,6 +13,7 @@ import {
   listVms,
   pauseVm,
   restartVm,
+  softRebootVm,
   startVm,
   stopVm,
   unpauseVm,
@@ -47,6 +48,8 @@ export async function action({ request }: Route.ActionArgs) {
       await startVm(cluster, namespace, name);
     } else if (intent === "restart") {
       await restartVm(cluster, namespace, name);
+    } else if (intent === "softreboot") {
+      await softRebootVm(cluster, namespace, name);
     } else if (intent === "pause") {
       await pauseVm(cluster, namespace, name);
     } else if (intent === "unpause") {

@@ -40,8 +40,9 @@ export function buildNetworkSpec(
   networks: Array<Record<string, unknown>>;
 } {
   if (multusNames.length === 0) {
+    // Masquerade is KubeVirt's preferred pod-network binding (NAT via virt-launcher).
     return {
-      interfaces: [{ name: "default", bridge: {} }],
+      interfaces: [{ name: "default", masquerade: {} }],
       networks: [{ name: "default", pod: {} }],
     };
   }
@@ -131,18 +132,31 @@ export function cloudInitUserDataSecretName(vmName: string): string {
 
 /**
  * Minimal cloud-config that installs an SSH public key on the image default user.
+ * Optional qemu-guest-agent package + enable (soft reboot, guest OS info).
  * Explicit `users: [default]` is more reliable across Ubuntu cloud images than
  * top-level ssh_authorized_keys alone on some releases.
  */
-export function buildSshUserData(sshPublicKey: string): string {
+export function buildSshUserData(
+  sshPublicKey: string,
+  opts?: { installGuestAgent?: boolean },
+): string {
   const key = sshPublicKey.trim();
-  return [
+  const lines = [
     "#cloud-config",
     "users:",
     "  - default",
     "ssh_authorized_keys:",
     `  - ${key}`,
-  ].join("\n");
+  ];
+  if (opts?.installGuestAgent) {
+    lines.push(
+      "packages:",
+      "  - qemu-guest-agent",
+      "runcmd:",
+      "  - systemctl enable --now qemu-guest-agent",
+    );
+  }
+  return lines.join("\n");
 }
 
 export function buildVirtualMachineManifest(
@@ -167,7 +181,9 @@ export function buildVirtualMachineManifest(
     },
   ];
 
-  const defaultUserData = buildSshUserData(input.sshPublicKey);
+  const defaultUserData = buildSshUserData(input.sshPublicKey, {
+    installGuestAgent: input.installGuestAgent === true,
+  });
 
   // KubeVirt admission: inline userData / networkData max 2048 bytes each.
   const cloudInitNoCloud: Record<string, unknown> = {};
@@ -213,6 +229,7 @@ export function buildVirtualMachineManifest(
     };
   }
 
+  // CDI `storage` (not legacy `pvc`) — fills volumeMode/accessModes from StorageProfile when omitted.
   const dataVolumeSpec: Record<string, unknown> = {
     source: {
       pvc: {
@@ -220,7 +237,7 @@ export function buildVirtualMachineManifest(
         name: input.image.name,
       },
     },
-    pvc: {
+    storage: {
       accessModes: ["ReadWriteOnce"],
       volumeMode: "Block",
       resources: {
@@ -357,6 +374,8 @@ export function buildNatGatewayUserData(input: {
     "  - default",
     "ssh_authorized_keys:",
     `  - ${input.sshPublicKey.trim()}`,
+    "packages:",
+    "  - qemu-guest-agent",
     "write_files:",
     "  - path: /etc/sysctl.d/99-kmc-nat.conf",
     "    content: |",
@@ -379,6 +398,7 @@ export function buildNatGatewayUserData(input: {
     "      [Install]",
     "      WantedBy=multi-user.target",
     "runcmd:",
+    "  - systemctl enable --now qemu-guest-agent",
     "  - sysctl --system",
     "  - systemctl daemon-reload",
     "  - systemctl enable --now kmc-nat.service",

@@ -40,6 +40,12 @@ export interface VmSummary {
   age: string;
   nodeName?: string;
   message?: string;
+  /**
+   * True when KubeVirt reports RestartRequired (e.g. LiveUpdate applied a change
+   * that still needs a guest reboot).
+   */
+  restartRequired?: boolean;
+  restartRequiredMessage?: string;
 }
 
 export interface VmCondition {
@@ -67,15 +73,52 @@ export interface VmVolumeInfo {
 export interface VmNetworkInfo {
   name: string;
   model?: string;
+  /** Interface binding: masquerade, bridge, sriov, … */
+  binding?: string;
   multusNetworkName?: string;
   pod?: boolean;
   mac?: string;
   ipAddresses?: string[];
+  /** Guest-side NIC name from qemu-guest-agent (e.g. enp1s0). */
+  guestInterfaceName?: string;
+  /** Link state from VMI status (up/down). */
+  linkState?: string;
   /**
    * When the Multus attachment is a kmc-managed VPC NAD, coordinates for the
    * VPC detail page (resolved relative to the VM namespace for bare names).
    */
   vpc?: { cluster: string; namespace: string; name: string };
+}
+
+/** Filesystem row from guestosinfo / filesystemlist subresource. */
+export interface VmGuestFilesystem {
+  mountPoint: string;
+  diskName?: string;
+  fileSystemType?: string;
+  totalBytes?: number;
+  usedBytes?: number;
+}
+
+/**
+ * Guest agent snapshot: VMI status.guestOSInfo + guestosinfo subresource
+ * (hostname, timezone, agent version, filesystems) when AgentConnected.
+ */
+export interface VmGuestAgentInfo {
+  /** AgentConnected condition is True. */
+  connected: boolean;
+  hostname?: string;
+  guestAgentVersion?: string;
+  timezone?: string;
+  osId?: string;
+  osPrettyName?: string;
+  osName?: string;
+  osVersion?: string;
+  osVersionId?: string;
+  osKernelRelease?: string;
+  osKernelVersion?: string;
+  /** Guest-reported machine arch, e.g. x86_64. */
+  osMachine?: string;
+  filesystems?: VmGuestFilesystem[];
 }
 
 export interface VmDetail extends VmSummary {
@@ -94,6 +137,8 @@ export interface VmDetail extends VmSummary {
   ipv4Address?: string;
   vmiPhase?: string;
   hasVmi: boolean;
+  /** QEMU guest agent fields from the live VMI, when present. */
+  guestAgent?: VmGuestAgentInfo;
 }
 
 export interface CreateVmRequest {
@@ -120,19 +165,26 @@ export interface CreateVmRequest {
   }>;
   sshPublicKey: string;
   start?: boolean;
+  /**
+   * When true, cloud-init installs and enables qemu-guest-agent (soft reboot,
+   * guest OS info). Requires guest package repos on first boot.
+   */
+  installGuestAgent?: boolean;
 }
 
 /**
- * First-pass VM edit surface.
+ * VM edit surface.
  * - labels: always mutable
- * - spec (runStrategy / size / preference): only when the VM is stopped
+ * - spec (runStrategy / size / preference): when stopped, or while running with
+ *   LiveUpdate (default on modern KubeVirt). A change that cannot apply live
+ *   surfaces as RestartRequired on the VM.
  */
 export interface UpdateVmRequest {
   cluster: ClusterId;
   namespace: string;
   name: string;
   labels: Record<string, string>;
-  /** Omitted when the VM is running — only labels are applied. */
+  /** Omitted when the VM is in a state that cannot accept template edits. */
   spec?: {
     runStrategy: string;
     sizeMode: "manual" | "instancetype";
@@ -186,6 +238,12 @@ export interface InstanceTypeInfo {
   name: string;
   cpu?: string;
   memory?: string;
+  /** common-instancetypes class, e.g. general.purpose, memory.intensive */
+  class?: string;
+  /** common-instancetypes size label, e.g. medium, xlarge */
+  size?: string;
+  /** e.g. kubevirt.io when from common-instancetypes */
+  vendor?: string;
 }
 
 export interface PreferenceInfo {
@@ -237,7 +295,13 @@ export interface ClusterCatalog {
 }
 
 export type VmLifecycleIntent =
-  "stop" | "start" | "restart" | "pause" | "unpause" | "delete";
+  | "stop"
+  | "start"
+  | "restart"
+  | "softreboot"
+  | "pause"
+  | "unpause"
+  | "delete";
 
 // --- DataVolumes (cdi.kubevirt.io) ---
 

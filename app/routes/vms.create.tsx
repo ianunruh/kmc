@@ -25,6 +25,10 @@ import { vmPath } from "~/lib/format";
 import { getImagePreference } from "~/lib/k8s/catalog.server";
 import { listSshKeysOrEmpty } from "~/ssh-keys/ssh-keys.server";
 import { FormActions, FormSection } from "~/ui";
+import {
+  instanceTypeSelectData,
+  preferredInstanceTypeName,
+} from "~/instancetypes/options";
 import { createVm, listClusters } from "~/vms/vms.server";
 import type { ClusterCatalog, CreateVmRequest, NetworkInfo } from "~/lib/types";
 
@@ -77,6 +81,7 @@ export async function action({ request }: Route.ActionArgs) {
   const savedSshKeyId = String(form.get("savedSshKeyId") ?? "").trim();
   let sshPublicKey = String(form.get("sshPublicKey") ?? "").trim();
   const start = form.get("start") !== "false";
+  const installGuestAgent = form.get("installGuestAgent") !== "false";
 
   if (!cluster) return { error: "Cluster is required" };
   if (!namespace) return { error: "Namespace is required" };
@@ -120,6 +125,7 @@ export async function action({ request }: Route.ActionArgs) {
     image: { kind: "pvc", namespace: imageNamespace, name: imageName },
     sshPublicKey,
     start,
+    installGuestAgent,
     preference,
   };
 
@@ -202,6 +208,8 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       savedSshKeyId: hasSavedKeys ? sshKeys[0]!.id : "",
       sshPublicKey: "",
       start: true,
+      /** Install qemu-guest-agent via cloud-init (soft reboot / guest OS info). */
+      installGuestAgent: true,
     },
     validate: {
       cluster: (v) => (!v ? "Required" : null),
@@ -239,6 +247,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       savedSshKeyId: values.savedSshKeyId,
       sshPublicKey: values.sshPublicKey,
       start: values.start ? "true" : "false",
+      installGuestAgent: values.installGuestAgent ? "true" : "false",
     };
     submit(data, { method: "post" });
   });
@@ -269,8 +278,9 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
     }
     if (catalog.hasInstanceTypes) {
       form.setFieldValue("sizeMode", "instancetype");
-      if (!form.values.instanceType && catalog.instanceTypes[0]) {
-        form.setFieldValue("instanceType", catalog.instanceTypes[0].name);
+      if (!form.values.instanceType) {
+        const preferred = preferredInstanceTypeName(catalog.instanceTypes);
+        if (preferred) form.setFieldValue("instanceType", preferred);
       }
     } else {
       form.setFieldValue("sizeMode", "manual");
@@ -340,14 +350,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
     [catalog],
   );
   const instanceTypeOptions = useMemo(
-    () =>
-      (catalog?.instanceTypes ?? []).map((it) => ({
-        value: it.name,
-        label:
-          it.cpu || it.memory
-            ? `${it.name} · ${it.cpu ?? "?"}c / ${it.memory ?? "?"}`
-            : it.name,
-      })),
+    () => instanceTypeSelectData(catalog?.instanceTypes ?? []),
     [catalog],
   );
   const availableNetworks = useMemo(
@@ -477,7 +480,10 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
             {catalog?.hasInstanceTypes && (
               <Select
                 label="Instance type"
+                description="Grouped by common-instancetypes class (u1 general purpose is a good default)"
                 data={instanceTypeOptions}
+                searchable
+                nothingFoundMessage="No instance types match"
                 value={form.values.instanceType || null}
                 onChange={(v) => {
                   form.setFieldValue("instanceType", v ?? "");
@@ -604,12 +610,14 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 </Text>
                 <Text size="xs" c="dimmed">
                   Multus attachments in order (first is primary for the default
-                  route when IPAM applies). Leave empty for pod network only.
+                  route when IPAM applies). Leave empty for pod network only
+                  (masquerade NAT via virt-launcher — works with Ingress).
                 </Text>
               </div>
               {form.values.networks.length === 0 ? (
                 <Text size="sm" c="dimmed">
-                  No Multus attachments — VM will use the pod network.
+                  No Multus attachments — VM will use the pod network
+                  (masquerade).
                 </Text>
               ) : (
                 form.values.networks.map((name, index) => (
@@ -719,6 +727,17 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 </Text>
               ) : null}
             </Stack>
+          </FormSection>
+
+          <FormSection title="Guest setup">
+            <Switch
+              label="Install qemu-guest-agent"
+              description="Cloud-init installs and enables the agent on first boot (soft reboot, guest OS info). Needs package repos reachable from the guest."
+              checked={form.values.installGuestAgent}
+              onChange={(e) =>
+                form.setFieldValue("installGuestAgent", e.currentTarget.checked)
+              }
+            />
           </FormSection>
 
           <FormActions>

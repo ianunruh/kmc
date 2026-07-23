@@ -238,7 +238,8 @@ export async function createDataVolume(
     },
     spec: {
       source,
-      pvc: {
+      // CDI `storage` (not legacy `pvc`) — StorageProfile can fill omitted fields.
+      storage: {
         accessModes: ["ReadWriteOnce"],
         volumeMode: input.volumeMode ?? "Block",
         resources: {

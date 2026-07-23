@@ -5,6 +5,7 @@ import {
   Button,
   Code,
   Group,
+  Menu,
   Paper,
   SimpleGrid,
   Stack,
@@ -14,6 +15,7 @@ import {
 } from "@mantine/core";
 import {
   IconArrowLeft,
+  IconChevronDown,
   IconEdit,
   IconPlayerPause,
   IconPlayerPlay,
@@ -41,11 +43,13 @@ import {
   canOpenConsole,
   canPause,
   canRestart,
+  canSoftReboot,
   canStart,
   canStop,
   canUnpause,
   dataVolumePath,
   formatAge,
+  formatBytes,
   formatDateTime,
   instanceTypePath,
   sizeLabel,
@@ -63,6 +67,7 @@ import {
   getVm,
   pauseVm,
   restartVm,
+  softRebootVm,
   startVm,
   stopVm,
   unpauseVm,
@@ -137,6 +142,10 @@ export async function action({ request, params }: Route.ActionArgs) {
       await restartVm(cluster, namespace, name);
       return { ok: true, intent };
     }
+    if (intent === "softreboot") {
+      await softRebootVm(cluster, namespace, name);
+      return { ok: true, intent };
+    }
     if (intent === "pause") {
       await pauseVm(cluster, namespace, name);
       return { ok: true, intent };
@@ -196,7 +205,7 @@ function Field({ label, value }: { label: string; value?: React.ReactNode }) {
 
 type ConfirmableLifecycleIntent = Extract<
   VmLifecycleIntent,
-  "stop" | "restart" | "pause"
+  "stop" | "restart" | "softreboot" | "pause"
 >;
 
 const LIFECYCLE_CONFIRM: Record<
@@ -209,9 +218,16 @@ const LIFECYCLE_CONFIRM: Record<
     message: "This will shut down the virtual machine.",
   },
   restart: {
-    title: "Restart virtual machine",
-    confirmLabel: "Restart VM",
-    message: "This will reboot the virtual machine.",
+    title: "Hard restart virtual machine",
+    confirmLabel: "Hard restart",
+    message:
+      "This tears down the virt-launcher domain and starts a new one (hard restart).",
+  },
+  softreboot: {
+    title: "Soft reboot virtual machine",
+    confirmLabel: "Soft reboot",
+    message:
+      "This requests an ACPI reboot from the guest (soft reboot). Prefer when the guest agent is connected; use hard restart if the guest is unresponsive.",
   },
   pause: {
     title: "Pause virtual machine",
@@ -219,6 +235,17 @@ const LIFECYCLE_CONFIRM: Record<
     message: "This will pause the virtual machine. It can be unpaused later.",
   },
 };
+
+function intentSuccessLabel(intent?: string): string {
+  switch (intent) {
+    case "softreboot":
+      return "soft reboot";
+    case "restart":
+      return "hard restart";
+    default:
+      return intent ?? "action";
+  }
+}
 
 export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
   const { vm, events, yaml, prometheusConfigured } = loaderData;
@@ -240,7 +267,10 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
       return;
     }
     if (data.ok) {
-      notifyActionSuccess("Done", `VM ${data.intent ?? "action"} requested`);
+      notifyActionSuccess(
+        "Done",
+        `VM ${intentSuccessLabel(data.intent)} requested`,
+      );
       refreshNow();
     }
   });
@@ -331,6 +361,11 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
             leftSection={<IconPlayerStop size={16} />}
             disabled={!canStop(vm) || busy}
             loading={intentBusy("stop")}
+            title={
+              vm.status === "Paused"
+                ? "Unpause the VM before stopping"
+                : undefined
+            }
             onClick={() => setConfirmIntent("stop")}
           >
             Stop
@@ -344,15 +379,45 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
           >
             Start
           </Button>
-          <Button
-            variant="default"
-            leftSection={<IconRefresh size={16} />}
-            disabled={!canRestart(vm) || busy}
-            loading={intentBusy("restart")}
-            onClick={() => setConfirmIntent("restart")}
-          >
-            Restart
-          </Button>
+          <Menu shadow="md" width={220} position="bottom-end">
+            <Menu.Target>
+              <Button
+                variant="default"
+                leftSection={<IconRefresh size={16} />}
+                rightSection={<IconChevronDown size={14} />}
+                disabled={
+                  (!canRestart(vm) && !canSoftReboot(vm)) || busy
+                }
+                loading={
+                  intentBusy("restart") || intentBusy("softreboot")
+                }
+              >
+                Restart
+              </Button>
+            </Menu.Target>
+            <Menu.Dropdown>
+              <Menu.Item
+                leftSection={<IconRefresh size={14} />}
+                disabled={!canSoftReboot(vm) || busy}
+                title={
+                  canSoftReboot(vm)
+                    ? "ACPI soft reboot (guest-initiated)"
+                    : "Soft reboot requires a Running guest"
+                }
+                onClick={() => setConfirmIntent("softreboot")}
+              >
+                Soft reboot
+              </Menu.Item>
+              <Menu.Item
+                leftSection={<IconRefresh size={14} />}
+                disabled={!canRestart(vm) || busy}
+                title="Tear down and recreate the domain"
+                onClick={() => setConfirmIntent("restart")}
+              >
+                Hard restart
+              </Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
           {canUnpause(vm) ? (
             <Button
               variant="default"
@@ -385,6 +450,15 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
           </Button>
         </Group>
       </Group>
+
+      {vm.restartRequired && (
+        <Alert color="orange" variant="light" title="Restart required">
+          {vm.restartRequiredMessage?.trim() ||
+            "KubeVirt applied a LiveUpdate that still needs a guest reboot to take full effect."}{" "}
+          Use Soft reboot when the guest agent is connected, or Hard restart if
+          the guest is unresponsive.
+        </Alert>
+      )}
 
       {vm.message && (
         <Alert color="yellow" variant="light" title="Status message">
@@ -486,66 +560,234 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
           </SimpleGrid>
         </DetailCard>
 
-        <DetailCard title="Networks">
-          {vm.networks.length === 0 ? (
+        <DetailCard title="Guest agent">
+          {!vm.hasVmi ? (
             <Text size="sm" c="dimmed">
-              No networks configured
+              No live VMI — guest agent is only available while the VM is running.
             </Text>
           ) : (
-            <Table.ScrollContainer
-              className="kmc-table-scroll"
-              minWidth={480}
-              type="native"
-            >
-              <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
-                <Table.Thead>
-                  <Table.Tr>
-                    <Table.Th>Name</Table.Th>
-                    <Table.Th>Attachment</Table.Th>
-                    <Table.Th>MAC</Table.Th>
-                    <Table.Th>IPs</Table.Th>
-                  </Table.Tr>
-                </Table.Thead>
-                <Table.Tbody>
-                  {vm.networks.map((net) => (
-                    <Table.Tr key={net.name}>
-                      <Table.Td>{net.name}</Table.Td>
-                      <Table.Td>
-                        {net.multusNetworkName ? (
-                          net.vpc ? (
-                            <Group gap={4} wrap="nowrap">
-                              <Text size="sm" component="span">
-                                multus:
-                              </Text>
-                              <ResourceLink to={vpcPath(net.vpc)}>
-                                {net.multusNetworkName}
-                              </ResourceLink>
-                            </Group>
-                          ) : (
-                            `multus:${net.multusNetworkName}`
-                          )
-                        ) : net.pod ? (
-                          "pod"
-                        ) : (
-                          "—"
-                        )}
-                      </Table.Td>
-                      <Table.Td>
-                        <Text size="sm" c="dimmed">
-                          {net.mac ?? "—"}
+            <Stack gap="sm">
+              <SimpleGrid cols={2} spacing="sm">
+                <Field
+                  label="Agent"
+                  value={
+                    <Group gap={6} wrap="nowrap">
+                      <Badge
+                        size="sm"
+                        variant="light"
+                        color={vm.guestAgent?.connected ? "teal" : "gray"}
+                      >
+                        {vm.guestAgent?.connected ? "connected" : "not connected"}
+                      </Badge>
+                      {vm.guestAgent?.guestAgentVersion ? (
+                        <Text size="xs" c="dimmed">
+                          v{vm.guestAgent.guestAgentVersion}
                         </Text>
-                      </Table.Td>
-                      <Table.Td>
-                        {net.ipAddresses?.length ? net.ipAddresses.join(", ") : "—"}
-                      </Table.Td>
-                    </Table.Tr>
-                  ))}
-                </Table.Tbody>
-              </Table>
-            </Table.ScrollContainer>
+                      ) : null}
+                    </Group>
+                  }
+                />
+                <Field label="Hostname" value={vm.guestAgent?.hostname} />
+                <Field
+                  label="OS"
+                  value={
+                    vm.guestAgent?.osPrettyName ||
+                    vm.guestAgent?.osName ||
+                    undefined
+                  }
+                />
+                <Field label="Version" value={vm.guestAgent?.osVersion} />
+                <Field
+                  label="Kernel"
+                  value={
+                    vm.guestAgent?.osKernelRelease ? (
+                      <Code>{vm.guestAgent.osKernelRelease}</Code>
+                    ) : undefined
+                  }
+                />
+                <Field
+                  label="Arch"
+                  value={
+                    vm.guestAgent?.osMachine ? (
+                      <Code>{vm.guestAgent.osMachine}</Code>
+                    ) : undefined
+                  }
+                />
+                <Field label="Timezone" value={vm.guestAgent?.timezone} />
+                <Field
+                  label="OS id"
+                  value={
+                    vm.guestAgent?.osId ? (
+                      <Code>{vm.guestAgent.osId}</Code>
+                    ) : undefined
+                  }
+                />
+              </SimpleGrid>
+              {vm.guestAgent?.osKernelVersion ? (
+                <div>
+                  <Text size="xs" c="dimmed" mb={2}>
+                    Kernel version
+                  </Text>
+                  <ClampedText size="sm" c="dimmed" lineClamp={2}>
+                    {vm.guestAgent.osKernelVersion}
+                  </ClampedText>
+                </div>
+              ) : null}
+              {vm.guestAgent?.filesystems && vm.guestAgent.filesystems.length > 0 ? (
+                <div>
+                  <Text size="xs" c="dimmed" tt="uppercase" fw={600} mb={6}>
+                    Filesystems
+                  </Text>
+                  <Table.ScrollContainer
+                    className="kmc-table-scroll"
+                    minWidth={420}
+                    type="native"
+                  >
+                    <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
+                      <Table.Thead>
+                        <Table.Tr>
+                          <Table.Th>Mount</Table.Th>
+                          <Table.Th>Type</Table.Th>
+                          <Table.Th>Used</Table.Th>
+                          <Table.Th>Total</Table.Th>
+                        </Table.Tr>
+                      </Table.Thead>
+                      <Table.Tbody>
+                        {vm.guestAgent.filesystems.map((fs) => {
+                          const pct =
+                            fs.totalBytes &&
+                            fs.usedBytes != null &&
+                            fs.totalBytes > 0
+                              ? Math.round((fs.usedBytes / fs.totalBytes) * 100)
+                              : null;
+                          return (
+                            <Table.Tr key={`${fs.mountPoint}-${fs.diskName ?? ""}`}>
+                              <Table.Td>
+                                <Code>{fs.mountPoint}</Code>
+                                {fs.diskName ? (
+                                  <Text size="xs" c="dimmed">
+                                    {fs.diskName}
+                                  </Text>
+                                ) : null}
+                              </Table.Td>
+                              <Table.Td>
+                                <Text size="sm" c="dimmed">
+                                  {fs.fileSystemType ?? "—"}
+                                </Text>
+                              </Table.Td>
+                              <Table.Td>
+                                <Text size="sm">
+                                  {formatBytes(fs.usedBytes)}
+                                  {pct != null ? (
+                                    <Text span size="xs" c="dimmed">
+                                      {" "}
+                                      ({pct}%)
+                                    </Text>
+                                  ) : null}
+                                </Text>
+                              </Table.Td>
+                              <Table.Td>
+                                <Text size="sm" c="dimmed">
+                                  {formatBytes(fs.totalBytes)}
+                                </Text>
+                              </Table.Td>
+                            </Table.Tr>
+                          );
+                        })}
+                      </Table.Tbody>
+                    </Table>
+                  </Table.ScrollContainer>
+                </div>
+              ) : null}
+            </Stack>
+          )}
+          {vm.hasVmi && !vm.guestAgent?.connected && (
+            <Text size="xs" c="dimmed" mt="sm">
+              Install and enable qemu-guest-agent in the guest for soft reboot,
+              hostname, filesystems, and richer OS info.
+            </Text>
           )}
         </DetailCard>
       </SimpleGrid>
+
+      <DetailCard title="Networks">
+        {vm.networks.length === 0 ? (
+          <Text size="sm" c="dimmed">
+            No networks configured
+          </Text>
+        ) : (
+          <Table.ScrollContainer
+            className="kmc-table-scroll"
+            minWidth={560}
+            type="native"
+          >
+            <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Name</Table.Th>
+                  <Table.Th>Guest NIC</Table.Th>
+                  <Table.Th>Attachment</Table.Th>
+                  <Table.Th>Binding</Table.Th>
+                  <Table.Th>MAC</Table.Th>
+                  <Table.Th>IPs</Table.Th>
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {vm.networks.map((net) => (
+                  <Table.Tr key={net.name}>
+                    <Table.Td>
+                      {net.name}
+                      {net.linkState ? (
+                        <Text size="xs" c="dimmed">
+                          {net.linkState}
+                        </Text>
+                      ) : null}
+                    </Table.Td>
+                    <Table.Td>
+                      <Text size="sm" c="dimmed">
+                        {net.guestInterfaceName ?? "—"}
+                      </Text>
+                    </Table.Td>
+                    <Table.Td>
+                      {net.multusNetworkName ? (
+                        net.vpc ? (
+                          <Group gap={4} wrap="nowrap">
+                            <Text size="sm" component="span">
+                              multus:
+                            </Text>
+                            <ResourceLink to={vpcPath(net.vpc)}>
+                              {net.multusNetworkName}
+                            </ResourceLink>
+                          </Group>
+                        ) : (
+                          `multus:${net.multusNetworkName}`
+                        )
+                      ) : net.pod ? (
+                        "pod"
+                      ) : (
+                        "—"
+                      )}
+                    </Table.Td>
+                    <Table.Td>
+                      <Text size="sm" c="dimmed">
+                        {net.binding ?? "—"}
+                      </Text>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text size="sm" c="dimmed">
+                        {net.mac ?? "—"}
+                      </Text>
+                    </Table.Td>
+                    <Table.Td>
+                      {net.ipAddresses?.length ? net.ipAddresses.join(", ") : "—"}
+                    </Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
+        )}
+      </DetailCard>
 
       <DetailCard title="Volumes">
         {vm.volumes.length === 0 ? (

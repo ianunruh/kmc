@@ -1,4 +1,4 @@
-import { ActionIcon, Menu, Table, Text, Tooltip } from "@mantine/core";
+import { ActionIcon, Badge, Group, Menu, Table, Text, Tooltip } from "@mantine/core";
 import {
   IconDotsVertical,
   IconEdit,
@@ -17,6 +17,7 @@ import {
   canOpenConsole,
   canPause,
   canRestart,
+  canSoftReboot,
   canStart,
   canStop,
   canUnpause,
@@ -52,7 +53,13 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
     if (data.error) {
       notifyActionError("Action failed", data.error, { intent: data.intent });
     } else if (data.ok) {
-      notifyActionSuccess("Done", `VM ${data.intent ?? "action"} requested`);
+      const label =
+        data.intent === "softreboot"
+          ? "soft reboot"
+          : data.intent === "restart"
+            ? "hard restart"
+            : (data.intent ?? "action");
+      notifyActionSuccess("Done", `VM ${label} requested`);
       refreshNow();
     }
   });
@@ -130,12 +137,26 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                     </ResourceLink>
                   </Table.Td>
                   <Table.Td>
-                    <ResourceLink
-                      to={vmsListPath({ cluster: vm.cluster, status: vm.status })}
-                      underline="never"
-                    >
-                      <StatusBadge status={vm.status} />
-                    </ResourceLink>
+                    <Group gap={6} wrap="nowrap">
+                      <ResourceLink
+                        to={vmsListPath({ cluster: vm.cluster, status: vm.status })}
+                        underline="never"
+                      >
+                        <StatusBadge status={vm.status} />
+                      </ResourceLink>
+                      {vm.restartRequired && (
+                        <Tooltip
+                          label={
+                            vm.restartRequiredMessage?.trim() ||
+                            "LiveUpdate change needs a guest reboot"
+                          }
+                        >
+                          <Badge size="xs" variant="light" color="orange">
+                            restart
+                          </Badge>
+                        </Tooltip>
+                      )}
+                    </Group>
                   </Table.Td>
                   <Table.Td>
                     <Text size="sm">{sizeLabel(vm)}</Text>
@@ -158,7 +179,7 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                     </Tooltip>
                   </Table.Td>
                   <Table.Td>
-                    <Menu shadow="md" width={170} position="bottom-end">
+                    <Menu shadow="md" width={190} position="bottom-end">
                       <Menu.Target>
                         <ActionIcon
                           variant="subtle"
@@ -193,6 +214,11 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                         <Menu.Item
                           leftSection={<IconPlayerStop size={14} />}
                           disabled={!canStop(vm) || busy}
+                          title={
+                            vm.status === "Paused"
+                              ? "Unpause the VM before stopping"
+                              : undefined
+                          }
                           onClick={() => submitIntent("stop", vm)}
                         >
                           Stop
@@ -206,10 +232,19 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                         </Menu.Item>
                         <Menu.Item
                           leftSection={<IconRefresh size={14} />}
+                          disabled={!canSoftReboot(vm) || busy}
+                          title="ACPI soft reboot (guest-initiated)"
+                          onClick={() => submitIntent("softreboot", vm)}
+                        >
+                          Soft reboot
+                        </Menu.Item>
+                        <Menu.Item
+                          leftSection={<IconRefresh size={14} />}
                           disabled={!canRestart(vm) || busy}
+                          title="Tear down and recreate the domain"
                           onClick={() => submitIntent("restart", vm)}
                         >
-                          Restart
+                          Hard restart
                         </Menu.Item>
                         {canUnpause(vm) ? (
                           <Menu.Item

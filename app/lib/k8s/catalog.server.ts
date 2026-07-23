@@ -207,7 +207,10 @@ async function listInstanceTypes(
       plural: "virtualmachineclusterinstancetypes",
     })) as {
       items?: Array<{
-        metadata?: { name?: string };
+        metadata?: {
+          name?: string;
+          labels?: Record<string, string>;
+        };
         spec?: {
           cpu?: { guest?: number };
           memory?: { guest?: string };
@@ -215,13 +218,22 @@ async function listInstanceTypes(
       }>;
     };
     return (res.items ?? [])
-      .map((item) => ({
-        name: item.metadata?.name ?? "",
-        cpu: item.spec?.cpu?.guest != null ? String(item.spec.cpu.guest) : undefined,
-        memory: item.spec?.memory?.guest,
-      }))
-      .filter((i) => i.name)
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .map((item) => {
+        const labels = item.metadata?.labels ?? {};
+        return {
+          name: item.metadata?.name ?? "",
+          cpu:
+            item.spec?.cpu?.guest != null
+              ? String(item.spec.cpu.guest)
+              : labels["instancetype.kubevirt.io/cpu"],
+          memory:
+            item.spec?.memory?.guest ?? labels["instancetype.kubevirt.io/memory"],
+          class: labels["instancetype.kubevirt.io/class"] || undefined,
+          size: labels["instancetype.kubevirt.io/size"] || undefined,
+          vendor: labels["instancetype.kubevirt.io/vendor"] || undefined,
+        } satisfies InstanceTypeInfo;
+      })
+      .filter((i) => i.name);
   } catch {
     return [];
   }

@@ -33,17 +33,43 @@ export function sizeLabel(vm: Pick<VmSummary, "cpu" | "memory">): string {
   return `${vm.cpu ?? "—"} / ${vm.memory ?? "—"}`;
 }
 
+/** Human-readable byte sizes for guest filesystem usage, etc. */
+export function formatBytes(bytes: number | undefined | null): string {
+  if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return "—";
+  if (bytes === 0) return "0 B";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let v = bytes;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  const digits = i === 0 ? 0 : v >= 10 ? 1 : 2;
+  return `${v.toFixed(digits)} ${units[i]}`;
+}
+
+/**
+ * Hard stop. Paused is excluded — modern KubeVirt rejects stop until unpaused.
+ */
 export function canStop(vm: Pick<VmSummary, "status">): boolean {
-  return ["Running", "Starting", "Paused", "Migrating"].includes(vm.status);
+  return ["Running", "Starting", "Migrating"].includes(vm.status);
 }
 
 export function canStart(vm: Pick<VmSummary, "status">): boolean {
   return ["Stopped", "Error"].includes(vm.status);
 }
 
-/** Soft restart via KubeVirt VM subresource (needs a live guest). */
+/** Hard restart via VM subresource (tears down the domain). */
 export function canRestart(vm: Pick<VmSummary, "status">): boolean {
   return ["Running", "Paused"].includes(vm.status);
+}
+
+/**
+ * ACPI soft reboot via VMI subresource (needs a Running guest; guest agent
+ * preferred but not required by the API).
+ */
+export function canSoftReboot(vm: Pick<VmSummary, "status">): boolean {
+  return vm.status === "Running";
 }
 
 /** Freeze guest CPU/IO; requires a Running VMI. */
@@ -61,10 +87,18 @@ export function canOpenConsole(vm: Pick<VmSummary, "status">): boolean {
 }
 
 /**
- * Size, preference, and runStrategy are only safe to change while the guest
- * is down (KubeVirt applies most template changes on the next start).
+ * Size, preference, and runStrategy can be edited when the guest is down, or
+ * while it is running (LiveUpdate — default on modern KubeVirt). Changes that
+ * cannot apply live surface as RestartRequired on the VM.
  */
 export function canEditVmSpec(vm: Pick<VmSummary, "status">): boolean {
+  return ["Stopped", "Error", "Running", "Paused", "Migrating"].includes(
+    vm.status,
+  );
+}
+
+/** True when the guest is not running — useful for messaging vs LiveUpdate. */
+export function isVmStopped(vm: Pick<VmSummary, "status">): boolean {
   return ["Stopped", "Error"].includes(vm.status);
 }
 

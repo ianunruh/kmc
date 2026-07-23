@@ -6,6 +6,8 @@ import type {
   CreateVmRequest,
   UpdateVmRequest,
   VmDetail,
+  VmGuestAgentInfo,
+  VmGuestFilesystem,
   VmNetworkInfo,
   VmSummary,
   VmVolumeInfo,
@@ -17,6 +19,7 @@ import {
   httpErrorMessage,
   k8sFetch,
 } from "~/lib/k8s/clients.server";
+import type { KubeConfig } from "@kubernetes/client-node";
 import { assertVmNamespaceAllowed } from "~/lib/k8s/catalog.server";
 import { ensureStaticMultusNads } from "~/lib/k8s/static-nads.server";
 import {
@@ -134,11 +137,24 @@ interface KubeVmi {
   status?: {
     phase?: string;
     nodeName?: string;
+    guestOSInfo?: {
+      name?: string;
+      prettyName?: string;
+      version?: string;
+      versionId?: string;
+      kernelRelease?: string;
+      kernelVersion?: string;
+      machine?: string;
+      id?: string;
+    };
     interfaces?: Array<{
       name?: string;
       mac?: string;
       ipAddress?: string;
       ipAddresses?: string[];
+      /** Guest-side NIC name from the agent (e.g. enp1s0). */
+      interfaceName?: string;
+      linkState?: string;
     }>;
     conditions?: Array<{
       type?: string;
@@ -207,6 +223,9 @@ function mapVm(
   const notReady = vm.status?.conditions?.find(
     (c) => c.type === "Ready" && c.status !== "True",
   );
+  const restartRequiredCond = vm.status?.conditions?.find(
+    (c) => c.type === "RestartRequired" && c.status === "True",
+  );
 
   const allocatedIpv4 = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
 
@@ -225,6 +244,9 @@ function mapVm(
     age: vm.metadata?.creationTimestamp ?? "",
     nodeName: vm.status?.nodeName,
     message: notReady?.message ?? notReady?.reason,
+    restartRequired: restartRequiredCond != null,
+    restartRequiredMessage:
+      restartRequiredCond?.message ?? restartRequiredCond?.reason,
   };
 }
 
@@ -331,6 +353,18 @@ function mapVolumes(vm: KubeVm): VmVolumeInfo[] {
   });
 }
 
+/** Drop IPv6 link-local (fe80::/10) from guest/VMI address lists for display. */
+function isLinkLocalIpv6(ip: string): boolean {
+  const bare = ip.trim().split("%")[0]?.toLowerCase() ?? "";
+  return bare.startsWith("fe80:");
+}
+
+function filterDisplayIps(ips: string[] | undefined): string[] | undefined {
+  if (!ips?.length) return undefined;
+  const filtered = ips.filter((ip) => ip.trim() && !isLinkLocalIpv6(ip));
+  return filtered.length > 0 ? filtered : undefined;
+}
+
 function mapNetworks(vm: KubeVm, vmi?: KubeVmi | null): VmNetworkInfo[] {
   const networks = vm.spec?.template?.spec?.networks ?? [];
   const ifaces = vm.spec?.template?.spec?.domain?.devices?.interfaces ?? [];
@@ -342,14 +376,21 @@ function mapNetworks(vm: KubeVm, vmi?: KubeVmi | null): VmNetworkInfo[] {
   return networks.map((net) => {
     const iface = ifaceByName.get(net.name ?? "");
     const st = statusByName.get(net.name ?? "");
-    const ips = st?.ipAddresses ?? (st?.ipAddress ? [st.ipAddress] : undefined);
+    const raw = st?.ipAddresses ?? (st?.ipAddress ? [st.ipAddress] : undefined);
+    const ips = filterDisplayIps(raw);
+    let binding: string | undefined;
+    if (iface?.masquerade != null) binding = "masquerade";
+    else if (iface?.bridge != null) binding = "bridge";
     return {
       name: net.name ?? "",
       model: iface?.model,
+      binding,
       multusNetworkName: net.multus?.networkName,
       pod: net.pod != null,
       mac: st?.mac ?? iface?.macAddress,
       ipAddresses: ips,
+      guestInterfaceName: st?.interfaceName || undefined,
+      linkState: st?.linkState || undefined,
     };
   });
 }
@@ -398,16 +439,111 @@ async function resolveNetworkVpcs(
   );
 }
 
+interface GuestOsInfoSubresource {
+  hostname?: string;
+  guestAgentVersion?: string;
+  timezone?: string;
+  fsFreezeStatus?: string;
+  os?: {
+    id?: string;
+    name?: string;
+    prettyName?: string;
+    version?: string;
+    versionId?: string;
+    kernelRelease?: string;
+    kernelVersion?: string;
+    machine?: string;
+  };
+  fsInfo?: {
+    disks?: Array<{
+      diskName?: string;
+      mountPoint?: string;
+      fileSystemType?: string;
+      totalBytes?: number;
+      usedBytes?: number;
+    }>;
+  };
+}
+
+function mapGuestAgent(
+  vmi?: KubeVmi | null,
+  guestOsInfo?: GuestOsInfoSubresource | null,
+): VmGuestAgentInfo | undefined {
+  if (!vmi) return undefined;
+  const agentCond = vmi.status?.conditions?.find((c) => c.type === "AgentConnected");
+  const connected = agentCond?.status === "True";
+  // Prefer guestosinfo subresource (richer); fall back to VMI status.guestOSInfo.
+  const os = guestOsInfo?.os ?? vmi.status?.guestOSInfo;
+
+  const filesystems: VmGuestFilesystem[] = (guestOsInfo?.fsInfo?.disks ?? [])
+    .filter((d) => d.mountPoint)
+    .map((d) => ({
+      mountPoint: d.mountPoint!,
+      diskName: d.diskName || undefined,
+      fileSystemType: d.fileSystemType || undefined,
+      totalBytes:
+        typeof d.totalBytes === "number" && Number.isFinite(d.totalBytes)
+          ? d.totalBytes
+          : undefined,
+      usedBytes:
+        typeof d.usedBytes === "number" && Number.isFinite(d.usedBytes)
+          ? d.usedBytes
+          : undefined,
+    }))
+    // Prefer root and common mounts first
+    .sort((a, b) => {
+      if (a.mountPoint === "/") return -1;
+      if (b.mountPoint === "/") return 1;
+      return a.mountPoint.localeCompare(b.mountPoint);
+    });
+
+  return {
+    connected,
+    hostname: guestOsInfo?.hostname || undefined,
+    guestAgentVersion: guestOsInfo?.guestAgentVersion || undefined,
+    timezone: guestOsInfo?.timezone || undefined,
+    osId: os?.id || undefined,
+    osPrettyName: os?.prettyName || undefined,
+    osName: os?.name || undefined,
+    osVersion: os?.version || os?.versionId || undefined,
+    osVersionId: os?.versionId || undefined,
+    osKernelRelease: os?.kernelRelease || undefined,
+    osKernelVersion: os?.kernelVersion || undefined,
+    osMachine: os?.machine || undefined,
+    filesystems: filesystems.length > 0 ? filesystems : undefined,
+  };
+}
+
+/**
+ * KubeVirt guestosinfo subresource — hostname, timezone, agent version, FS usage.
+ * Only useful when AgentConnected; failures are non-fatal.
+ */
+async function fetchGuestOsInfo(
+  kc: KubeConfig,
+  namespace: string,
+  name: string,
+): Promise<GuestOsInfoSubresource | null> {
+  const path = `/apis/subresources.kubevirt.io/v1/namespaces/${encodeURIComponent(namespace)}/virtualmachineinstances/${encodeURIComponent(name)}/guestosinfo`;
+  try {
+    const res = await k8sFetch(kc, path, { method: "GET" });
+    if (!res.ok) return null;
+    return (await res.json()) as GuestOsInfoSubresource;
+  } catch {
+    return null;
+  }
+}
+
 function mapVmDetail(
   cluster: ClusterId,
   vm: KubeVm,
   vmi?: KubeVmi | null,
   instanceTypes?: Map<string, InstanceTypeSize>,
+  guestOsInfo?: GuestOsInfoSubresource | null,
 ): VmDetail {
   const summary = mapVm(cluster, vm, instanceTypes);
-  const liveIpv4 = vmi?.status?.interfaces?.flatMap(
-    (i) => i.ipAddresses ?? (i.ipAddress ? [i.ipAddress] : []),
-  )?.[0];
+  const liveIpv4 = vmi?.status?.interfaces
+    ?.flatMap((i) => i.ipAddresses ?? (i.ipAddress ? [i.ipAddress] : []))
+    .filter((ip) => ip.trim() && !isLinkLocalIpv6(ip))?.[0];
 
   return {
     ...summary,
@@ -432,6 +568,7 @@ function mapVmDetail(
     ipv4Address: liveIpv4,
     vmiPhase: vmi?.status?.phase,
     hasVmi: vmi != null,
+    guestAgent: mapGuestAgent(vmi, guestOsInfo),
   };
 }
 
@@ -440,7 +577,7 @@ export async function getVm(
   namespace: string,
   name: string,
 ): Promise<VmDetail> {
-  const { custom } = getClusterClients(cluster);
+  const { custom, kc } = getClusterClients(cluster);
 
   let vm: KubeVm;
   try {
@@ -472,8 +609,16 @@ export async function getVm(
     vmi = null;
   }
 
-  const instanceTypes = await loadInstanceTypeSizes(cluster);
-  const detail = mapVmDetail(cluster, vm, vmi, instanceTypes);
+  const agentConnected =
+    vmi?.status?.conditions?.some(
+      (c) => c.type === "AgentConnected" && c.status === "True",
+    ) ?? false;
+
+  const [instanceTypes, guestOsInfo] = await Promise.all([
+    loadInstanceTypeSizes(cluster),
+    agentConnected ? fetchGuestOsInfo(kc, namespace, name) : Promise.resolve(null),
+  ]);
+  const detail = mapVmDetail(cluster, vm, vmi, instanceTypes, guestOsInfo);
   const networks = await resolveNetworkVpcs(
     cluster,
     namespace,
@@ -656,9 +801,8 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
 }
 
 /**
- * Conservative first-pass edit:
- * - labels always
- * - runStrategy / instance type or manual CPU+memory / preference only when stopped
+ * Edit labels always; size / preference / runStrategy when stopped or while
+ * running (LiveUpdate). Prefer runStrategy over the deprecated `running` field.
  */
 export async function updateVm(input: UpdateVmRequest): Promise<VmDetail> {
   if (!input.cluster?.trim()) throw new Error("cluster is required");
@@ -699,7 +843,7 @@ export async function updateVm(input: UpdateVmRequest): Promise<VmDetail> {
   if (input.spec) {
     if (!canEditVmSpec(current)) {
       throw new Error(
-        `VM must be Stopped to change size, preference, or run strategy (current status: ${current.status})`,
+        `Cannot change size, preference, or run strategy while status is ${current.status}`,
       );
     }
 
@@ -711,7 +855,7 @@ export async function updateVm(input: UpdateVmRequest): Promise<VmDetail> {
       );
     }
     body.spec.runStrategy = runStrategy;
-    // Avoid conflicting with the deprecated boolean when runStrategy is set.
+    // Deprecated boolean conflicts with runStrategy; never write it.
     delete body.spec.running;
 
     if (input.spec.sizeMode === "instancetype") {
@@ -854,6 +998,10 @@ async function putVmiSubresource(
   }
 }
 
+/**
+ * Fallback when start/stop subresources are unavailable: set runStrategy only.
+ * Never writes the deprecated `spec.running` boolean.
+ */
 async function patchPowerState(
   cluster: ClusterId,
   namespace: string,
@@ -869,13 +1017,16 @@ async function patchPowerState(
     name,
   })) as KubeVm;
 
-  const body: Record<string, unknown> = {
+  const nextSpec: Record<string, unknown> = {
+    ...(existing.spec as Record<string, unknown> | undefined),
+    runStrategy: start ? "Always" : "Halted",
+  };
+  // Deprecated boolean conflicts with runStrategy on modern KubeVirt.
+  delete nextSpec.running;
+
+  const body = {
     ...existing,
-    spec: {
-      ...existing.spec,
-      runStrategy: start ? "Always" : "Halted",
-      running: start,
-    },
+    spec: nextSpec,
   };
 
   await custom.replaceNamespacedCustomObject({
@@ -910,6 +1061,27 @@ export async function restartVm(
   name: string,
 ): Promise<void> {
   await putVmSubresource(cluster, namespace, name, "restart");
+}
+
+/**
+ * ACPI soft reboot via the VMI softreboot subresource (guest-initiated reboot).
+ * Prefer when the guest agent is connected; hard restart if the guest is stuck.
+ */
+export async function softRebootVm(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+): Promise<void> {
+  const { kc } = getClusterClients(cluster);
+  const path = `/apis/subresources.kubevirt.io/v1/namespaces/${encodeURIComponent(namespace)}/virtualmachineinstances/${encodeURIComponent(name)}/softreboot`;
+  const res = await k8sFetch(kc, path, {
+    method: "PUT",
+    body: "{}",
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(httpErrorMessage(res.status, text));
+  }
 }
 
 export async function pauseVm(
