@@ -1,4 +1,13 @@
-import { ActionIcon, Badge, Group, Menu, Table, Text, Tooltip } from "@mantine/core";
+import {
+  ActionIcon,
+  Badge,
+  Group,
+  Menu,
+  Stack,
+  Table,
+  Text,
+  Tooltip,
+} from "@mantine/core";
 import {
   IconDotsVertical,
   IconEdit,
@@ -162,9 +171,20 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                     <Text size="sm">{sizeLabel(vm)}</Text>
                   </Table.Td>
                   <Table.Td>
-                    <Text size="sm" ff="monospace" c={ipv4 ? undefined : "dimmed"}>
-                      {ipv4 ?? "—"}
-                    </Text>
+                    <Stack gap={2}>
+                      <Text size="sm" ff="monospace" c={ipv4 ? undefined : "dimmed"}>
+                        {ipv4 ?? "—"}
+                      </Text>
+                      {vm.floatingIpv4 && vm.floatingIpv4.length > 0 ? (
+                        <Tooltip
+                          label={`Floating IP${vm.floatingIpv4.length > 1 ? "s" : ""}`}
+                        >
+                          <Text size="xs" ff="monospace" c="teal.5">
+                            {vm.floatingIpv4.join(", ")}
+                          </Text>
+                        </Tooltip>
+                      ) : null}
+                    </Stack>
                   </Table.Td>
                   <Table.Td>
                     <Text size="sm" c="dimmed">

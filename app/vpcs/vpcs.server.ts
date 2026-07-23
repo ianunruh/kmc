@@ -28,6 +28,7 @@ import {
   KMC_LABEL_VLAN,
   KMC_LABEL_VLAN_POOL,
   KMC_LABEL_VPC,
+  KMC_RESOURCE_NETWORK,
   KMC_RESOURCE_VPC,
   KMC_ROLE_NAT_GATEWAY,
   KMC_VPC_LABEL_SELECTOR,
@@ -200,11 +201,18 @@ function mapSummary(cluster: ClusterId, nad: KubeNad): VpcSummary {
   };
 }
 
+/**
+ * kmc VPC NADs use resource=vpc. Static Multus (ipPools) use resource=network
+ * and may still have a VLAN label — those must not count as VPCs.
+ */
 function isVpcNad(nad: KubeNad): boolean {
   const labels = nad.metadata?.labels ?? {};
+  const resource = labels[KMC_LABEL_RESOURCE];
+  if (resource === KMC_RESOURCE_VPC) return true;
+  if (resource === KMC_RESOURCE_NETWORK) return false;
+  // Legacy: managed VPC NAD before resource label was always set.
   return (
-    labels[KMC_LABEL_RESOURCE] === KMC_RESOURCE_VPC ||
-    (labels[MANAGED_BY_LABEL] === KMC_MANAGED_BY && labels[KMC_LABEL_VLAN] != null)
+    labels[MANAGED_BY_LABEL] === KMC_MANAGED_BY && labels[KMC_LABEL_VLAN] != null
   );
 }
 

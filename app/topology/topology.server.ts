@@ -1,9 +1,20 @@
 import { formatError } from "~/lib/errors";
 import {
+  addressFromIpv4Annotation,
+  containsIpv4,
+  parseCidr,
+} from "~/lib/ipam/cidr";
+import { IPAM_ANNOTATION_IPV4 } from "~/lib/ipam/constants";
+import {
+  listIpPools,
+  parseIpv4AnnotationList,
+} from "~/lib/ipam/pools.server";
+import {
   KMC_ANN_CIDR,
   KMC_LABEL_RESOURCE,
   KMC_LABEL_VLAN,
   KMC_MANAGED_BY,
+  KMC_RESOURCE_NETWORK,
   KMC_RESOURCE_VPC,
   MANAGED_BY_LABEL,
 } from "~/lib/k8s/constants";
@@ -15,6 +26,7 @@ import type {
   TopologyNetworkNode,
   TopologyVmNode,
 } from "~/lib/types";
+import { listFloatingIpsFromPolicies } from "~/vpcs/nat-policy.server";
 import { listClusters } from "~/vms/vms.server";
 
 type KubeNad = {
@@ -30,6 +42,7 @@ type KubeVm = {
   metadata?: {
     name?: string;
     namespace?: string;
+    annotations?: Record<string, string>;
   };
   status?: {
     printableStatus?: string;
@@ -57,10 +70,17 @@ function podNodeId(cluster: string, namespace: string): string {
   return nodeId(cluster, namespace, "__pod__");
 }
 
+/**
+ * kmc VPC NADs use resource=vpc. Static Multus NADs (e.g. external) use
+ * resource=network and may still carry a VLAN label — do not treat those as VPCs.
+ * Legacy fallback: managed-by=kmc + vlan, excluding explicit network resources.
+ */
 function isVpcNad(labels: Record<string, string>): boolean {
+  const resource = labels[KMC_LABEL_RESOURCE];
+  if (resource === KMC_RESOURCE_VPC) return true;
+  if (resource === KMC_RESOURCE_NETWORK) return false;
   return (
-    labels[KMC_LABEL_RESOURCE] === KMC_RESOURCE_VPC ||
-    (labels[MANAGED_BY_LABEL] === KMC_MANAGED_BY && labels[KMC_LABEL_VLAN] != null)
+    labels[MANAGED_BY_LABEL] === KMC_MANAGED_BY && labels[KMC_LABEL_VLAN] != null
   );
 }
 
@@ -156,6 +176,10 @@ async function loadClusterTopology(
     if (node) networksById.set(node.id, node);
   }
 
+  // Index VMs for floating-IP attachment (by name and private IPAM addresses).
+  const vmByNsName = new Map<string, TopologyVmNode>();
+  const vmIdsByPrivate = new Map<string, string>(); // ns|addr -> vmId
+
   for (const vm of vmRes.items ?? []) {
     const name = vm.metadata?.name;
     const namespace = vm.metadata?.namespace;
@@ -163,14 +187,23 @@ async function loadClusterTopology(
 
     const vmId = nodeId(cluster, namespace, name);
     const { status, ready } = mapVmStatus(vm);
-    vms.push({
+    const node: TopologyVmNode = {
       id: vmId,
       cluster,
       namespace,
       name,
       status,
       ready,
-    });
+    };
+    vms.push(node);
+    vmByNsName.set(`${namespace}/${name}`, node);
+
+    const ann = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
+    if (ann) {
+      for (const addr of parseIpv4AnnotationList(ann)) {
+        vmIdsByPrivate.set(`${namespace}|${addr}`, vmId);
+      }
+    }
 
     const networks = vm.spec?.template?.spec?.networks ?? [];
     for (const net of networks) {
@@ -193,6 +226,7 @@ async function loadClusterTopology(
           networkId: pid,
           vmId,
           interfaceName,
+          role: "attachment",
         });
         continue;
       }
@@ -219,8 +253,82 @@ async function loadClusterTopology(
         networkId: resolved.networkId,
         vmId,
         interfaceName,
+        role: "attachment",
       });
     }
+  }
+
+  // Floating IPs: stamp target VMs + edges from the public Multus pool → target.
+  try {
+    const floats = await listFloatingIpsFromPolicies(cluster);
+    const pools = listIpPools(cluster);
+    for (const f of floats) {
+      const publicAddr =
+        addressFromIpv4Annotation(f.public) ?? f.public.trim();
+      if (!publicAddr) continue;
+
+      let targetVmId: string | undefined;
+      if (f.targetVm?.trim()) {
+        targetVmId = vmByNsName.get(`${f.namespace}/${f.targetVm.trim()}`)?.id;
+      }
+      if (!targetVmId) {
+        const priv = addressFromIpv4Annotation(f.private) ?? f.private.trim();
+        if (priv) {
+          targetVmId = vmIdsByPrivate.get(`${f.namespace}|${priv}`);
+        }
+      }
+      if (!targetVmId) continue;
+
+      const target = vms.find((v) => v.id === targetVmId);
+      if (target) {
+        const list = target.floatingIpv4 ?? [];
+        if (!list.includes(publicAddr)) {
+          target.floatingIpv4 = [...list, publicAddr];
+        }
+      }
+
+      // Public Multus network whose pool contains this float (e.g. external).
+      let publicRef: ReturnType<typeof resolveMultusRef> = null;
+      for (const pool of pools) {
+        try {
+          if (containsIpv4(parseCidr(pool.cidr), publicAddr)) {
+            publicRef = resolveMultusRef(
+              cluster,
+              f.namespace,
+              pool.multusNetwork,
+            );
+            break;
+          }
+        } catch {
+          /* skip bad pool */
+        }
+      }
+      if (!publicRef) continue;
+
+      if (!networksById.has(publicRef.networkId)) {
+        networksById.set(publicRef.networkId, {
+          id: publicRef.networkId,
+          kind: "multus",
+          cluster,
+          namespace: publicRef.namespace,
+          name: publicRef.name,
+          exists: false,
+        });
+      }
+
+      edges.push({
+        id: `fip:${publicRef.networkId}->${targetVmId}:${publicAddr}`,
+        networkId: publicRef.networkId,
+        vmId: targetVmId,
+        role: "floating",
+        label: publicAddr,
+      });
+    }
+  } catch (err) {
+    console.error(
+      `topology floating IPs (${cluster}):`,
+      err instanceof Error ? err.message : String(err),
+    );
   }
 
   const networks = Array.from(networksById.values()).sort((a, b) => {

@@ -28,6 +28,9 @@ const KIND_LABELS: Record<TopologyNetworkNode["kind"], string> = {
   pod: "Pod",
 };
 
+/** Floating IP (public Multus → private target) edges. */
+const FLOATING_EDGE_COLOR = "#fab005";
+
 const STATUS_STROKE: Record<string, string> = {
   Running: "#20c997",
   Starting: "#fcc419",
@@ -92,7 +95,7 @@ function networkHref(n: TopologyNetworkNode): string | null {
 
 function networkSubtitle(n: TopologyNetworkNode): string {
   const bits: string[] = [];
-  if (n.kind === "vpc" && n.vlan != null) bits.push(`vlan ${n.vlan}`);
+  if (n.vlan != null) bits.push(`vlan ${n.vlan}`);
   if (n.cidr) bits.push(n.cidr);
   if (n.exists === false) bits.push("missing NAD");
   if (bits.length === 0) {
@@ -193,6 +196,18 @@ export function NetworkGraph({
             </Group>
           ),
         )}
+        <Group gap={6}>
+          <Box
+            w={16}
+            h={0}
+            style={{
+              borderTop: `2px dashed ${FLOATING_EDGE_COLOR}`,
+            }}
+          />
+          <Text size="xs" c="dimmed">
+            Floating IP
+          </Text>
+        </Group>
         <Text size="xs" c="dimmed">
           · VM stroke = status
         </Text>
@@ -241,7 +256,12 @@ export function NetworkGraph({
             const to = layout.vmLayout.get(e.vmId);
             if (!from || !to) return null;
             const net = networkById.get(e.networkId);
-            const stroke = net ? KIND_COLORS[net.kind] : "#868e96";
+            const isFloating = e.role === "floating";
+            const stroke = isFloating
+              ? FLOATING_EDGE_COLOR
+              : net
+                ? KIND_COLORS[net.kind]
+                : "#868e96";
             return (
               <path
                 key={e.id}
@@ -249,9 +269,12 @@ export function NetworkGraph({
                 fill="none"
                 stroke={stroke}
                 strokeWidth={related?.edgeIds.has(e.id) ? 2.25 : 1.5}
+                strokeDasharray={isFloating ? "5 4" : undefined}
                 opacity={edgeOpacity(e.id)}
                 style={{ transition: "opacity 120ms ease, stroke-width 120ms ease" }}
-              />
+              >
+                {e.label ? <title>{e.label}</title> : null}
+              </path>
             );
           })}
 
@@ -386,11 +409,16 @@ export function NetworkGraph({
                 <text
                   x={pos.x + 26}
                   y={pos.y + 38}
-                  fill="#868e96"
+                  fill={v.floatingIpv4?.length ? FLOATING_EDGE_COLOR : "#868e96"}
                   fontSize={10}
                   fontFamily="inherit"
                 >
-                  {v.status}
+                  {v.floatingIpv4?.length
+                    ? truncate(
+                        `${v.status} · ${v.floatingIpv4.join(", ")}`,
+                        22,
+                      )
+                    : v.status}
                 </text>
               </g>
             );
@@ -425,9 +453,17 @@ function HoverSummary({
   const vm = vmById.get(hoverId);
 
   if (net) {
-    const attached = edges
-      .filter((e) => e.networkId === hoverId)
+    const attachEdges = edges.filter(
+      (e) => e.networkId === hoverId && e.role !== "floating",
+    );
+    const floatEdges = edges.filter(
+      (e) => e.networkId === hoverId && e.role === "floating",
+    );
+    const attached = attachEdges
       .map((e) => vmById.get(e.vmId)?.name)
+      .filter(Boolean);
+    const floatLabels = floatEdges
+      .map((e) => e.label ?? vmById.get(e.vmId)?.name)
       .filter(Boolean);
     return (
       <Group gap="xs" wrap="wrap">
@@ -445,15 +481,30 @@ function HoverSummary({
           {attached.length > 0 ? `: ${attached.slice(0, 8).join(", ")}` : ""}
           {attached.length > 8 ? "…" : ""}
         </Text>
+        {floatLabels.length > 0 ? (
+          <Text size="xs" c="yellow.6">
+            FIP → {floatLabels.slice(0, 6).join(", ")}
+            {floatLabels.length > 6 ? "…" : ""}
+          </Text>
+        ) : null}
       </Group>
     );
   }
 
   if (vm) {
-    const nets = edges
-      .filter((e) => e.vmId === hoverId)
+    const attachEdges = edges.filter(
+      (e) => e.vmId === hoverId && e.role !== "floating",
+    );
+    const floatEdges = edges.filter(
+      (e) => e.vmId === hoverId && e.role === "floating",
+    );
+    const nets = attachEdges
       .map((e) => networkById.get(e.networkId)?.name)
       .filter(Boolean);
+    const floats =
+      vm.floatingIpv4?.length
+        ? vm.floatingIpv4
+        : floatEdges.map((e) => e.label).filter(Boolean);
     return (
       <Group gap="xs" wrap="wrap">
         <Badge size="sm" variant="light" color={vm.ready ? "teal" : "gray"}>
@@ -469,6 +520,11 @@ function HoverSummary({
           ← {nets.length} network{nets.length === 1 ? "" : "s"}
           {nets.length > 0 ? `: ${nets.join(", ")}` : ""}
         </Text>
+        {floats.length > 0 ? (
+          <Text size="xs" c="yellow.6">
+            FIP {floats.join(", ")}
+          </Text>
+        ) : null}
       </Group>
     );
   }

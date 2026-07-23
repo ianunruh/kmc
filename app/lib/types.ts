@@ -37,6 +37,8 @@ export interface VmSummary {
   instanceType?: string;
   /** Static IP from kmc.ianunruh.com/ipv4 (may include /prefix). */
   allocatedIpv4?: string;
+  /** Public floating IPs associated with this VM (from NAT policy ConfigMaps). */
+  floatingIpv4?: string[];
   age: string;
   nodeName?: string;
   message?: string;
@@ -653,6 +655,8 @@ export interface TopologyVmNode {
   name: string;
   status: string;
   ready: boolean;
+  /** Public floating IPs associated with this VM (from NAT policy). */
+  floatingIpv4?: string[];
 }
 
 export interface TopologyEdge {
@@ -661,6 +665,13 @@ export interface TopologyEdge {
   vmId: string;
   /** Interface name on the VM template (e.g. default, net1). */
   interfaceName?: string;
+  /**
+   * `attachment` (default): Multus/pod NIC on the VM.
+   * `floating`: 1:1 public→private DNAT via a VPC NAT gateway.
+   */
+  role?: "attachment" | "floating";
+  /** Optional display label (e.g. floating public address). */
+  label?: string;
 }
 
 export interface NetworkTopology {

@@ -31,9 +31,13 @@ import {
   KMC_LABEL_RESOURCE,
   KMC_LABEL_VLAN,
   KMC_MANAGED_BY,
+  KMC_RESOURCE_NETWORK,
   KMC_RESOURCE_VPC,
   MANAGED_BY_LABEL,
 } from "~/lib/k8s/constants";
+import { addressFromIpv4Annotation } from "~/lib/ipam/cidr";
+import { parseIpv4AnnotationList } from "~/lib/ipam/pools.server";
+import { listFloatingIpsFromPolicies } from "~/vpcs/nat-policy.server";
 import {
   bindAllocationsToNetworks,
   buildVirtualMachineManifest,
@@ -396,10 +400,12 @@ function mapNetworks(vm: KubeVm, vmi?: KubeVmi | null): VmNetworkInfo[] {
 }
 
 function isVpcNadLabels(labels: Record<string, string>): boolean {
+  const resource = labels[KMC_LABEL_RESOURCE];
+  if (resource === KMC_RESOURCE_VPC) return true;
+  if (resource === KMC_RESOURCE_NETWORK) return false;
+  // Legacy: managed VPC NAD before resource label was always set.
   return (
-    labels[KMC_LABEL_RESOURCE] === KMC_RESOURCE_VPC ||
-    (labels[MANAGED_BY_LABEL] === KMC_MANAGED_BY &&
-      labels[KMC_LABEL_VLAN] != null)
+    labels[MANAGED_BY_LABEL] === KMC_MANAGED_BY && labels[KMC_LABEL_VLAN] != null
   );
 }
 
@@ -706,17 +712,56 @@ export async function listVms(clusterFilter?: ClusterId): Promise<{
       if (!cluster?.reachable) return;
       try {
         const { custom } = getClusterClients(id);
-        const [res, instanceTypes] = await Promise.all([
+        const [res, instanceTypes, floats] = await Promise.all([
           custom.listClusterCustomObject({
             group: "kubevirt.io",
             version: "v1",
             plural: "virtualmachines",
           }) as Promise<{ items?: KubeVm[] }>,
           loadInstanceTypeSizes(id),
+          listFloatingIpsFromPolicies(id).catch(() => []),
         ]);
 
+        // Map floating public IPs → VMs by targetVm name or private IPAM address.
+        const floatsByVmKey = new Map<string, string[]>();
+        const privateToVmKey = new Map<string, string>();
         for (const vm of res.items ?? []) {
-          items.push(mapVm(id, vm, instanceTypes));
+          const name = vm.metadata?.name;
+          const namespace = vm.metadata?.namespace;
+          if (!name || !namespace) continue;
+          const key = `${namespace}/${name}`;
+          const ann = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
+          if (ann) {
+            for (const addr of parseIpv4AnnotationList(ann)) {
+              privateToVmKey.set(`${namespace}|${addr}`, key);
+            }
+          }
+        }
+        for (const f of floats) {
+          const publicAddr =
+            addressFromIpv4Annotation(f.public) ?? f.public.trim();
+          if (!publicAddr) continue;
+          let key: string | undefined;
+          if (f.targetVm?.trim()) {
+            key = `${f.namespace}/${f.targetVm.trim()}`;
+          } else {
+            const priv = addressFromIpv4Annotation(f.private) ?? f.private.trim();
+            if (priv) key = privateToVmKey.get(`${f.namespace}|${priv}`);
+          }
+          if (!key) continue;
+          const list = floatsByVmKey.get(key) ?? [];
+          if (!list.includes(publicAddr)) list.push(publicAddr);
+          floatsByVmKey.set(key, list);
+        }
+
+        for (const vm of res.items ?? []) {
+          const summary = mapVm(id, vm, instanceTypes);
+          const key = `${summary.namespace}/${summary.name}`;
+          const floatingIpv4 = floatsByVmKey.get(key);
+          if (floatingIpv4?.length) {
+            summary.floatingIpv4 = floatingIpv4;
+          }
+          items.push(summary);
         }
       } catch (err) {
         cluster.reachable = false;
