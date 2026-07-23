@@ -32,7 +32,13 @@ export interface VmSummary {
   cpu?: string;
   /** Guest memory, e.g. `4Gi` (from domain or instance type). */
   memory?: string;
+  /** Root disk size from the primary dataVolumeTemplate when present. */
   disk?: string;
+  /**
+   * DataVolume name for the primary root disk (same namespace as the VM).
+   * Used to link the list disk column when the size comes from a template.
+   */
+  diskDataVolume?: string;
   /** Cluster instance type name when the VM references one. */
   instanceType?: string;
   /** Static IP from kmc.ianunruh.com/ipv4 (may include /prefix). */

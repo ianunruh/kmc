@@ -30,6 +30,7 @@ import {
   canStart,
   canStop,
   canUnpause,
+  dataVolumePath,
   formatAge,
   instanceTypePath,
   sizeLabel,
@@ -206,9 +207,22 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                     </Stack>
                   </Table.Td>
                   <Table.Td>
-                    <Text size="sm" c="dimmed">
-                      {vm.disk ?? "—"}
-                    </Text>
+                    {vm.disk && vm.diskDataVolume ? (
+                      <ResourceLink
+                        to={dataVolumePath({
+                          cluster: vm.cluster,
+                          namespace: vm.namespace,
+                          name: vm.diskDataVolume,
+                        })}
+                        dimmed
+                      >
+                        {vm.disk}
+                      </ResourceLink>
+                    ) : (
+                      <Text size="sm" c="dimmed">
+                        {vm.disk ?? "—"}
+                      </Text>
+                    )}
                   </Table.Td>
                   <Table.Td>
                     <Tooltip label={vm.age || "unknown"}>

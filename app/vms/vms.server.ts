@@ -223,6 +223,7 @@ function mapVm(
   const disk =
     dv?.spec?.storage?.resources?.requests?.storage ??
     dv?.spec?.pvc?.resources?.requests?.storage;
+  const diskDataVolume = dv?.metadata?.name || undefined;
 
   const notReady = vm.status?.conditions?.find(
     (c) => c.type === "Ready" && c.status !== "True",
@@ -244,6 +245,7 @@ function mapVm(
     memory,
     instanceType,
     disk,
+    diskDataVolume,
     allocatedIpv4: allocatedIpv4 || undefined,
     age: vm.metadata?.creationTimestamp ?? "",
     nodeName: vm.status?.nodeName,
