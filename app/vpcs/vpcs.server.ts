@@ -2,8 +2,11 @@ import { formatError } from "~/lib/errors";
 import { getRequestSession } from "~/lib/auth/middleware.server";
 import type {
   ClusterId,
+  CreateNatGatewayRequest,
   CreateVpcRequest,
+  NatGatewayInfo,
   UpdateVpcRequest,
+  VmSummary,
   VpcAttachedVm,
   VpcDetail,
   VpcSummary,
@@ -13,27 +16,39 @@ import {
   KMC_ANN_DESCRIPTION,
   KMC_ANN_DNS,
   KMC_ANN_GATEWAY,
+  KMC_ANN_NAT_GATEWAY,
   KMC_ANN_OWNER,
   KMC_LABEL_RESOURCE,
+  KMC_LABEL_ROLE,
   KMC_LABEL_VLAN,
   KMC_LABEL_VLAN_POOL,
+  KMC_LABEL_VPC,
   KMC_RESOURCE_VPC,
+  KMC_ROLE_NAT_GATEWAY,
   KMC_VPC_LABEL_SELECTOR,
   MANAGED_BY_LABEL,
   KMC_MANAGED_BY,
 } from "~/lib/k8s/constants";
-import { assertVmNamespaceAllowed } from "~/lib/k8s/catalog.server";
+import {
+  assertVmNamespaceAllowed,
+  getImagePreference,
+} from "~/lib/k8s/catalog.server";
 import { getClusterClients, getConfiguredContexts } from "~/lib/k8s/clients.server";
 import { toResourceYaml } from "~/lib/k8s/yaml.server";
 import {
   addressFromIpv4Annotation,
   containsIpv4,
+  formatIpv4,
   parseCidr,
   parseIpv4,
+  usableHostRange,
 } from "~/lib/ipam/cidr";
 import { IPAM_ANNOTATION_IPV4 } from "~/lib/ipam/constants";
 import {
+  allocateIpv4ForMultus,
+  findIpPoolForMultus,
   getIpPoolUsage,
+  listIpPools,
   type IpPoolUsage,
 } from "~/lib/ipam/pools.server";
 import {
@@ -43,6 +58,12 @@ import {
   listVlanPools,
 } from "~/lib/ipam/vlan-pools.server";
 import { DNS1123_LABEL } from "~/lib/format";
+import {
+  bindAllocationsToNetworks,
+  buildNatGatewayUserData,
+  buildVirtualMachineManifest,
+  cloudInitUserDataSecretName,
+} from "~/vms/template.server";
 import { listClusters } from "~/vms/vms.server";
 import { buildNetworkAttachmentDefinition } from "./template.server";
 
@@ -64,7 +85,10 @@ type KubeVm = {
   metadata?: {
     name?: string;
     namespace?: string;
+    uid?: string;
+    labels?: Record<string, string>;
     annotations?: Record<string, string>;
+    creationTimestamp?: string;
   };
   spec?: {
     template?: {
@@ -75,6 +99,10 @@ type KubeVm = {
         }>;
       };
     };
+  };
+  status?: {
+    printableStatus?: string;
+    ready?: boolean;
   };
 };
 
@@ -343,11 +371,16 @@ export async function listAttachedVms(
         const ref = net.multus?.networkName?.trim() ?? "";
         if (ref === name && vmNs !== namespace) continue;
         const ann = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
+        const labels = vm.metadata?.labels ?? {};
+        const isNatGateway =
+          labels[KMC_LABEL_ROLE] === KMC_ROLE_NAT_GATEWAY &&
+          labels[KMC_LABEL_VPC] === name;
         attached.push({
           cluster,
           namespace: vmNs,
           name: vmName,
           allocatedIpv4: allocatedIpv4ForVpc(ann, opts?.cidr),
+          isNatGateway,
         });
         break;
       }
@@ -395,6 +428,21 @@ export async function getVpc(
       : Promise.resolve(null),
   ]);
 
+  const natGatewayBase = findNatGatewayInfo(
+    cluster,
+    namespace,
+    name,
+    attachedVms,
+    nad.metadata?.annotations ?? {},
+  );
+  const natGateway = await enrichNatGateway(
+    cluster,
+    namespace,
+    name,
+    summary.cidr,
+    natGatewayBase,
+  );
+
   return {
     ...summary,
     uid: nad.metadata?.uid,
@@ -415,7 +463,134 @@ export async function getVpc(
           gateway: ipUsage.pool.gateway,
         }
       : undefined,
+    natGateway,
   };
+}
+
+/**
+ * Static Multus networks with IP pools — candidates for NAT gateway egress.
+ * Excludes the VPC itself when it is also listed as an ipPool multusNetwork.
+ */
+export function listPublicEgressNetworks(
+  cluster: ClusterId,
+  opts?: { excludeMultus?: string },
+): Array<{
+  id: string;
+  multusNetwork: string;
+  cidr: string;
+  gateway?: string;
+}> {
+  const exclude = opts?.excludeMultus?.trim();
+  return listIpPools(cluster)
+    .filter((p) => {
+      if (!exclude) return true;
+      return !multusRefMatches(p.multusNetwork, "", exclude);
+    })
+    .map((p) => ({
+      id: p.id,
+      multusNetwork: p.multusNetwork,
+      cidr: p.cidr,
+      gateway: p.gateway,
+    }));
+}
+
+function findNatGatewayInfo(
+  cluster: ClusterId,
+  namespace: string,
+  vpcName: string,
+  attachedVms: VpcAttachedVm[],
+  vpcAnnotations: Record<string, string>,
+): NatGatewayInfo | undefined {
+  const fromLabel = attachedVms.find((vm) => vm.isNatGateway);
+  const annName = vpcAnnotations[KMC_ANN_NAT_GATEWAY]?.trim();
+  const pick =
+    fromLabel ??
+    (annName
+      ? attachedVms.find((vm) => vm.name === annName && vm.namespace === namespace)
+      : undefined);
+  if (!pick) return undefined;
+
+  return {
+    cluster,
+    namespace: pick.namespace,
+    name: pick.name,
+    privateIpv4: pick.allocatedIpv4,
+  };
+}
+
+/**
+ * First usable host in a CIDR (network+1 for prefix ≤ 30) — default VPC gateway.
+ */
+export function defaultGatewayAddress(cidr: string): string {
+  const parsed = parseCidr(cidr);
+  const range = usableHostRange(parsed);
+  return formatIpv4(range.start);
+}
+
+function publicIpv4FromAnnotation(
+  annotation: string | undefined,
+  vpcCidr: string | undefined,
+): string | undefined {
+  if (!annotation?.trim()) return undefined;
+  const parts = annotation
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return undefined;
+  if (!vpcCidr?.trim()) {
+    return parts.length > 1 ? parts[1] : undefined;
+  }
+  try {
+    const parsed = parseCidr(vpcCidr.trim());
+    for (const part of parts) {
+      const addr = addressFromIpv4Annotation(part);
+      if (addr && !containsIpv4(parsed, addr)) return part;
+    }
+  } catch {
+    /* fall through */
+  }
+  return parts.length > 1 ? parts[1] : undefined;
+}
+
+async function enrichNatGateway(
+  cluster: ClusterId,
+  namespace: string,
+  vpcName: string,
+  vpcCidr: string | undefined,
+  base: NatGatewayInfo | undefined,
+): Promise<NatGatewayInfo | undefined> {
+  if (!base) return undefined;
+  const { custom } = getClusterClients(cluster);
+  try {
+    const vm = (await custom.getNamespacedCustomObject({
+      group: "kubevirt.io",
+      version: "v1",
+      namespace: base.namespace,
+      plural: "virtualmachines",
+      name: base.name,
+    })) as KubeVm;
+    const ann = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
+    const privateIpv4 =
+      allocatedIpv4ForVpc(ann, vpcCidr) ?? base.privateIpv4;
+    const publicIpv4 = publicIpv4FromAnnotation(ann, vpcCidr);
+    const networks = vm.spec?.template?.spec?.networks ?? [];
+    let publicNetwork: string | undefined;
+    for (const net of networks) {
+      const ref = net.multus?.networkName?.trim();
+      if (!ref) continue;
+      if (multusRefMatches(ref, namespace, vpcName)) continue;
+      publicNetwork = ref;
+      break;
+    }
+    return {
+      ...base,
+      privateIpv4,
+      publicIpv4,
+      publicNetwork,
+    };
+  } catch {
+    return base;
+  }
 }
 
 export async function getVpcYaml(
@@ -575,6 +750,318 @@ export async function deleteVpc(
     if (isNotFound(err)) return;
     throw new Error(formatError(err), { cause: err });
   }
+}
+
+/**
+ * Launch a dual-homed Ubuntu NAT gateway for a VPC:
+ * - net0: VPC Multus, pinned to the VPC gateway IP (no default route)
+ * - net1: public Multus from cluster ipPools (default route + MASQUERADE)
+ * Stamps the VPC gateway annotation when missing and records the gateway VM.
+ */
+export async function createNatGateway(
+  input: CreateNatGatewayRequest,
+): Promise<VmSummary> {
+  if (!input.cluster?.trim()) throw new Error("cluster is required");
+  if (!input.namespace?.trim()) throw new Error("namespace is required");
+  if (!input.vpcName?.trim()) throw new Error("vpcName is required");
+  if (!input.name?.trim()) throw new Error("name is required");
+  if (!DNS1123_LABEL.test(input.name.trim()) || input.name.trim().length > 63) {
+    throw new Error(
+      "name must be a DNS-1123 label (lowercase alphanumeric and hyphens, ≤63 chars)",
+    );
+  }
+  if (!input.publicMultusNetwork?.trim()) {
+    throw new Error("publicMultusNetwork is required");
+  }
+  if (!input.sshPublicKey?.trim()) throw new Error("sshPublicKey is required");
+  if (!input.diskSize?.trim()) throw new Error("diskSize is required");
+  if (!input.image?.name?.trim()) throw new Error("image is required");
+  if (!input.instanceType && !(input.cpuCores && input.memory)) {
+    throw new Error("Provide instanceType or both cpuCores and memory");
+  }
+
+  await assertVmNamespaceAllowed(input.cluster, input.namespace);
+
+  const vpc = await getVpc(input.cluster, input.namespace, input.vpcName);
+  if (!vpc.cidr?.trim()) {
+    throw new Error(
+      "NAT gateway requires private IPAM on the VPC (set a CIDR first)",
+    );
+  }
+  if (vpc.natGateway) {
+    throw new Error(
+      `VPC already has a NAT gateway VM: ${vpc.natGateway.namespace}/${vpc.natGateway.name}`,
+    );
+  }
+
+  const publicNet = input.publicMultusNetwork.trim();
+  if (multusRefMatches(publicNet, input.namespace, input.vpcName)) {
+    throw new Error("public Multus network must not be the VPC itself");
+  }
+  const publicPool = findIpPoolForMultus(input.cluster, publicNet);
+  if (!publicPool) {
+    throw new Error(
+      `No static ipPools entry for Multus network "${publicNet}" on cluster ${input.cluster}`,
+    );
+  }
+  if (!publicPool.gateway?.trim()) {
+    throw new Error(
+      `Public pool "${publicPool.id}" has no gateway — NAT gateway needs a default route on the egress NIC`,
+    );
+  }
+
+  const privateGateway =
+    vpc.gateway?.trim() || defaultGatewayAddress(vpc.cidr);
+
+  // Validate gateway is inside the VPC CIDR
+  validateVpcIpamFields({
+    cidr: vpc.cidr,
+    gateway: privateGateway,
+    dns: vpc.dns,
+  });
+
+  const multusNames = [input.vpcName, publicNet];
+  const privateAlloc = await allocateIpv4ForMultus(
+    input.cluster,
+    input.vpcName,
+    input.namespace,
+    {
+      preferredAddress: privateGateway,
+      claimGateway: true,
+      // Private NIC is the gateway itself — no default via self
+      gatewayOverride: null,
+    },
+  );
+  if (!privateAlloc) {
+    throw new Error(
+      `Could not allocate private IP on VPC ${input.namespace}/${input.vpcName}`,
+    );
+  }
+
+  const publicAlloc = await allocateIpv4ForMultus(
+    input.cluster,
+    publicNet,
+    input.namespace,
+    { extraUsed: [privateAlloc.address] },
+  );
+  if (!publicAlloc) {
+    throw new Error(
+      `Could not allocate public IP on Multus network "${publicNet}"`,
+    );
+  }
+
+  const allocations = bindAllocationsToNetworks(multusNames, [
+    privateAlloc,
+    publicAlloc,
+  ]);
+  const privateBound = allocations[0];
+  const publicBound = allocations[1];
+  if (!privateBound?.macAddress || !publicBound?.macAddress) {
+    throw new Error("NAT gateway requires MACs on both interfaces");
+  }
+
+  const preference = await getImagePreference(
+    input.cluster,
+    input.image.namespace || "vm-images",
+    input.image.name,
+  );
+
+  const createVmInput = {
+    cluster: input.cluster,
+    namespace: input.namespace,
+    name: input.name.trim(),
+    instanceType: input.instanceType,
+    cpuCores: input.cpuCores,
+    memory: input.memory,
+    preference,
+    diskSize: input.diskSize,
+    storageClass: input.storageClass,
+    image: input.image,
+    networks: multusNames.map((multusNetworkName) => ({ multusNetworkName })),
+    sshPublicKey: input.sshPublicKey,
+    start: input.start !== false,
+  };
+
+  const userData = buildNatGatewayUserData({
+    sshPublicKey: input.sshPublicKey,
+    privateMac: privateBound.macAddress,
+    publicMac: publicBound.macAddress,
+  });
+
+  const vmName = input.name.trim();
+  const secretName = cloudInitUserDataSecretName(vmName);
+  const roleLabels = {
+    [KMC_LABEL_ROLE]: KMC_ROLE_NAT_GATEWAY,
+    [KMC_LABEL_VPC]: input.vpcName,
+  };
+
+  const body = buildVirtualMachineManifest(createVmInput, allocations, {
+    labels: roleLabels,
+    // Inline userData exceeds KubeVirt's 2048-byte admission limit for NAT scripts.
+    userDataSecretName: secretName,
+  });
+
+  const { custom, core } = getClusterClients(input.cluster);
+
+  // Secret key must be `userdata` for cloudInitNoCloud.secretRef (KubeVirt).
+  try {
+    await core.createNamespacedSecret({
+      namespace: input.namespace,
+      body: {
+        apiVersion: "v1",
+        kind: "Secret",
+        metadata: {
+          name: secretName,
+          namespace: input.namespace,
+          labels: {
+            [MANAGED_BY_LABEL]: KMC_MANAGED_BY,
+            ...roleLabels,
+            "kubevirt.io/vm": vmName,
+          },
+        },
+        type: "Opaque",
+        stringData: {
+          userdata: userData,
+        },
+      },
+    });
+  } catch (err) {
+    throw new Error(
+      `Failed to create cloud-init Secret ${input.namespace}/${secretName}: ${formatError(err)}`,
+      { cause: err },
+    );
+  }
+
+  try {
+    const created = (await custom.createNamespacedCustomObject({
+      group: "kubevirt.io",
+      version: "v1",
+      namespace: input.namespace,
+      plural: "virtualmachines",
+      body,
+    })) as KubeVm;
+
+    // GC the Secret with the VM when the VM is deleted.
+    const uid = created.metadata?.uid;
+    if (uid) {
+      try {
+        const secret = await core.readNamespacedSecret({
+          name: secretName,
+          namespace: input.namespace,
+        });
+        await core.replaceNamespacedSecret({
+          name: secretName,
+          namespace: input.namespace,
+          body: {
+            ...secret,
+            metadata: {
+              ...secret.metadata,
+              ownerReferences: [
+                {
+                  apiVersion: "kubevirt.io/v1",
+                  kind: "VirtualMachine",
+                  name: vmName,
+                  uid,
+                  controller: true,
+                  blockOwnerDeletion: true,
+                },
+              ],
+            },
+          },
+        });
+      } catch (ownerErr) {
+        console.error(
+          "Failed to set ownerReference on cloud-init Secret:",
+          formatError(ownerErr),
+        );
+      }
+    }
+
+    // Stamp VPC gateway + nat-gateway pointer (best-effort after VM exists)
+    try {
+      await patchVpcNatGatewayMetadata(input.cluster, input.namespace, input.vpcName, {
+        gateway: privateGateway,
+        natGatewayVm: vmName,
+        dns: vpc.dns,
+        cidr: vpc.cidr,
+        description: vpc.description,
+      });
+    } catch (metaErr) {
+      console.error("Failed to update VPC NAT metadata:", formatError(metaErr));
+    }
+
+    return {
+      cluster: input.cluster,
+      namespace: created.metadata?.namespace ?? input.namespace,
+      name: created.metadata?.name ?? vmName,
+      status: created.status?.printableStatus ?? "Provisioning",
+      ready: created.status?.ready === true,
+      running: true,
+      allocatedIpv4: `${privateBound.cidrHost},${publicBound.cidrHost}`,
+      age: created.metadata?.creationTimestamp ?? new Date().toISOString(),
+    };
+  } catch (err) {
+    // Roll back the Secret if the VM was not created.
+    try {
+      await core.deleteNamespacedSecret({
+        name: secretName,
+        namespace: input.namespace,
+      });
+    } catch {
+      /* ignore cleanup errors */
+    }
+    throw new Error(formatError(err), { cause: err });
+  }
+}
+
+async function patchVpcNatGatewayMetadata(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+  opts: {
+    gateway: string;
+    natGatewayVm: string;
+    cidr: string;
+    dns?: string[];
+    description?: string;
+  },
+): Promise<void> {
+  const { custom } = getClusterClients(cluster);
+  const existing = (await custom.getNamespacedCustomObject({
+    group: "k8s.cni.cncf.io",
+    version: "v1",
+    namespace,
+    plural: "network-attachment-definitions",
+    name,
+  })) as KubeNad;
+
+  const annotations = applyVpcMutableAnnotations(
+    existing.metadata?.annotations ?? {},
+    {
+      description: opts.description,
+      cidr: opts.cidr,
+      gateway: opts.gateway,
+      dns: opts.dns,
+    },
+  );
+  annotations[KMC_ANN_NAT_GATEWAY] = opts.natGatewayVm;
+
+  const body = {
+    ...existing,
+    metadata: {
+      ...existing.metadata,
+      annotations,
+    },
+  };
+
+  await custom.replaceNamespacedCustomObject({
+    group: "k8s.cni.cncf.io",
+    version: "v1",
+    namespace,
+    plural: "network-attachment-definitions",
+    name,
+    body,
+  });
 }
 
 export { listVlanPools, clusterHasVlanPools };

@@ -49,6 +49,14 @@ export const KMC_ANN_GATEWAY = `${KMC_LABEL_NAMESPACE}/gateway`;
 export const KMC_ANN_DNS = `${KMC_LABEL_NAMESPACE}/dns`;
 export const KMC_ANN_DESCRIPTION = `${KMC_LABEL_NAMESPACE}/description`;
 export const KMC_ANN_OWNER = `${KMC_LABEL_NAMESPACE}/owner`;
+/** VM name (same namespace) of the dual-homed NAT gateway for this VPC. */
+export const KMC_ANN_NAT_GATEWAY = `${KMC_LABEL_NAMESPACE}/nat-gateway`;
+
+/** VM role labels (e.g. NAT gateway for a VPC). */
+export const KMC_LABEL_ROLE = `${KMC_LABEL_NAMESPACE}/role`;
+export const KMC_ROLE_NAT_GATEWAY = "nat-gateway";
+/** VPC NAD name (same namespace as the VM) this role serves. */
+export const KMC_LABEL_VPC = `${KMC_LABEL_NAMESPACE}/vpc`;
 
 /** List selector for kmc-managed VPC NADs. */
 export const KMC_VPC_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_VPC}`;

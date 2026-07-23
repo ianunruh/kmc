@@ -434,18 +434,40 @@ export async function getIpPoolUsageForMultus(
   return getIpPoolUsageForConfig(cluster, pool);
 }
 
+export type AllocateIpv4Opts = {
+  /**
+   * Addresses already chosen in the same multi-attach create (before the VM
+   * annotation exists for the cluster scan).
+   */
+  extraUsed?: string[];
+  /**
+   * Pin a specific host address (must be in the pool range and free).
+   * Used for NAT gateway private IPs (VPC gateway address).
+   */
+  preferredAddress?: string;
+  /**
+   * Allow `preferredAddress` to be the pool gateway (normally excluded from
+   * allocation so workloads do not steal the router address).
+   */
+  claimGateway?: boolean;
+  /**
+   * Override the gateway written into the allocation (netplan default route).
+   * Pass `null` to force no default route on this NIC (NAT gateway private side).
+   * Omit to use the pool gateway as usual.
+   */
+  gatewayOverride?: string | null;
+};
+
 /**
  * Allocate the next free IPv4 from the pool bound to this Multus NAD.
  * Returns null when the network has no configured pool.
  * Pass `namespace` so self-service VPC NADs (dynamic pools) can be resolved.
- * `extraUsed` reserves addresses already chosen in the same multi-attach create
- * (before the VM annotation exists for the cluster scan).
  */
 export async function allocateIpv4ForMultus(
   cluster: ClusterId,
   multusNetworkName: string,
   namespace?: string,
-  opts?: { extraUsed?: string[] },
+  opts?: AllocateIpv4Opts,
 ): Promise<AllocatedIp | null> {
   const pool = await resolveIpPoolForMultus(
     cluster,
@@ -466,11 +488,54 @@ export async function allocateIpv4ForMultus(
       if (addr) used.add(addr);
     }
 
-    const address = firstFreeIpv4(range, used, exclude);
+    const preferred = opts?.preferredAddress?.trim();
+    let address: string | null = null;
+
+    if (preferred) {
+      parseIpv4(preferred);
+      if (!containsIpv4(parsed, preferred)) {
+        throw new Error(
+          `Preferred address ${preferred} is outside pool "${pool.id}" (${parsed.cidr})`,
+        );
+      }
+      const prefN = parseIpv4(preferred);
+      if (prefN < range.start || prefN > range.end) {
+        throw new Error(
+          `Preferred address ${preferred} is outside the allocation window for pool "${pool.id}"`,
+        );
+      }
+      // NAT gateway VMs may claim the reserved gateway / exclude list entry.
+      if (opts?.claimGateway) {
+        exclude.delete(preferred);
+      }
+      if (used.has(preferred)) {
+        throw new Error(
+          `Preferred address ${preferred} is already in use in pool "${pool.id}"`,
+        );
+      }
+      if (exclude.has(preferred)) {
+        throw new Error(
+          `Preferred address ${preferred} is reserved in pool "${pool.id}"`,
+        );
+      }
+      address = preferred;
+    } else {
+      address = firstFreeIpv4(range, used, exclude);
+    }
+
     if (!address) {
       throw new Error(
         `IP pool "${pool.id}" (${parsed.cidr}) on cluster ${cluster} is exhausted`,
       );
+    }
+
+    let gateway: string | undefined;
+    if (opts?.gatewayOverride === null) {
+      gateway = undefined;
+    } else if (opts?.gatewayOverride !== undefined) {
+      gateway = opts.gatewayOverride.trim() || undefined;
+    } else {
+      gateway = pool.gateway?.trim() || undefined;
     }
 
     return {
@@ -478,7 +543,7 @@ export async function allocateIpv4ForMultus(
       address,
       prefix: parsed.prefix,
       cidrHost: `${address}/${parsed.prefix}`,
-      gateway: pool.gateway?.trim() || undefined,
+      gateway,
       dns: (pool.dns ?? []).map((d) => d.trim()).filter(Boolean),
       interfaceName: pool.interface?.trim() || undefined,
     };

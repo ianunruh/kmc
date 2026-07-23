@@ -221,6 +221,15 @@ export function vpcEditPath(
   return `${vpcPath(vpc)}/edit`;
 }
 
+export function vpcNatGatewayPath(
+  vpc: Pick<
+    { cluster: string; namespace: string; name: string },
+    "cluster" | "namespace" | "name"
+  >,
+): string {
+  return `${vpcPath(vpc)}/nat-gateway`;
+}
+
 export function vpcsListPath(
   filters: {
     q?: string | null;

@@ -40,6 +40,10 @@ export default [
     "vpcs/:cluster/:namespace/:name/edit",
     "routes/vpcs.$cluster.$namespace.$name.edit.tsx",
   ),
+  route(
+    "vpcs/:cluster/:namespace/:name/nat-gateway",
+    "routes/vpcs.$cluster.$namespace.$name.nat-gateway.tsx",
+  ),
   route("vpcs/:cluster/:namespace/:name", "routes/vpcs.$cluster.$namespace.$name.tsx"),
 
   route("topology", "routes/topology._index.tsx"),

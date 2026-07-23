@@ -369,6 +369,21 @@ export interface VpcAttachedVm {
    * (may include /prefix). Multi-attach VMs pick the address in the VPC CIDR.
    */
   allocatedIpv4?: string;
+  /** True when this VM is the kmc-managed NAT gateway for the VPC. */
+  isNatGateway?: boolean;
+}
+
+/** Dual-homed Ubuntu NAT gateway launched for a VPC (egress SNAT). */
+export interface NatGatewayInfo {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  /** Private (VPC) address, may include /prefix. */
+  privateIpv4?: string;
+  /** Public / egress Multus address, may include /prefix. */
+  publicIpv4?: string;
+  /** Multus NAD used for egress. */
+  publicNetwork?: string;
 }
 
 export interface VpcDetail extends VpcSummary {
@@ -378,6 +393,33 @@ export interface VpcDetail extends VpcSummary {
   attachedVms: VpcAttachedVm[];
   attachedCount: number;
   ipPool?: NetworkIpPoolInfo;
+  /** Present when a kmc-managed NAT gateway VM exists for this VPC. */
+  natGateway?: NatGatewayInfo;
+}
+
+/**
+ * Launch a dual-homed NAT gateway VM for a VPC (private Multus + public Multus).
+ * Private IP is pinned to the VPC gateway address; public IP from the chosen pool.
+ */
+export interface CreateNatGatewayRequest {
+  cluster: ClusterId;
+  namespace: string;
+  vpcName: string;
+  name: string;
+  /** Multus NAD for north-south egress (must have a static ipPools entry). */
+  publicMultusNetwork: string;
+  sshPublicKey: string;
+  instanceType?: string;
+  cpuCores?: number;
+  memory?: string;
+  diskSize: string;
+  storageClass?: string;
+  image: {
+    kind: "pvc";
+    namespace: string;
+    name: string;
+  };
+  start?: boolean;
 }
 
 export interface CreateVpcRequest {

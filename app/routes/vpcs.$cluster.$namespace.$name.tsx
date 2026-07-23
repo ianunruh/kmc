@@ -10,7 +10,7 @@ import {
   Text,
   Title,
 } from "@mantine/core";
-import { IconArrowLeft, IconPencil, IconTrash } from "@tabler/icons-react";
+import { IconArrowLeft, IconPencil, IconRouter, IconTrash } from "@tabler/icons-react";
 import { useState } from "react";
 import { Link, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/vpcs.$cluster.$namespace.$name";
@@ -31,14 +31,17 @@ import {
   formatDateTime,
   vmPath,
   vpcEditPath,
+  vpcNatGatewayPath,
   vpcsListPath,
 } from "~/lib/format";
+import { useFetcherResult } from "~/lib/use-fetcher-result";
 import {
+  defaultGatewayAddress,
   deleteVpc,
   getVpc,
   getVpcYaml,
+  listPublicEgressNetworks,
 } from "~/vpcs/vpcs.server";
-import { useFetcherResult } from "~/lib/use-fetcher-result";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `${params.name ?? "VPC"} · kmc` }];
@@ -53,7 +56,20 @@ export async function loader({ params }: Route.LoaderArgs) {
     getVpc(cluster, namespace, name),
     getVpcYaml(cluster, namespace, name),
   ]);
-  return { vpc, yaml };
+
+  const publicNetworks = listPublicEgressNetworks(cluster, {
+    excludeMultus: name,
+  });
+  const suggestedGateway =
+    vpc.gateway?.trim() ||
+    (vpc.cidr ? defaultGatewayAddress(vpc.cidr) : undefined);
+
+  return {
+    vpc,
+    yaml,
+    publicNetworkCount: publicNetworks.length,
+    suggestedGateway,
+  };
 }
 
 export async function action({ request, params }: Route.ActionArgs) {
@@ -80,12 +96,11 @@ export async function action({ request, params }: Route.ActionArgs) {
 }
 
 export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
-  const { vpc, yaml } = loaderData;
+  const { vpc, yaml, publicNetworkCount, suggestedGateway } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string }>();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const busy = fetcher.state !== "idle";
   const hasAttachments = vpc.attachedCount > 0;
-
   useFetcherResult(fetcher, (data) => {
     if (data.error) {
       notifyActionError("Delete failed", data.error);
@@ -118,6 +133,11 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
             ) : (
               <Badge variant="light" color="gray">
                 L2 only
+              </Badge>
+            )}
+            {vpc.natGateway && (
+              <Badge variant="light" color="teal">
+                NAT gateway
               </Badge>
             )}
           </Group>
@@ -256,6 +276,82 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
         </DetailSection>
       </SimpleGrid>
 
+      <DetailSection title="NAT gateway">
+        {vpc.natGateway ? (
+          <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+            <DetailField
+              label="VM"
+              value={
+                <ResourceLink to={vmPath(vpc.natGateway)}>
+                  {vpc.natGateway.name}
+                </ResourceLink>
+              }
+            />
+            <DetailField
+              label="Private IP"
+              value={
+                vpc.natGateway.privateIpv4 ? (
+                  <Code>{vpc.natGateway.privateIpv4}</Code>
+                ) : (
+                  "—"
+                )
+              }
+            />
+            <DetailField
+              label="Public IP"
+              value={
+                vpc.natGateway.publicIpv4 ? (
+                  <Code>{vpc.natGateway.publicIpv4}</Code>
+                ) : (
+                  "—"
+                )
+              }
+            />
+            <DetailField
+              label="Egress network"
+              value={
+                vpc.natGateway.publicNetwork ? (
+                  <Code>{vpc.natGateway.publicNetwork}</Code>
+                ) : (
+                  "—"
+                )
+              }
+            />
+          </SimpleGrid>
+        ) : !vpc.cidr ? (
+          <Text size="sm" c="dimmed">
+            Enable private IPAM (CIDR) on this VPC to add a NAT gateway for
+            egress.
+          </Text>
+        ) : publicNetworkCount === 0 ? (
+          <Text size="sm" c="dimmed">
+            No public Multus networks with <Code>ipPools</Code> are configured
+            on this cluster. Add an egress pool (e.g. <Code>external</Code>) in{" "}
+            <Code>clusters.yaml</Code>.
+          </Text>
+        ) : (
+          <Stack gap="xs">
+            <Text size="sm" c="dimmed">
+              Dual-homed Ubuntu VM: private NIC owns the VPC gateway address (
+              <Code>{suggestedGateway ?? "—"}</Code>
+              ), public NIC on a Multus pool does SNAT (ip_forward + MASQUERADE).
+            </Text>
+            <Group>
+              <Button
+                component={Link}
+                to={vpcNatGatewayPath(vpc)}
+                size="xs"
+                variant="light"
+                color="teal"
+                leftSection={<IconRouter size={14} />}
+              >
+                Add NAT gateway
+              </Button>
+            </Group>
+          </Stack>
+        )}
+      </DetailSection>
+
       <DetailSection title={`Attached VMs (${vpc.attachedCount})`}>
         {vpc.attachedVms.length === 0 ? (
           <Text size="sm" c="dimmed">
@@ -264,7 +360,7 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
         ) : (
           <ResourceTable
             isEmpty={false}
-            headers={["Name", "Namespace", "IPv4"]}
+            headers={["Name", "Namespace", "IPv4", "Role"]}
           >
             {vpc.attachedVms.map((vm) => (
               <Table.Tr key={`${vm.namespace}/${vm.name}`}>
@@ -284,6 +380,17 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
                   >
                     {vm.allocatedIpv4 ?? "—"}
                   </Text>
+                </Table.Td>
+                <Table.Td>
+                  {vm.isNatGateway ? (
+                    <Badge size="sm" variant="light" color="teal">
+                      NAT gateway
+                    </Badge>
+                  ) : (
+                    <Text size="sm" c="dimmed">
+                      —
+                    </Text>
+                  )}
                 </Table.Td>
               </Table.Tr>
             ))}
