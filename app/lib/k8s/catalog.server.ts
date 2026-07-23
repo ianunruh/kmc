@@ -10,6 +10,7 @@ import type {
 } from "~/lib/types";
 import {
   getIpPoolUsageForConfig,
+  listIpPools,
   resolveIpPoolForMultus,
 } from "~/lib/ipam/pools.server";
 import { getClusterClients } from "./clients.server";
@@ -21,6 +22,7 @@ import {
   VM_ALLOWED_LABEL,
   VM_ALLOWED_LABEL_SELECTOR,
 } from "./constants";
+import { nadNameFromMultusRef } from "./static-nads.server";
 
 const IMAGE_NAMESPACE = process.env.KMC_IMAGE_NAMESPACE ?? "vm-images";
 
@@ -99,7 +101,7 @@ export async function listNetworks(
         };
       }>;
     };
-    const networks = (res.items ?? [])
+    const networks: NetworkInfo[] = (res.items ?? [])
       .map((item) => {
         const labels = item.metadata?.labels ?? {};
         const isVpc = labels[KMC_LABEL_RESOURCE] === KMC_RESOURCE_VPC;
@@ -113,8 +115,26 @@ export async function listNetworks(
             vlan != null && Number.isInteger(vlan) && vlan > 0 ? vlan : undefined,
         };
       })
-      .filter((n) => n.name)
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .filter((n) => n.name);
+
+    // Static ipPools with a cni template are selectable even before the NAD is
+    // created (createVm ensures the NAD). Without this, new namespaces never
+    // list external / bridge-external in the launch picker.
+    const existingNames = new Set(networks.map((n) => n.name));
+    for (const pool of listIpPools(cluster)) {
+      if (!pool.cni) continue;
+      const nadName = nadNameFromMultusRef(pool.multusNetwork);
+      if (!nadName || existingNames.has(nadName)) continue;
+      networks.push({
+        name: nadName,
+        namespace,
+        kind: "multus",
+        vlan: pool.cni.vlan,
+      });
+      existingNames.add(nadName);
+    }
+
+    networks.sort((a, b) => a.name.localeCompare(b.name));
 
     // Attach IP pool usage from static ipPools and/or VPC NAD annotations.
     const usageByPoolId = new Map<

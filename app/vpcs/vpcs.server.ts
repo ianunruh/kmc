@@ -34,6 +34,7 @@ import {
   getImagePreference,
 } from "~/lib/k8s/catalog.server";
 import { getClusterClients, getConfiguredContexts } from "~/lib/k8s/clients.server";
+import { ensureStaticMultusNads } from "~/lib/k8s/static-nads.server";
 import { toResourceYaml } from "~/lib/k8s/yaml.server";
 import {
   addressFromIpv4Annotation,
@@ -781,6 +782,11 @@ export async function createNatGateway(
   }
 
   await assertVmNamespaceAllowed(input.cluster, input.namespace);
+
+  // Public egress Multus (e.g. external) is often missing in new namespaces.
+  await ensureStaticMultusNads(input.cluster, input.namespace, [
+    input.publicMultusNetwork.trim(),
+  ]);
 
   const vpc = await getVpc(input.cluster, input.namespace, input.vpcName);
   if (!vpc.cidr?.trim()) {

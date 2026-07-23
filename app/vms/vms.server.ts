@@ -18,6 +18,7 @@ import {
   k8sFetch,
 } from "~/lib/k8s/clients.server";
 import { assertVmNamespaceAllowed } from "~/lib/k8s/catalog.server";
+import { ensureStaticMultusNads } from "~/lib/k8s/static-nads.server";
 import { allocateIpv4ForMultus } from "~/lib/ipam/pools.server";
 import { IPAM_ANNOTATION_IPV4 } from "~/lib/ipam/constants";
 import {
@@ -552,6 +553,9 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
   if (multusNames.length > 8) {
     throw new Error("At most 8 Multus network attachments are supported");
   }
+
+  // Materialize shared Multus NADs (e.g. external) from ipPools.cni when missing.
+  await ensureStaticMultusNads(input.cluster, input.namespace, multusNames);
 
   const { custom } = getClusterClients(input.cluster);
 

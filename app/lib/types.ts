@@ -153,6 +153,30 @@ export interface NamespaceInfo {
   name: string;
 }
 
+// --- Namespaces (projects) — vm-allowed opt-in ---
+
+export interface NamespaceSummary {
+  cluster: ClusterId;
+  name: string;
+  phase: string;
+  age: string;
+  /** True when stamped app.kubernetes.io/managed-by=kmc */
+  managedByKmc: boolean;
+}
+
+export interface NamespaceDetail extends NamespaceSummary {
+  uid?: string;
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
+  /** VirtualMachines in this namespace (same cluster) */
+  vmCount: number;
+}
+
+export interface CreateNamespaceRequest {
+  cluster: ClusterId;
+  name: string;
+}
+
 export interface InstanceTypeInfo {
   name: string;
   cpu?: string;

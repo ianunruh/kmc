@@ -14,6 +14,7 @@ import { useDisclosure } from "@mantine/hooks";
 import {
   IconDatabase,
   IconCpu,
+  IconFolder,
   IconKey,
   IconLogout,
   IconNetwork,
@@ -55,6 +56,12 @@ const NAV = [
     label: "VPCs",
     icon: IconNetwork,
     match: (path: string) => path.startsWith("/vpcs"),
+  },
+  {
+    to: "/namespaces",
+    label: "Namespaces",
+    icon: IconFolder,
+    match: (path: string) => path.startsWith("/namespaces"),
   },
   {
     to: "/topology",

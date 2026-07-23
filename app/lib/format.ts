@@ -1,11 +1,17 @@
 import type { VmSummary } from "~/lib/types";
 import { withSearch } from "./search-params";
 
-export function formatAge(iso: string): string {
-  if (!iso) return "—";
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return iso;
-  const seconds = Math.floor((Date.now() - then) / 1000);
+/** Accept ISO strings or Date (core/v1 client-node + turbo-stream). */
+function parseTimestamp(value: string | Date | undefined | null): Date | null {
+  if (value == null || value === "") return null;
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+export function formatAge(iso: string | Date): string {
+  const d = parseTimestamp(iso);
+  if (!d) return iso instanceof Date ? "—" : iso || "—";
+  const seconds = Math.floor((Date.now() - d.getTime()) / 1000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m`;
@@ -16,10 +22,9 @@ export function formatAge(iso: string): string {
   return `${Math.floor(days / 365)}y`;
 }
 
-export function formatDateTime(iso?: string): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
+export function formatDateTime(iso?: string | Date): string {
+  const d = parseTimestamp(iso);
+  if (!d) return "—";
   return d.toLocaleString();
 }
 
@@ -238,6 +243,21 @@ export function vpcsListPath(
   } = {},
 ): string {
   return withSearch("/vpcs", filters);
+}
+
+export function namespacePath(
+  ns: Pick<{ cluster: string; name: string }, "cluster" | "name">,
+): string {
+  return `/namespaces/${encodeURIComponent(ns.cluster)}/${encodeURIComponent(ns.name)}`;
+}
+
+export function namespacesListPath(
+  filters: {
+    q?: string | null;
+    cluster?: string | null;
+  } = {},
+): string {
+  return withSearch("/namespaces", filters);
 }
 
 export function topologyPath(

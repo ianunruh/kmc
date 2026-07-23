@@ -38,10 +38,15 @@ export const KMC_INGRESS_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY}
 /** Value of kmc.ianunruh.com/resource for self-service VPC NADs. */
 export const KMC_RESOURCE_VPC = "vpc";
 
+/** Value of kmc.ianunruh.com/resource for static/shared Multus NADs (from ipPools). */
+export const KMC_RESOURCE_NETWORK = "network";
+
 /** Labels on kmc-managed VPC NetworkAttachmentDefinitions. */
 export const KMC_LABEL_RESOURCE = `${KMC_LABEL_NAMESPACE}/resource`;
 export const KMC_LABEL_VLAN = `${KMC_LABEL_NAMESPACE}/vlan`;
 export const KMC_LABEL_VLAN_POOL = `${KMC_LABEL_NAMESPACE}/vlan-pool`;
+/** Static ipPools id stamped on ensured shared Multus NADs. */
+export const KMC_LABEL_IP_POOL = `${KMC_LABEL_NAMESPACE}/ip-pool`;
 
 /** Annotations on kmc-managed VPC NADs (optional IPAM + metadata). */
 export const KMC_ANN_CIDR = `${KMC_LABEL_NAMESPACE}/cidr`;

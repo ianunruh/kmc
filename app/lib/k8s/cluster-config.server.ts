@@ -4,6 +4,19 @@ import { parse as parseYaml } from "yaml";
 import type { ClusterId } from "~/lib/types";
 import { getAuthMode } from "~/lib/auth/mode.server";
 
+/**
+ * CNI template used to materialize a per-namespace Multus NAD for a static pool.
+ * When set, createVm ensures the NAD exists before launch.
+ */
+export type IpPoolCniConfig = {
+  /** CNI plugin type (typically `bridge`) */
+  type: string;
+  /** Linux bridge on hypervisors (e.g. br0, br-external) */
+  bridge: string;
+  /** Optional 802.1Q VLAN id */
+  vlan?: number;
+};
+
 /** Scan-derived IPv4 pool bound to a Multus NAD (see app/lib/ipam). */
 export type IpPoolConfig = {
   /** Stable id written to VM annotation kmc.ianunruh.com/ipam-pool */
@@ -31,6 +44,11 @@ export type IpPoolConfig = {
    * When omitted, match virtio_net driver.
    */
   interface?: string;
+  /**
+   * When set, kmc can create this Multus NAD in a VM namespace if missing
+   * (ensure-on-create for shared/public networks).
+   */
+  cni?: IpPoolCniConfig;
 };
 
 /**
@@ -95,6 +113,11 @@ type ClustersFile = {
       start?: string;
       end?: string;
       interface?: string;
+      cni?: {
+        type?: string;
+        bridge?: string;
+        vlan?: number;
+      };
     }>;
     vlanPools?: Array<{
       id?: string;
@@ -151,6 +174,37 @@ function loadFromYaml(path: string): {
   return { identities: map, settingsCluster };
 }
 
+function parseIpPoolCni(
+  raw:
+    | {
+        type?: string;
+        bridge?: string;
+        vlan?: number;
+      }
+    | undefined,
+  clusterId: string,
+  poolId: string,
+): IpPoolCniConfig | undefined {
+  if (raw == null) return undefined;
+  const type = raw.type?.trim() || "bridge";
+  const bridge = raw.bridge?.trim();
+  if (!bridge) {
+    throw new Error(
+      `Cluster "${clusterId}": ipPools "${poolId}" cni.bridge is required when cni is set`,
+    );
+  }
+  let vlan: number | undefined;
+  if (raw.vlan != null) {
+    if (!Number.isInteger(raw.vlan) || raw.vlan < 1 || raw.vlan > 4094) {
+      throw new Error(
+        `Cluster "${clusterId}": ipPools "${poolId}" cni.vlan must be an integer 1–4094`,
+      );
+    }
+    vlan = raw.vlan;
+  }
+  return { type, bridge, vlan };
+}
+
 function parseIpPools(
   raw:
     | Array<{
@@ -163,6 +217,11 @@ function parseIpPools(
         start?: string;
         end?: string;
         interface?: string;
+        cni?: {
+          type?: string;
+          bridge?: string;
+          vlan?: number;
+        };
       }>
     | undefined,
   clusterId: string,
@@ -194,6 +253,7 @@ function parseIpPools(
       start: p.start?.trim() || undefined,
       end: p.end?.trim() || undefined,
       interface: p.interface?.trim() || undefined,
+      cni: parseIpPoolCni(p.cni, clusterId, id),
     });
   }
   return pools;

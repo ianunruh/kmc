@@ -29,6 +29,12 @@ clusters:
         # end: 74.82.62.200
         # Optional guest interface name for netplan (default: match virtio_net)
         # interface: enp1s0
+        # Optional: CNI template to create the Multus NAD in the VM namespace
+        # on launch when missing (shared/public networks).
+        # cni:
+        #   type: bridge
+        #   bridge: br-external
+        #   # vlan: 3000
     # Optional: VLAN pool for self-service VPCs (Multus bridge + vlan on hypervisors).
     # Create VPC in the UI allocates the next free VLAN and creates a namespace NAD.
     # vlanPools:
