@@ -5,7 +5,8 @@ import {
   ipamAnnotations,
   type AllocatedIp,
 } from "~/lib/ipam/pools.server";
-import { KMC_NAT_AGENT_SCRIPT } from "~/vpcs/nat-agent-script";
+import { getNatAgentScript } from "~/vpcs/nat-agent-script";
+import { getRouterAgentScript } from "~/vpcs/router-agent-script";
 
 /** Multus NAD names from the create request (order preserved). */
 export function multusNetworksFromRequest(input: CreateVmRequest): string[] {
@@ -495,7 +496,7 @@ export function buildNatGatewayUserData(input: {
     "KMC_RESYNC_SECONDS=300",
   ].join("\n");
 
-  const agentScriptYaml = yamlLiteralScriptBody(KMC_NAT_AGENT_SCRIPT);
+  const agentScriptYaml = yamlLiteralScriptBody(getNatAgentScript());
   const setupScriptYaml = yamlLiteralScriptBody(setupScript);
   const kubeconfigYaml = yamlLiteralScriptBody(kubeconfig);
   const envFileYaml = yamlLiteralScriptBody(envFile);
@@ -513,6 +514,7 @@ export function buildNatGatewayUserData(input: {
     "  - qemu-guest-agent",
     "  - python3",
     "  - iptables",
+    "  - iputils-arping",
     "write_files:",
     "  - path: /etc/sysctl.d/99-kmc-nat.conf",
     "    content: |",
@@ -575,5 +577,247 @@ export function buildNatGatewayUserData(input: {
     "  - systemctl daemon-reload",
     "  - systemctl enable --now kmc-nat.service",
     "  - systemctl enable --now kmc-nat-agent.service",
+  ].join("\n");
+}
+
+/**
+ * cloud-init user-data for a shared VPC router:
+ * - One or more Multus private NICs (gateway IP per VPC, MAC-matched)
+ * - Optional public Multus (external gateway: default route + MASQUERADE)
+ * - Pod NIC: DHCP, cluster routes only (agent → apiserver)
+ * - dnsmasq + kmc-router-agent for DHCP/DNS (+ floating IPs when external)
+ */
+export function buildRouterUserData(input: {
+  sshPublicKey: string;
+  /** Ordered private Multus MACs (same order as VPC interfaces). */
+  privateMacs: string[];
+  /** Public Multus MAC when external gateway is enabled. */
+  publicMac?: string;
+  podCIDRs: string[];
+  serviceCIDRs: string[];
+  dnsIP?: string;
+  namespace: string;
+  policyConfigMap: string;
+  apiServer: string;
+  caData: string;
+  agentToken: string;
+}): string {
+  const privateMacs = input.privateMacs.map((m) => m.trim().toLowerCase()).filter(Boolean);
+  if (privateMacs.length === 0) {
+    throw new Error("buildRouterUserData requires at least one private MAC");
+  }
+  const publicMac = input.publicMac?.trim().toLowerCase() || "";
+  const clusterCidrs = [
+    ...input.podCIDRs.map((c) => c.trim()).filter(Boolean),
+    ...input.serviceCIDRs.map((c) => c.trim()).filter(Boolean),
+  ];
+
+  const setupScript = [
+    "#!/bin/bash",
+    "set -euo pipefail",
+    `PRIVATE_MACS="${privateMacs.join(" ")}"`,
+    `PUBLIC_MAC="${publicMac}"`,
+    `CLUSTER_CIDRS="${clusterCidrs.join(" ")}"`,
+    "if_by_mac() {",
+    '  local want="$1"',
+    "  local path iface mac",
+    "  for path in /sys/class/net/*; do",
+    '    iface=$(basename "$path")',
+    '    [[ "$iface" == "lo" ]] && continue',
+    '    [[ -f "$path/address" ]] || continue',
+    '    mac=$(tr "[:upper:]" "[:lower:]" < "$path/address")',
+    '    if [[ "$mac" == "$want" ]]; then',
+    '      echo "$iface"',
+    "      return 0",
+    "    fi",
+    "  done",
+    "  return 1",
+    "}",
+    "PRIVATE_IFS=()",
+    "for mac in $PRIVATE_MACS; do",
+    '  iface=$(if_by_mac "$mac") || { echo "kmc-router: private NIC not found for $mac" >&2; exit 1; }',
+    '  PRIVATE_IFS+=("$iface")',
+    "done",
+    'PUBLIC_IF=""',
+    'if [[ -n "$PUBLIC_MAC" ]]; then',
+    '  PUBLIC_IF=$(if_by_mac "$PUBLIC_MAC") || { echo "kmc-router: public NIC not found for $PUBLIC_MAC" >&2; exit 1; }',
+    "fi",
+    'POD_IF=""',
+    "for path in /sys/class/net/*; do",
+    '  iface=$(basename "$path")',
+    '  [[ "$iface" == "lo" ]] && continue',
+    '  skip=0',
+    '  for p in "${PRIVATE_IFS[@]}"; do [[ "$iface" == "$p" ]] && skip=1 && break; done',
+    '  [[ -n "$PUBLIC_IF" && "$iface" == "$PUBLIC_IF" ]] && skip=1',
+    '  [[ "$skip" -eq 1 ]] && continue',
+    '  POD_IF="$iface"',
+    "  break",
+    "done",
+    'if [[ -z "$POD_IF" ]]; then',
+    '  echo "kmc-router: pod NIC not found" >&2',
+    "  exit 1",
+    "fi",
+    "sysctl -w net.ipv4.ip_forward=1 >/dev/null",
+    "sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null || true",
+    'sysctl -w "net.ipv4.conf.${POD_IF}.rp_filter=2" >/dev/null || true',
+    'for iface in "${PRIVATE_IFS[@]}"; do',
+    '  sysctl -w "net.ipv4.conf.${iface}.rp_filter=2" >/dev/null || true',
+    "done",
+    'if [[ -n "$PUBLIC_IF" ]]; then',
+    '  sysctl -w "net.ipv4.conf.${PUBLIC_IF}.rp_filter=2" >/dev/null || true',
+    "fi",
+    "for i in $(seq 1 60); do",
+    '  if ip -4 -o addr show dev "$POD_IF" | grep -q "inet "; then break; fi',
+    '  command -v dhclient >/dev/null 2>&1 && dhclient -1 "$POD_IF" 2>/dev/null || true',
+    "  sleep 2",
+    "done",
+    'ip route del default dev "$POD_IF" 2>/dev/null || true',
+    "POD_GW=$(ip -4 route show dev \"$POD_IF\" 2>/dev/null | awk '/^default/ {print $3; exit}')",
+    'if [[ -z "${POD_GW:-}" ]]; then POD_GW=10.0.2.1; fi',
+    "for cidr in $CLUSTER_CIDRS; do",
+    '  ip route replace "$cidr" via "$POD_GW" dev "$POD_IF" || true',
+    "done",
+    "# Never forward via pod NIC",
+    'iptables -C FORWARD -i "$POD_IF" -j DROP 2>/dev/null || iptables -I FORWARD 1 -i "$POD_IF" -j DROP',
+    'iptables -C FORWARD -o "$POD_IF" -j DROP 2>/dev/null || iptables -I FORWARD 1 -o "$POD_IF" -j DROP',
+    "# Allow forwarding between private VPC interfaces",
+    'for a in "${PRIVATE_IFS[@]}"; do',
+    '  for b in "${PRIVATE_IFS[@]}"; do',
+    '    [[ "$a" == "$b" ]] && continue',
+    '    iptables -C FORWARD -i "$a" -o "$b" -j ACCEPT 2>/dev/null || iptables -A FORWARD -i "$a" -o "$b" -j ACCEPT',
+    "  done",
+    "done",
+    'if [[ -n "$PUBLIC_IF" ]]; then',
+    '  iptables -t nat -C POSTROUTING -o "$PUBLIC_IF" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o "$PUBLIC_IF" -j MASQUERADE',
+    '  for a in "${PRIVATE_IFS[@]}"; do',
+    '    iptables -C FORWARD -i "$a" -o "$PUBLIC_IF" -j ACCEPT 2>/dev/null || iptables -A FORWARD -i "$a" -o "$PUBLIC_IF" -j ACCEPT',
+    '    iptables -C FORWARD -i "$PUBLIC_IF" -o "$a" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -i "$PUBLIC_IF" -o "$a" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT',
+    "  done",
+    "fi",
+    "# dnsmasq: avoid conflicting with systemd-resolved stub on 127.0.0.53",
+    "mkdir -p /var/lib/kmc/dnsmasq.d /etc/dnsmasq.d",
+    "systemctl disable --now systemd-resolved 2>/dev/null || true",
+    "rm -f /etc/resolv.conf",
+    "echo 'nameserver 1.1.1.1' > /etc/resolv.conf",
+    "systemctl enable dnsmasq 2>/dev/null || true",
+    "systemctl restart dnsmasq 2>/dev/null || systemctl start dnsmasq 2>/dev/null || true",
+  ].join("\n");
+
+  const caB64 = input.caData.replace(/\s+/g, "");
+  const kubeconfig = [
+    "apiVersion: v1",
+    "kind: Config",
+    "clusters:",
+    "- cluster:",
+    `    certificate-authority: /etc/kmc/ca.crt`,
+    `    server: ${input.apiServer.replace(/\/$/, "")}`,
+    "  name: cluster",
+    "contexts:",
+    "- context:",
+    "    cluster: cluster",
+    `    namespace: ${input.namespace}`,
+    "    user: agent",
+    "  name: agent",
+    "current-context: agent",
+    "users:",
+    "- name: agent",
+    "  user:",
+    `    token: ${input.agentToken.trim()}`,
+  ].join("\n");
+
+  const envFile = [
+    `KMC_NAMESPACE=${input.namespace}`,
+    `KMC_POLICY_CM=${input.policyConfigMap}`,
+    `KMC_APISERVER=${input.apiServer.replace(/\/$/, "")}`,
+    "KUBECONFIG=/etc/kmc/kubeconfig",
+    "KMC_CA_FILE=/etc/kmc/ca.crt",
+    "KMC_AGENT_PATH=/usr/local/sbin/kmc-router-agent",
+    "KMC_ENV_FILE=/etc/kmc/router-agent.env",
+    "KMC_POLICY_KEY=policy.json",
+    "KMC_AGENT_KEY=agent.py",
+    "KMC_HEARTBEAT_SECONDS=30",
+    "KMC_RESYNC_SECONDS=300",
+  ].join("\n");
+
+  const agentScriptYaml = yamlLiteralScriptBody(getRouterAgentScript());
+  const setupScriptYaml = yamlLiteralScriptBody(setupScript);
+  const kubeconfigYaml = yamlLiteralScriptBody(kubeconfig);
+  const envFileYaml = yamlLiteralScriptBody(envFile);
+  const caB64Yaml = yamlLiteralScriptBody(caB64);
+
+  return [
+    "#cloud-config",
+    "users:",
+    "  - default",
+    "ssh_authorized_keys:",
+    `  - ${input.sshPublicKey.trim()}`,
+    "package_update: true",
+    "packages:",
+    "  - qemu-guest-agent",
+    "  - python3",
+    "  - iptables",
+    "  - dnsmasq",
+    "  - iputils-arping",
+    "write_files:",
+    "  - path: /etc/sysctl.d/99-kmc-router.conf",
+    "    content: |",
+    "      net.ipv4.ip_forward=1",
+    "      net.ipv4.conf.all.rp_filter=2",
+    "  - path: /etc/kmc/ca.crt.b64",
+    "    permissions: '0600'",
+    "    content: |",
+    caB64Yaml,
+    "  - path: /etc/kmc/kubeconfig",
+    "    permissions: '0600'",
+    "    content: |",
+    kubeconfigYaml,
+    "  - path: /etc/kmc/router-agent.env",
+    "    permissions: '0600'",
+    "    content: |",
+    envFileYaml,
+    "  - path: /usr/local/sbin/kmc-router-setup.sh",
+    "    permissions: '0755'",
+    "    content: |",
+    setupScriptYaml,
+    "  - path: /usr/local/sbin/kmc-router-agent",
+    "    permissions: '0755'",
+    "    content: |",
+    agentScriptYaml,
+    "  - path: /etc/systemd/system/kmc-router.service",
+    "    content: |",
+    "      [Unit]",
+    "      Description=kmc VPC router setup (forwarding + pod routes + dnsmasq)",
+    "      After=network-online.target",
+    "      Wants=network-online.target",
+    "      [Service]",
+    "      Type=oneshot",
+    "      ExecStart=/usr/local/sbin/kmc-router-setup.sh",
+    "      RemainAfterExit=yes",
+    "      [Install]",
+    "      WantedBy=multi-user.target",
+    "  - path: /etc/systemd/system/kmc-router-agent.service",
+    "    content: |",
+    "      [Unit]",
+    "      Description=kmc VPC router policy agent (DHCP/DNS/SNAT/floating IPs)",
+    "      After=kmc-router.service network-online.target",
+    "      Requires=kmc-router.service",
+    "      Wants=network-online.target",
+    "      [Service]",
+    "      Type=simple",
+    "      EnvironmentFile=-/etc/kmc/router-agent.env",
+    "      ExecStart=/usr/bin/python3 /usr/local/sbin/kmc-router-agent",
+    "      Restart=on-failure",
+    "      RestartSec=5",
+    "      [Install]",
+    "      WantedBy=multi-user.target",
+    "runcmd:",
+    "  - mkdir -p /etc/kmc /var/lib/kmc /var/lib/kmc/dnsmasq.d",
+    "  - base64 -d /etc/kmc/ca.crt.b64 > /etc/kmc/ca.crt",
+    "  - chmod 600 /etc/kmc/ca.crt /etc/kmc/kubeconfig /etc/kmc/router-agent.env",
+    "  - systemctl enable --now qemu-guest-agent",
+    "  - sysctl --system",
+    "  - systemctl daemon-reload",
+    "  - systemctl enable --now kmc-router.service",
+    "  - systemctl enable --now kmc-router-agent.service",
   ].join("\n");
 }

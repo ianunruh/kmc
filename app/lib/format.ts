@@ -267,6 +267,39 @@ export function vpcNatGatewayPath(
   return `${vpcPath(vpc)}/nat-gateway`;
 }
 
+/** Create a shared router pre-attached to this VPC. */
+export function vpcRouterCreatePath(
+  vpc: Pick<
+    { cluster: string; namespace: string; name: string },
+    "cluster" | "namespace" | "name"
+  >,
+): string {
+  return withSearch("/routers/create", {
+    cluster: vpc.cluster,
+    namespace: vpc.namespace,
+    vpc: vpc.name,
+  });
+}
+
+export function routerPath(
+  router: Pick<
+    { cluster: string; namespace: string; name: string },
+    "cluster" | "namespace" | "name"
+  >,
+): string {
+  return `/routers/${encodeURIComponent(router.cluster)}/${encodeURIComponent(router.namespace)}/${encodeURIComponent(router.name)}`;
+}
+
+export function routersListPath(
+  filters: {
+    q?: string | null;
+    cluster?: string | null;
+    namespace?: string | null;
+  } = {},
+): string {
+  return withSearch("/routers", filters);
+}
+
 export function vpcsListPath(
   filters: {
     q?: string | null;

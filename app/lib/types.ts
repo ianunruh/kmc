@@ -479,6 +479,8 @@ export interface VpcAttachedVm {
   allocatedIpv4?: string;
   /** True when this VM is the kmc-managed NAT gateway for the VPC. */
   isNatGateway?: boolean;
+  /** True when this VM is the shared router for the VPC. */
+  isRouter?: boolean;
 }
 
 /**
@@ -544,10 +546,113 @@ export interface VpcDetail extends VpcSummary {
   /** Present when a kmc-managed NAT gateway VM exists for this VPC. */
   natGateway?: NatGatewayInfo;
   /**
+   * Shared router attached to this VPC (OpenStack-style; may serve other VPCs too).
+   */
+  router?: RouterSummary;
+  /**
    * Floating IP associations from the NAT policy ConfigMap.
    * Present even when the NAT gateway VM is missing (policy survives GW delete).
    */
   floatingIps: FloatingIpAssociation[];
+}
+
+/** Agent status for router / NAT policy ConfigMaps. */
+export type RouterAgentStatus = NatAgentStatus;
+
+/** DHCP lease published to the router agent (static dhcp-host). */
+export interface RouterLease {
+  vpc: string;
+  mac: string;
+  /** IPv4 without prefix. */
+  ip: string;
+  hostname: string;
+  /** Workload VM name when known. */
+  vm?: string;
+}
+
+/** One VPC (subnet) interface on a shared router. */
+export interface RouterInterfaceInfo {
+  vpc: string;
+  cidr: string;
+  gateway: string;
+  mac?: string;
+  domain?: string;
+  dhcpEnabled?: boolean;
+  leaseCount?: number;
+}
+
+/** Optional public Multus external gateway (Phase 2+). */
+export interface RouterExternalInfo {
+  multusNetwork: string;
+  primaryCidr?: string;
+  gateway?: string;
+  snat?: boolean;
+}
+
+export interface RouterSummary {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  /** VPC names this router attaches to. */
+  vpcNames: string[];
+  /** True when an external (public) Multus gateway is configured. */
+  hasExternal: boolean;
+  agentStatus?: RouterAgentStatus;
+  agentHeartbeatAt?: string;
+  age: string;
+}
+
+export interface RouterDetail extends RouterSummary {
+  uid?: string;
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
+  policyConfigMap: string;
+  interfaces: RouterInterfaceInfo[];
+  external?: RouterExternalInfo;
+  leases: RouterLease[];
+  floatingIps: FloatingIpAssociation[];
+  agentObservedGeneration?: string;
+  agentLastError?: string;
+  agentAppliedAt?: string;
+  agentVersion?: string;
+  /** Router appliance VM name (same namespace). */
+  vmName: string;
+  vmStatus?: string;
+  vmReady?: boolean;
+}
+
+/**
+ * Create a shared router attached to at least one VPC (DHCP/DNS on each).
+ * Optional external Multus enables SNAT + floating IPs.
+ */
+export interface CreateRouterRequest {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  /** VPC NAD names in the same namespace (v1 create requires ≥1). */
+  vpcNames: string[];
+  /** Optional public Multus for external gateway (SNAT + floating IPs). */
+  externalMultusNetwork?: string;
+  sshPublicKey: string;
+  instanceType?: string;
+  cpuCores?: number;
+  memory?: string;
+  diskSize: string;
+  storageClass?: string;
+  image: {
+    kind: "pvc";
+    namespace: string;
+    name: string;
+  };
+  start?: boolean;
+}
+
+export interface SetRouterExternalGatewayRequest {
+  cluster: ClusterId;
+  namespace: string;
+  routerName: string;
+  publicMultusNetwork: string;
+  sshPublicKey: string;
 }
 
 /**

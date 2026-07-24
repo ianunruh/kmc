@@ -166,6 +166,7 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 - **Virtual machines** — list, create, detail, edit (labels always; size / preference / run strategy when stopped), stop/start/restart/pause/unpause/delete, **serial console** (full-page xterm via app-proxied WebSocket)
 - **IPAM** — optional per-cluster IPv4 pools for Multus NADs; auto-allocate + netplan cloud-init on create
 - **VPCs** — self-service Multus networks from a cluster VLAN pool (`vlanPools`); optional private CIDR for IPAM
+- **Routers** — shared DHCP/DNS appliance per namespace (OpenStack-style); multi-VPC + external SNAT later
 - **SSH keys** — signed-in users save named public keys (ConfigMap on the settings cluster); select when creating a VM
 - **Ingresses** — create/list/detail/delete HTTP Ingresses bound to a VM (companion ClusterIP Service selects `kubevirt.io/vm`)
 
@@ -216,9 +217,41 @@ When a cluster has `vlanPools` in `clusters.yaml` (and hypervisors expose those 
 
 Static Multus networks and `ipPools` entries continue to work unchanged.
 
+### Shared routers (DHCP + DNS)
+
+OpenStack-style **shared routers** provide per-VPC gateway, DHCP, and DNS without changing the cluster CNI (Calico stays primary).
+
+| Piece | Role |
+| ----- | ---- |
+| Router VM | Multus leg(s) on attached VPC(s) + pod NIC for the agent |
+| Policy ConfigMap `kmc-router-<name>` | Interfaces, static DHCP leases, agent script (survives VM recreate) |
+| In-guest agent | Watches policy → dnsmasq static `dhcp-host` + DNS |
+
+**Flow**
+
+1. Create a VPC with private IPAM (CIDR).
+2. **Routers → Create** (or VPC detail → Create router) — attach at least one VPC. The router claims that VPC’s gateway IP.
+3. Launch workload VMs on the VPC: kmc registers a static lease and configures the guest private NIC with **DHCP** (MAC-matched).
+4. Guests get address / default route / DNS from the router (`<vm>.<vpc>.vpc.local`).
+
+**Phase 2 (external gateway)**
+
+- Optional **public Multus** on create, or **Enable external gateway** on the router detail page (recreates the appliance VM with a public NIC)
+- SNAT (MASQUERADE) for guest egress; **floating IPs** live on the router policy and are applied by the same agent
+- Floating IP associate/list eligibility includes router+external VPCs (legacy NAT gateways still work)
+
+**Limits**
+
+- One VPC at create (multi-VPC attach later)
+- Mutual exclusion: a VPC cannot have both a shared router and a NAT gateway (gateway IP ownership)
+- Requires cluster `network.podCIDR` / `serviceCIDR` (and CA) like the NAT agent
+- Setting external later requires an SSH key (new cloud-init) and causes brief downtime
+
+**Policy sketch** (`policy.json` in the ConfigMap): `interfaces[]` (vpc, cidr, gateway, mac, domain, dhcp), `leases[]`, `external` (multusNetwork, primaryCidr, gateway, mac, snat), `floatingIPs[]`.
+
 ### NAT gateway + floating IPs
 
-With private IPAM enabled, a VPC can run a **NAT gateway** VM:
+With private IPAM enabled, a VPC can run a **legacy NAT gateway** VM (prefer shared router for new lab setups once Phase 2 external gateway ships):
 
 | NIC              | Role                                                     |
 | ---------------- | -------------------------------------------------------- |

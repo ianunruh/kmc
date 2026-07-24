@@ -28,6 +28,7 @@ import {
 } from "~/lib/ipam/pools.server";
 import { IPAM_ANNOTATION_IPV4 } from "~/lib/ipam/constants";
 import {
+  KMC_ANN_ROUTER,
   KMC_LABEL_RESOURCE,
   KMC_LABEL_VLAN,
   KMC_MANAGED_BY,
@@ -38,6 +39,10 @@ import {
 import { addressFromIpv4Annotation } from "~/lib/ipam/cidr";
 import { parseIpv4AnnotationList } from "~/lib/ipam/pools.server";
 import { listFloatingIpsFromPolicies } from "~/vpcs/nat-policy.server";
+import {
+  removeRouterLeasesForVm,
+  upsertRouterLease,
+} from "~/vpcs/router-policy.server";
 import {
   bindAllocationsToNetworks,
   buildVirtualMachineManifest,
@@ -829,6 +834,38 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
   }
   const allocations = bindAllocationsToNetworks(multusNames, rawAllocations);
 
+  // Shared router: DHCP for VPC NICs + register static leases on the router policy.
+  for (let i = 0; i < multusNames.length; i++) {
+    const multusName = multusNames[i]!;
+    const alloc = allocations[i];
+    if (!alloc?.macAddress) continue;
+    const ref = parseMultusNetworkRef(multusName, input.namespace);
+    if (ref.namespace !== input.namespace) continue;
+    const routerName = await readVpcRouterName(
+      input.cluster,
+      ref.namespace,
+      ref.name,
+    );
+    if (!routerName) continue;
+    alloc.dhcp4 = true;
+    alloc.gateway = undefined;
+    alloc.dns = [];
+    try {
+      await upsertRouterLease(input.cluster, input.namespace, routerName, {
+        vpc: ref.name,
+        mac: alloc.macAddress,
+        ip: alloc.address,
+        hostname: input.name.trim(),
+        vm: input.name.trim(),
+      });
+    } catch (leaseErr) {
+      throw new Error(
+        `Failed to register DHCP lease on router ${routerName}: ${formatError(leaseErr)}`,
+        { cause: leaseErr },
+      );
+    }
+  }
+
   const body = buildVirtualMachineManifest(input, allocations);
 
   try {
@@ -844,7 +881,38 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
       : undefined;
     return mapVm(input.cluster, created, instanceTypes);
   } catch (err) {
+    // Best-effort: drop leases if VM create failed
+    try {
+      await removeRouterLeasesForVm(
+        input.cluster,
+        input.namespace,
+        input.name.trim(),
+      );
+    } catch {
+      /* ignore */
+    }
     throw new Error(formatError(err), { cause: err });
+  }
+}
+
+/** Read kmc.ianunruh.com/router annotation from a VPC NAD, if present. */
+async function readVpcRouterName(
+  cluster: ClusterId,
+  namespace: string,
+  vpcName: string,
+): Promise<string | undefined> {
+  try {
+    const { custom } = getClusterClients(cluster);
+    const nad = (await custom.getNamespacedCustomObject({
+      group: "k8s.cni.cncf.io",
+      version: "v1",
+      namespace,
+      plural: "network-attachment-definitions",
+      name: vpcName,
+    })) as { metadata?: { annotations?: Record<string, string> } };
+    return nad.metadata?.annotations?.[KMC_ANN_ROUTER]?.trim() || undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -1153,6 +1221,11 @@ export async function deleteVm(
   namespace: string,
   name: string,
 ): Promise<void> {
+  try {
+    await removeRouterLeasesForVm(cluster, namespace, name);
+  } catch (err) {
+    console.error("removeRouterLeasesForVm:", formatError(err));
+  }
   const { custom } = getClusterClients(cluster);
   await custom.deleteNamespacedCustomObject({
     group: "kubevirt.io",

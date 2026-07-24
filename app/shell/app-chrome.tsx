@@ -20,6 +20,7 @@ import {
   IconNetwork,
   IconPlus,
   IconRoute,
+  IconRouter,
   IconServer,
   IconTopologyStar3,
   IconUser,
@@ -77,6 +78,12 @@ const NAV_SECTIONS: NavSection[] = [
         label: "VPCs",
         icon: IconNetwork,
         match: (path: string) => path.startsWith("/vpcs"),
+      },
+      {
+        to: "/routers",
+        label: "Routers",
+        icon: IconRouter,
+        match: (path: string) => path.startsWith("/routers"),
       },
       {
         to: "/floating-ips",

@@ -40,9 +40,11 @@ import {
   floatingIpsListPath,
   formatAge,
   formatDateTime,
+  routerPath,
   vmPath,
   vpcEditPath,
   vpcNatGatewayPath,
+  vpcRouterCreatePath,
   vpcsListPath,
 } from "~/lib/format";
 import { useRefresh } from "~/lib/refresh";
@@ -211,6 +213,11 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
                 L2 only
               </Badge>
             )}
+            {vpc.router && (
+              <Badge variant="light" color="violet">
+                Router
+              </Badge>
+            )}
             {vpc.natGateway && (
               <Badge variant="light" color="teal">
                 NAT gateway
@@ -347,6 +354,79 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
         </DetailSection>
       </SimpleGrid>
 
+      <DetailSection title="Router">
+        {vpc.router ? (
+          <Stack gap="sm">
+            <SimpleGrid cols={2} spacing="sm">
+              <DetailField
+                label="Name"
+                value={
+                  <ResourceLink to={routerPath(vpc.router)}>
+                    {vpc.router.name}
+                  </ResourceLink>
+                }
+              />
+              <DetailField
+                label="Agent"
+                value={
+                  vpc.router.agentStatus ? (
+                    <StatusBadge status={vpc.router.agentStatus} />
+                  ) : (
+                    "—"
+                  )
+                }
+              />
+              <DetailField
+                label="VPCs on router"
+                value={
+                  <Text size="sm" ff="monospace">
+                    {vpc.router.vpcNames.join(", ") || "—"}
+                  </Text>
+                }
+              />
+              <DetailField
+                label="External GW"
+                value={vpc.router.hasExternal ? "Yes" : "No (Phase 2)"}
+              />
+            </SimpleGrid>
+            <Text size="xs" c="dimmed">
+              Guests on this VPC use DHCP from the router (gateway + DNS). Static
+              cloud-init IPs are not used for the private NIC when a router is attached.
+            </Text>
+          </Stack>
+        ) : vpc.cidr ? (
+          <Stack gap="sm">
+            <Text size="sm" c="dimmed">
+              No shared router. Create one to provide DHCP/DNS (and later external SNAT
+              without a separate NAT gateway VM).
+            </Text>
+            {!vpc.natGateway && (
+              <Group>
+                <Button
+                  component={Link}
+                  to={vpcRouterCreatePath(vpc)}
+                  leftSection={<IconRouter size={16} />}
+                  variant="light"
+                  color="violet"
+                >
+                  Create router
+                </Button>
+              </Group>
+            )}
+            {vpc.natGateway && (
+              <Alert color="yellow" variant="light" title="NAT gateway present">
+                Delete the NAT gateway before creating a shared router (gateway IP
+                ownership conflict).
+              </Alert>
+            )}
+          </Stack>
+        ) : (
+          <Text size="sm" c="dimmed">
+            Enable private IPAM (CIDR) to attach a router for DHCP/DNS.
+          </Text>
+        )}
+      </DetailSection>
+
       <DetailSection title="NAT gateway">
         {vpc.natGateway ? (
           <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
@@ -458,6 +538,13 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
           <Text size="sm" c="dimmed">
             Enable private IPAM (CIDR) on this VPC to add a NAT gateway for egress.
           </Text>
+        ) : vpc.router ? (
+          <Text size="sm" c="dimmed">
+            This VPC uses shared router{" "}
+            <ResourceLink to={routerPath(vpc.router)}>{vpc.router.name}</ResourceLink>.
+            Prefer enabling an external gateway on the router (Phase 2) instead of a
+            separate NAT gateway.
+          </Text>
         ) : publicNetworkCount === 0 ? (
           <Text size="sm" c="dimmed">
             No public Multus networks with <Code>ipPools</Code> are configured on this
@@ -467,18 +554,17 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
         ) : (
           <Stack gap="xs">
             <Text size="sm" c="dimmed">
-              Triple-homed Ubuntu VM: private NIC owns the VPC gateway (
+              Legacy single-VPC appliance: private NIC owns the VPC gateway (
               <Code>{suggestedGateway ?? "—"}</Code>
-              ), public Multus does SNAT/floating IPs, pod network runs the policy agent
-              (requires <Code>network.podCIDR</Code> / <Code>serviceCIDR</Code> in{" "}
-              <Code>clusters.yaml</Code>).
+              ), public Multus does SNAT/floating IPs. Prefer a shared router for new
+              setups (DHCP/DNS now; external SNAT later).
             </Text>
             <Group>
               <Button
                 component={Link}
                 to={vpcNatGatewayPath(vpc)}
                 size="xs"
-                variant="light"
+                variant="default"
                 color="teal"
                 leftSection={<IconRouter size={14} />}
               >
@@ -506,7 +592,7 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
             >
               All floating IPs
             </Button>
-            {vpc.natGateway ? (
+            {vpc.natGateway || vpc.router?.hasExternal ? (
               <Button
                 component={Link}
                 to={floatingIpCreatePath({
@@ -528,7 +614,7 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
                 color="teal"
                 leftSection={<IconPlus size={14} />}
                 disabled
-                title="Create a NAT gateway before associating floating IPs"
+                title="Enable router external gateway or create a NAT gateway first"
               >
                 Associate
               </Button>
@@ -538,22 +624,21 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
       >
         {!vpc.cidr ? (
           <Text size="sm" c="dimmed">
-            Enable private IPAM (CIDR) and a NAT gateway to associate floating public
-            addresses with private VMs.
+            Enable private IPAM (CIDR) and a router external gateway (or NAT gateway) to
+            associate floating public addresses with private VMs.
           </Text>
         ) : vpc.floatingIps.length === 0 ? (
           <Text size="sm" c="dimmed">
-            {vpc.natGateway
-              ? "None yet. Associate a public Multus address to a private VM; the in-guest agent applies DNAT/SNAT from the policy ConfigMap."
-              : "None. Associations are stored on the NAT policy ConfigMap and survive gateway delete — recreate a NAT gateway to apply them, or associate after adding one."}
+            {vpc.natGateway || vpc.router?.hasExternal
+              ? "None yet. Associate a public Multus address to a private VM; the agent applies DNAT/SNAT from the policy ConfigMap."
+              : "None. Enable an external gateway on the shared router (or create a legacy NAT gateway) first."}
           </Text>
         ) : (
           <Stack gap="sm">
-            {!vpc.natGateway && (
-              <Alert color="yellow" variant="light" title="No NAT gateway">
-                These mappings are reserved in policy but not applied until a NAT
-                gateway is running. Recreate the gateway to restore DNAT/SNAT; Associate
-                stays disabled until then.
+            {!vpc.natGateway && !vpc.router?.hasExternal && (
+              <Alert color="yellow" variant="light" title="No egress appliance">
+                These mappings are reserved in policy but not applied until a router
+                external gateway or NAT gateway is running.
               </Alert>
             )}
             <ResourceTable
@@ -673,7 +758,11 @@ export default function VpcDetailPage({ loaderData }: Route.ComponentProps) {
                   </Text>
                 </Table.Td>
                 <Table.Td>
-                  {vm.isNatGateway ? (
+                  {vm.isRouter ? (
+                    <Badge size="sm" variant="light" color="violet">
+                      Router
+                    </Badge>
+                  ) : vm.isNatGateway ? (
                     <Badge size="sm" variant="light" color="teal">
                       NAT gateway
                     </Badge>

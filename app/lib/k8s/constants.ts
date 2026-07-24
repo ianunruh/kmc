@@ -57,14 +57,27 @@ export const KMC_ANN_OWNER = `${KMC_LABEL_NAMESPACE}/owner`;
 /** VM name (same namespace) of the dual-homed NAT gateway for this VPC. */
 export const KMC_ANN_NAT_GATEWAY = `${KMC_LABEL_NAMESPACE}/nat-gateway`;
 
+/**
+ * Shared router name (same namespace) attached to this VPC.
+ * OpenStack-style: one router may attach many VPCs.
+ */
+export const KMC_ANN_ROUTER = `${KMC_LABEL_NAMESPACE}/router`;
+
 /** VM role labels (e.g. NAT gateway for a VPC). */
 export const KMC_LABEL_ROLE = `${KMC_LABEL_NAMESPACE}/role`;
 export const KMC_ROLE_NAT_GATEWAY = "nat-gateway";
+/** Shared router appliance (DHCP/DNS; optional external NAT later). */
+export const KMC_ROLE_ROUTER = "router";
 /** VPC NAD name (same namespace as the VM) this role serves. */
 export const KMC_LABEL_VPC = `${KMC_LABEL_NAMESPACE}/vpc`;
+/** Router name label on policy CM / router VM. */
+export const KMC_LABEL_ROUTER = `${KMC_LABEL_NAMESPACE}/router`;
 
 /** Value of kmc.ianunruh.com/resource for NAT gateway policy ConfigMaps. */
 export const KMC_RESOURCE_NAT_POLICY = "nat-policy";
+
+/** Value of kmc.ianunruh.com/resource for shared router policy ConfigMaps. */
+export const KMC_RESOURCE_ROUTER_POLICY = "router-policy";
 
 /** List selector for kmc-managed VPC NADs. */
 export const KMC_VPC_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_VPC}`;
@@ -72,14 +85,29 @@ export const KMC_VPC_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${K
 /** List selector for NAT gateway policy ConfigMaps (floating IPs, etc.). */
 export const KMC_NAT_POLICY_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_NAT_POLICY}`;
 
+/** List selector for shared router policy ConfigMaps. */
+export const KMC_ROUTER_POLICY_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_ROUTER_POLICY}`;
+
 /** Policy ConfigMap data key (JSON NatGatewayPolicy). */
 export const KMC_NAT_POLICY_DATA_KEY = "policy.json";
+
+/** Router policy ConfigMap data key (JSON RouterPolicy). */
+export const KMC_ROUTER_POLICY_DATA_KEY = "policy.json";
 
 /**
  * Policy ConfigMap data key for the in-guest agent source (Python).
  * Agents self-update when this key changes.
  */
 export const KMC_NAT_AGENT_SCRIPT_KEY = "agent.py";
+
+/** Router policy ConfigMap data key for the in-guest agent source. */
+export const KMC_ROUTER_AGENT_SCRIPT_KEY = "agent.py";
+
+/**
+ * Max Multus NICs on a single VM (kmc createVm limit).
+ * Router: N VPC interfaces + optional external ≤ this.
+ */
+export const KMC_MAX_MULTUS_ATTACHMENTS = 8;
 
 /** Agent status annotations on the policy ConfigMap. */
 export const KMC_ANN_AGENT_STATUS = `${KMC_LABEL_NAMESPACE}/agent-status`;

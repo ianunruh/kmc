@@ -11,6 +11,8 @@ import {
   KMC_NAT_POLICY_DATA_KEY,
   KMC_NAT_POLICY_LABEL_SELECTOR,
   KMC_RESOURCE_VPC,
+  KMC_ROUTER_POLICY_DATA_KEY,
+  KMC_ROUTER_POLICY_LABEL_SELECTOR,
 } from "~/lib/k8s/constants";
 import {
   addressFromIpv4Annotation,
@@ -45,6 +47,12 @@ export type AllocatedIp = {
   macAddress?: string;
   /** KubeVirt network/interface name (e.g. default, net0) — netplan ethernet key */
   networkName?: string;
+  /**
+   * When true, emit dhcp4: true for this NIC (used when a VPC has a shared
+   * router providing DHCP). Static address fields are still stored for IPAM
+   * inventory but not written into netplan.
+   */
+  dhcp4?: boolean;
 };
 
 export type IpPoolUsage = {
@@ -384,6 +392,30 @@ export function collectUsedIpv4(
  * Floating public IPs from NAT policy ConfigMaps (desired state).
  * Complements VM annotations when the agent has not stamped secondaries yet.
  */
+function collectFloatsFromPolicyCms(
+  items: Array<{ data?: Record<string, string> }>,
+  dataKey: string,
+  parsed: ParsedCidr,
+  used: Set<string>,
+): void {
+  for (const cm of items) {
+    const raw = cm.data?.[dataKey];
+    if (!raw?.trim()) continue;
+    try {
+      const doc = JSON.parse(raw) as {
+        floatingIPs?: Array<{ public?: string }>;
+      };
+      for (const f of doc.floatingIPs ?? []) {
+        const addr = addressFromIpv4Annotation(f.public ?? "") ?? f.public?.trim();
+        if (!addr) continue;
+        if (containsIpv4(parsed, addr)) used.add(addr);
+      }
+    } catch {
+      /* skip bad policy */
+    }
+  }
+}
+
 export async function collectFloatingIpv4FromPolicies(
   cluster: ClusterId,
   parsed: ParsedCidr,
@@ -391,25 +423,26 @@ export async function collectFloatingIpv4FromPolicies(
   const used = new Set<string>();
   const { core } = getClusterClients(cluster);
   try {
-    const res = await core.listConfigMapForAllNamespaces({
-      labelSelector: KMC_NAT_POLICY_LABEL_SELECTOR,
-    });
-    for (const cm of res.items ?? []) {
-      const raw = cm.data?.[KMC_NAT_POLICY_DATA_KEY];
-      if (!raw?.trim()) continue;
-      try {
-        const doc = JSON.parse(raw) as {
-          floatingIPs?: Array<{ public?: string }>;
-        };
-        for (const f of doc.floatingIPs ?? []) {
-          const addr = addressFromIpv4Annotation(f.public ?? "") ?? f.public?.trim();
-          if (!addr) continue;
-          if (containsIpv4(parsed, addr)) used.add(addr);
-        }
-      } catch {
-        /* skip bad policy */
-      }
-    }
+    const [natRes, routerRes] = await Promise.all([
+      core.listConfigMapForAllNamespaces({
+        labelSelector: KMC_NAT_POLICY_LABEL_SELECTOR,
+      }),
+      core.listConfigMapForAllNamespaces({
+        labelSelector: KMC_ROUTER_POLICY_LABEL_SELECTOR,
+      }),
+    ]);
+    collectFloatsFromPolicyCms(
+      natRes.items ?? [],
+      KMC_NAT_POLICY_DATA_KEY,
+      parsed,
+      used,
+    );
+    collectFloatsFromPolicyCms(
+      routerRes.items ?? [],
+      KMC_ROUTER_POLICY_DATA_KEY,
+      parsed,
+      used,
+    );
   } catch (err) {
     console.error(
       "collectFloatingIpv4FromPolicies failed:",
@@ -644,6 +677,15 @@ export function buildNetworkData(allocations: AllocatedIp | AllocatedIp[]): stri
     const key = ethernetKeyFor(allocation, index);
     lines.push(`  ${key}:`);
     lines.push(...matchLinesFor(allocation));
+    if (allocation.dhcp4) {
+      // Router DHCP hands out address, gateway, and DNS (static lease).
+      lines.push("    dhcp4: true");
+      if (allocation.macAddress) {
+        lines.push("    dhcp-identifier: mac");
+      }
+      return;
+    }
+
     lines.push("    dhcp4: false", "    addresses:", `      - ${allocation.cidrHost}`);
 
     const gateway = allocation.gateway?.trim();

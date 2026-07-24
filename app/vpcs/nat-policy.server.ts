@@ -45,7 +45,7 @@ import {
   findIpPoolForMultus,
   parseIpv4AnnotationList,
 } from "~/lib/ipam/pools.server";
-import { KMC_NAT_AGENT_SCRIPT } from "~/vpcs/nat-agent-script";
+import { getNatAgentScript } from "~/vpcs/nat-agent-script";
 
 /** JSON document stored in the policy ConfigMap. */
 export type NatGatewayPolicyDoc = {
@@ -190,7 +190,7 @@ export function floatingIpsFromPolicy(
 }
 
 /** Normalize agent script for ConfigMap storage (trailing newline). */
-export function normalizeAgentScript(script: string = KMC_NAT_AGENT_SCRIPT): string {
+export function normalizeAgentScript(script: string = getNatAgentScript()): string {
   const body = script.replace(/\r\n/g, "\n");
   return body.endsWith("\n") ? body : `${body}\n`;
 }
@@ -1141,7 +1141,14 @@ export async function listFloatingIpsForVm(
   vmName: string,
   privateAddresses: string[] = [],
 ): Promise<FloatingIpSummary[]> {
-  const all = await listFloatingIpsFromPolicies(cluster);
+  const { listFloatingIpsFromRouterPolicies } = await import(
+    "~/vpcs/router-policy.server"
+  );
+  const [natAll, routerAll] = await Promise.all([
+    listFloatingIpsFromPolicies(cluster),
+    listFloatingIpsFromRouterPolicies(cluster),
+  ]);
+  const all = [...natAll, ...routerAll];
   const privSet = new Set(
     privateAddresses.map((a) => addressFromIpv4Annotation(a) ?? a.trim()).filter(Boolean),
   );

@@ -12,7 +12,6 @@ import hashlib
 import json
 import os
 import signal
-import socket
 import ssl
 import subprocess
 import sys
@@ -262,30 +261,18 @@ def iface_ipv4_cidrs(iface: str) -> list[str]:
 
 
 def send_garp(iface: str, ip: str) -> None:
-    """Broadcast gratuitous ARP so underlay neighbors learn the float MAC."""
-    try:
-        import fcntl
-        import struct
-
-        sock_ioctl = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        ifr = struct.pack("256s", iface.encode()[:15])
-        mac = fcntl.ioctl(sock_ioctl.fileno(), 0x8927, ifr)[18:24]  # SIOCGIFHWADDR
-        sock_ioctl.close()
-
-        sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0806))
-        sock.bind((iface, 0x0806))
-        eth = b"\xff" * 6 + mac + b"\x08\x06"
-        # ARP reply claiming ip is at mac (gratuitous)
-        arp = struct.pack("!HHBBH", 1, 0x0800, 6, 4, 2)
-        arp += mac + socket.inet_aton(ip) + (b"\xff" * 6) + socket.inet_aton(ip)
-        sock.send(eth + arp)
-        # Also request form used by some gear
-        arp_req = struct.pack("!HHBBH", 1, 0x0800, 6, 4, 1)
-        arp_req += mac + socket.inet_aton(ip) + (b"\x00" * 6) + socket.inet_aton(ip)
-        sock.send(eth + arp_req)
-        sock.close()
-    except Exception as e:  # noqa: BLE001 — best-effort
-        log(f"garp {ip} on {iface} failed: {e}")
+    """Announce floating IP via arping (iputils-arping is installed by cloud-init)."""
+    for args in (
+        ["arping", "-c", "2", "-U", "-I", iface, ip],
+        ["arping", "-c", "2", "-A", "-I", iface, ip],
+    ):
+        r = run(args, check=False)
+        if r.returncode == 0:
+            return
+    log(
+        f"garp {ip} on {iface} failed: arping not available or failed "
+        f"(install iputils-arping)"
+    )
 
 
 def ensure_float_addr(iface: str, pub: str) -> None:
