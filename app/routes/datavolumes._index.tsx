@@ -1,7 +1,9 @@
 import {
   ActionIcon,
   Alert,
+  Badge,
   Button,
+  Group,
   Menu,
   Select,
   Stack,
@@ -9,7 +11,13 @@ import {
   TextInput,
   Tooltip,
 } from "@mantine/core";
-import { IconDotsVertical, IconPlus, IconSearch, IconTrash } from "@tabler/icons-react";
+import {
+  IconDotsVertical,
+  IconPlus,
+  IconRocket,
+  IconSearch,
+  IconTrash,
+} from "@tabler/icons-react";
 import { useMemo, useState } from "react";
 import { Link, useFetcher } from "react-router";
 import type { Route } from "./+types/datavolumes._index";
@@ -74,6 +82,8 @@ export default function DataVolumesPage({ loaderData }: Route.ComponentProps) {
   const { refreshNow } = useRefresh();
   const { filters, qDraft, setQ, setFilter } = useListFilters();
   const [deleteTarget, setDeleteTarget] = useState<DataVolumeSummary | null>(null);
+  /** Local filter: all | retained | owned */
+  const [ownership, setOwnership] = useState<string | null>(null);
 
   useFetcherResult(fetcher, (data) => {
     if (data.error) {
@@ -99,6 +109,9 @@ export default function DataVolumesPage({ loaderData }: Route.ComponentProps) {
       if (filters.cluster && dv.cluster !== filters.cluster) return false;
       if (filters.namespace && dv.namespace !== filters.namespace) return false;
       if (filters.phase && dv.phase !== filters.phase) return false;
+      if (ownership === "retained" && !dv.retainedFromVm) return false;
+      if (ownership === "owned" && !dv.ownerName) return false;
+      if (ownership === "unowned" && (dv.ownerName || dv.retainedFromVm)) return false;
       return matchesQuery(qDraft, [
         dv.name,
         dv.namespace,
@@ -107,9 +120,17 @@ export default function DataVolumesPage({ loaderData }: Route.ComponentProps) {
         dv.sourceKind,
         dv.sourceDetail,
         dv.ownerName,
+        dv.retainedFromVm,
       ]);
     });
-  }, [items, filters.cluster, filters.namespace, filters.phase, qDraft]);
+  }, [
+    items,
+    filters.cluster,
+    filters.namespace,
+    filters.phase,
+    ownership,
+    qDraft,
+  ]);
 
   const busy = fetcher.state !== "idle";
   const unreachable = clusters.filter((c) => !c.reachable);
@@ -170,6 +191,18 @@ export default function DataVolumesPage({ loaderData }: Route.ComponentProps) {
             onChange={(v) => setFilter("phase", v)}
             w={180}
           />
+          <Select
+            placeholder="Ownership"
+            clearable
+            data={[
+              { value: "retained", label: "Retained from VM" },
+              { value: "owned", label: "Owned" },
+              { value: "unowned", label: "Unowned" },
+            ]}
+            value={ownership}
+            onChange={(v) => setOwnership(v)}
+            w={180}
+          />
         </FilterBar>
 
         <ResourceTable
@@ -182,7 +215,19 @@ export default function DataVolumesPage({ loaderData }: Route.ComponentProps) {
             return (
               <Table.Tr key={key}>
                 <Table.Td>
-                  <ResourceLink to={dataVolumePath(dv)}>{dv.name}</ResourceLink>
+                  <Group gap={6} wrap="nowrap">
+                    <ResourceLink to={dataVolumePath(dv)}>{dv.name}</ResourceLink>
+                    {dv.retainedFromVm ? (
+                      <Badge size="xs" variant="light" color="grape">
+                        retained
+                      </Badge>
+                    ) : null}
+                  </Group>
+                  {dv.retainedFromVm && (
+                    <Text size="xs" c="dimmed">
+                      retained from VM {dv.retainedFromVm}
+                    </Text>
+                  )}
                   {dv.ownerName && (
                     <Text size="xs" c="dimmed">
                       owned by{" "}
@@ -259,7 +304,7 @@ export default function DataVolumesPage({ loaderData }: Route.ComponentProps) {
                   </Tooltip>
                 </Table.Td>
                 <Table.Td>
-                  <Menu shadow="md" width={140} position="bottom-end">
+                  <Menu shadow="md" width={200} position="bottom-end">
                     <Menu.Target>
                       <ActionIcon
                         variant="subtle"
@@ -270,6 +315,15 @@ export default function DataVolumesPage({ loaderData }: Route.ComponentProps) {
                       </ActionIcon>
                     </Menu.Target>
                     <Menu.Dropdown>
+                      {!dv.ownerName && dv.phase === "Succeeded" ? (
+                        <Menu.Item
+                          leftSection={<IconRocket size={14} />}
+                          component={Link}
+                          to={`/vms/create?cluster=${encodeURIComponent(dv.cluster)}&namespace=${encodeURIComponent(dv.namespace)}&diskSource=existingDataVolume&existingDataVolume=${encodeURIComponent(dv.name)}`}
+                        >
+                          Launch VM with this disk
+                        </Menu.Item>
+                      ) : null}
                       <Menu.Item
                         color="red"
                         leftSection={<IconTrash size={14} />}

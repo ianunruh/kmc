@@ -55,7 +55,14 @@ export async function action({ request }: Route.ActionArgs) {
     } else if (intent === "unpause") {
       await unpauseVm(cluster, namespace, name);
     } else if (intent === "delete") {
-      await deleteVm(cluster, namespace, name);
+      const retainDisks = form.get("retainDisks") === "true";
+      const result = await deleteVm(cluster, namespace, name, { retainDisks });
+      return {
+        ok: true,
+        intent,
+        retainDisks,
+        retainedDisks: result.retainedDisks,
+      };
     } else {
       return { ok: false, error: `Unknown intent: ${intent}`, intent };
     }

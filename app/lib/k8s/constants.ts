@@ -112,3 +112,24 @@ export const KMC_AGENT_STALE_AFTER_MS = 90_000;
  * May include /prefix; used so secondary floats are not double-allocated.
  */
 export const KMC_ANN_FLOATING_IPV4 = `${KMC_LABEL_NAMESPACE}/floating-ipv4`;
+
+/**
+ * DataVolume retained after VM delete (value = former VirtualMachine name).
+ * Applied when deleteVm({ retainDisks: true }) strips ownerReferences.
+ */
+export const KMC_LABEL_RETAINED_FROM_VM = `${KMC_LABEL_NAMESPACE}/retained-from-vm`;
+
+/** ISO timestamp when a DataVolume was retained from a VM delete. */
+export const KMC_ANN_RETAINED_AT = `${KMC_LABEL_NAMESPACE}/retained-at`;
+
+/**
+ * CDI DataVolume `status.phase` values allowed for create-from-existing root disk.
+ * "Ready" is a condition type, not a phase — do not list it here.
+ */
+export const REUSABLE_DV_PHASES = ["Succeeded"] as const;
+
+/**
+ * Root disk size stamped on the VirtualMachine (e.g. `100Gi`).
+ * Used when the VM has no dataVolumeTemplates (standalone root DataVolume).
+ */
+export const KMC_ANN_DISK_SIZE = `${KMC_LABEL_NAMESPACE}/disk-size`;

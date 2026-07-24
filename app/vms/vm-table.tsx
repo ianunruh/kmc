@@ -3,6 +3,7 @@ import {
   Badge,
   Group,
   Menu,
+  Radio,
   Stack,
   Table,
   Text,
@@ -45,6 +46,14 @@ import { useFetcherResult } from "~/lib/use-fetcher-result";
 import { ClampedText, ConfirmDeleteModal, ResourceLink } from "~/ui";
 import { StatusBadge } from "~/ui/status-badge";
 
+type VmActionResult = {
+  ok?: boolean;
+  error?: string;
+  intent?: string;
+  retainDisks?: boolean;
+  retainedDisks?: string[];
+};
+
 /**
  * Strip optional /prefix from kmc.ianunruh.com/ipv4 for the list column.
  * Multi-attach stores comma-separated addresses — show the first (primary).
@@ -57,37 +66,63 @@ function displayAllocatedIpv4(value?: string): string | undefined {
 }
 
 export function VmTable({ vms }: { vms: VmSummary[] }) {
-  const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
+  const fetcher = useFetcher<VmActionResult>();
   const { refreshNow } = useRefresh();
   const [deleteTarget, setDeleteTarget] = useState<VmSummary | null>(null);
+  const [retainDisks, setRetainDisks] = useState(false);
 
   useFetcherResult(fetcher, (data) => {
     if (data.error) {
       notifyActionError("Action failed", data.error, { intent: data.intent });
     } else if (data.ok) {
-      const label =
-        data.intent === "softreboot"
-          ? "soft reboot"
-          : data.intent === "restart"
-            ? "hard restart"
-            : (data.intent ?? "action");
-      notifyActionSuccess("Done", `VM ${label} requested`);
+      if (data.intent === "delete" && data.retainDisks) {
+        const disks = data.retainedDisks ?? [];
+        notifyActionSuccess(
+          "Done",
+          disks.length > 0
+            ? `VM deleted; disks retained: ${disks.join(", ")}`
+            : "VM deleted; no owned disks were retained",
+        );
+      } else {
+        const label =
+          data.intent === "softreboot"
+            ? "soft reboot"
+            : data.intent === "restart"
+              ? "hard restart"
+              : (data.intent ?? "action");
+        notifyActionSuccess("Done", `VM ${label} requested`);
+      }
       refreshNow();
     }
   });
 
   const busy = fetcher.state !== "idle";
 
-  function submitIntent(intent: VmLifecycleIntent, vm: VmSummary) {
-    fetcher.submit(
-      {
-        intent,
-        cluster: vm.cluster,
-        namespace: vm.namespace,
-        name: vm.name,
-      },
-      { method: "post" },
-    );
+  function openDelete(vm: VmSummary) {
+    setRetainDisks(false);
+    setDeleteTarget(vm);
+  }
+
+  function closeDelete() {
+    setRetainDisks(false);
+    setDeleteTarget(null);
+  }
+
+  function submitIntent(
+    intent: VmLifecycleIntent,
+    vm: VmSummary,
+    options?: { retainDisks?: boolean },
+  ) {
+    const payload: Record<string, string> = {
+      intent,
+      cluster: vm.cluster,
+      namespace: vm.namespace,
+      name: vm.name,
+    };
+    if (intent === "delete") {
+      payload.retainDisks = options?.retainDisks ? "true" : "false";
+    }
+    fetcher.submit(payload, { method: "post" });
   }
 
   if (vms.length === 0) {
@@ -335,7 +370,7 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                           color="red"
                           leftSection={<IconTrash size={14} />}
                           disabled={busy}
-                          onClick={() => setDeleteTarget(vm)}
+                          onClick={() => openDelete(vm)}
                         >
                           Delete
                         </Menu.Item>
@@ -359,13 +394,37 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
         }
         title="Delete virtual machine"
         confirmLabel="Delete VM"
-        warning="Owned disks (DataVolumes) may also be removed."
+        warning={
+          retainDisks
+            ? "The VirtualMachine will be removed; root DataVolumes stay in the namespace for reuse."
+            : "Root DataVolumes referenced by this VM will also be deleted."
+        }
         loading={busy}
-        onClose={() => setDeleteTarget(null)}
+        onClose={closeDelete}
+        extra={
+          <Radio.Group
+            label="Disks"
+            value={retainDisks ? "retain" : "destroy"}
+            onChange={(v) => setRetainDisks(v === "retain")}
+          >
+            <Stack gap="xs" mt={6}>
+              <Radio
+                value="destroy"
+                label="Delete VM and disks"
+                description="Root DataVolumes will be deleted after the VM."
+              />
+              <Radio
+                value="retain"
+                label="Delete VM, keep disks"
+                description="Root DataVolumes remain for reuse on launch."
+              />
+            </Stack>
+          </Radio.Group>
+        }
         onConfirm={() => {
           if (deleteTarget) {
-            submitIntent("delete", deleteTarget);
-            setDeleteTarget(null);
+            submitIntent("delete", deleteTarget, { retainDisks });
+            closeDelete();
           }
         }}
       />

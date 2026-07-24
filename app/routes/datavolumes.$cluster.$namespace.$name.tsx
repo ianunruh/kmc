@@ -219,6 +219,44 @@ export default function DataVolumeDetailPage({ loaderData }: Route.ComponentProp
                 ) : undefined
               }
             />
+            <DetailField
+              label="Attached VM"
+              value={
+                dv.attachedVms && dv.attachedVms.length > 0 ? (
+                  <Stack gap={4}>
+                    {dv.attachedVms.map((vmName) => (
+                      <ResourceLink
+                        key={vmName}
+                        to={vmPath({
+                          cluster: dv.cluster,
+                          namespace: dv.namespace,
+                          name: vmName,
+                        })}
+                      >
+                        {vmName}
+                      </ResourceLink>
+                    ))}
+                  </Stack>
+                ) : undefined
+              }
+            />
+            {dv.retainedFromVm ? (
+              <DetailField
+                label="Retained from"
+                value={
+                  <Text size="sm">
+                    VM{" "}
+                    <Text span c="dimmed">
+                      {dv.retainedFromVm}
+                    </Text>
+                    {" "}
+                    <Badge size="xs" variant="light" color="grape" ml={4}>
+                      retained
+                    </Badge>
+                  </Text>
+                }
+              />
+            ) : null}
             <DetailField label="Source" value={dv.sourceKind} />
             <DetailField label="Source detail" value={dv.sourceDetail} />
             <DetailField label="UID" value={dv.uid ? <Code>{dv.uid}</Code> : undefined} />

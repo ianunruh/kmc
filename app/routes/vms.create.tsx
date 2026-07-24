@@ -4,6 +4,7 @@ import {
   Button,
   Group,
   NumberInput,
+  SegmentedControl,
   Select,
   SimpleGrid,
   Stack,
@@ -16,7 +17,14 @@ import {
 import { useForm } from "@mantine/form";
 import { IconPlus, IconTrash } from "@tabler/icons-react";
 import { useEffect, useMemo } from "react";
-import { Link, redirect, useFetcher, useNavigation, useSubmit } from "react-router";
+import {
+  Link,
+  redirect,
+  useFetcher,
+  useNavigation,
+  useSearchParams,
+  useSubmit,
+} from "react-router";
 import type { Route } from "./+types/vms.create";
 import { notifyActionError } from "~/lib/action-feedback";
 import { getRequestSession } from "~/lib/auth/middleware.server";
@@ -30,7 +38,12 @@ import {
   preferredInstanceTypeName,
 } from "~/instancetypes/options";
 import { createVm, listClusters } from "~/vms/vms.server";
-import type { ClusterCatalog, CreateVmRequest, NetworkInfo } from "~/lib/types";
+import type {
+  ClusterCatalog,
+  CreateVmDiskSourceMode,
+  CreateVmRequest,
+  NetworkInfo,
+} from "~/lib/types";
 
 const MAX_NETWORK_ATTACHMENTS = 8;
 
@@ -38,12 +51,13 @@ export function meta(_args: Route.MetaArgs) {
   return [{ title: "Launch VM · kmc" }];
 }
 
-export async function loader() {
+export async function loader({ request }: Route.LoaderArgs) {
   const clusters = await listClusters();
   const session = getRequestSession();
   const { keys: sshKeys, error: sshKeysError } = await listSshKeysOrEmpty(
     session?.user ?? null,
   );
+  const url = new URL(request.url);
   return {
     clusters,
     sshKeys: sshKeys.map((k) => ({
@@ -54,6 +68,18 @@ export async function loader() {
     })),
     sshKeysError: sshKeysError ?? null,
     signedIn: Boolean(session?.user),
+    prefill: {
+      cluster: url.searchParams.get("cluster")?.trim() || "",
+      namespace: url.searchParams.get("namespace")?.trim() || "",
+      diskSource:
+        url.searchParams.get("diskSource") === "existingDataVolume"
+          ? ("existingDataVolume" as const)
+          : ("image" as const),
+      existingDataVolume:
+        url.searchParams.get("existingDataVolume")?.trim() ||
+        url.searchParams.get("existingDataVolumeName")?.trim() ||
+        "",
+    },
   };
 }
 
@@ -67,9 +93,13 @@ export async function action({ request }: Route.ActionArgs) {
   const instanceType = String(form.get("instanceType") ?? "").trim() || undefined;
   const cpuCoresRaw = String(form.get("cpuCores") ?? "").trim();
   const memory = String(form.get("memory") ?? "").trim() || undefined;
+  const diskSourceRaw = String(form.get("diskSource") ?? "image").trim();
+  const diskSource: CreateVmDiskSourceMode =
+    diskSourceRaw === "existingDataVolume" ? "existingDataVolume" : "image";
   const diskSize = String(form.get("diskSize") ?? "").trim();
   const storageClass = String(form.get("storageClass") ?? "").trim() || undefined;
   const imageValue = String(form.get("image") ?? "").trim();
+  const existingDataVolume = String(form.get("existingDataVolume") ?? "").trim();
   const networksRaw = String(form.get("networks") ?? "").trim();
   const multusNetworks = networksRaw
     ? networksRaw
@@ -91,8 +121,6 @@ export async function action({ request }: Route.ActionArgs) {
       error: "Name must be a DNS-1123 label (lowercase alphanumeric and hyphens)",
     };
   }
-  if (!diskSize) return { error: "Disk size is required" };
-  if (!imageValue) return { error: "Image is required" };
 
   if (sshKeyMode === "saved") {
     if (!savedSshKeyId) return { error: "Select an SSH key" };
@@ -109,25 +137,35 @@ export async function action({ request }: Route.ActionArgs) {
 
   if (!sshPublicKey) return { error: "SSH public key is required" };
 
-  const [imageNamespace, imageName] = imageValue.includes("/")
-    ? (imageValue.split("/") as [string, string])
-    : ["vm-images", imageValue];
-
-  // Preference comes from the golden image PVC label, not a form field.
-  const preference = await getImagePreference(cluster, imageNamespace, imageName);
-
   const payload: CreateVmRequest = {
     cluster,
     namespace,
     name,
-    diskSize,
-    storageClass,
-    image: { kind: "pvc", namespace: imageNamespace, name: imageName },
     sshPublicKey,
     start,
     installGuestAgent,
-    preference,
+    diskSource,
   };
+
+  if (diskSource === "existingDataVolume") {
+    if (!existingDataVolume) return { error: "DataVolume is required" };
+    if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(existingDataVolume)) {
+      return { error: "DataVolume name must be a DNS-1123 label" };
+    }
+    payload.existingDataVolumeName = existingDataVolume;
+  } else {
+    if (!diskSize) return { error: "Disk size is required" };
+    if (!imageValue) return { error: "Image is required" };
+    const [imageNamespace, imageName] = imageValue.includes("/")
+      ? (imageValue.split("/") as [string, string])
+      : ["vm-images", imageValue];
+    // Preference comes from the golden image PVC label, not a form field.
+    const preference = await getImagePreference(cluster, imageNamespace, imageName);
+    payload.diskSize = diskSize;
+    payload.storageClass = storageClass;
+    payload.image = { kind: "pvc", namespace: imageNamespace, name: imageName };
+    payload.preference = preference;
+  }
 
   if (sizeMode === "instancetype" && instanceType) {
     payload.instanceType = instanceType;
@@ -178,30 +216,47 @@ export async function action({ request }: Route.ActionArgs) {
 
 type CatalogFetcherData = ClusterCatalog;
 type NetworksFetcherData = { networks: NetworkInfo[] };
+type DataVolumesFetcherData = {
+  dataVolumes: Array<{
+    name: string;
+    phase: string;
+    size?: string;
+    retainedFromVm?: string;
+  }>;
+};
 
 export default function CreateVmPage({ loaderData, actionData }: Route.ComponentProps) {
-  const { clusters, sshKeys, sshKeysError, signedIn } = loaderData;
+  const { clusters, sshKeys, sshKeysError, signedIn, prefill } = loaderData;
   const navigation = useNavigation();
   const submit = useSubmit();
+  const [searchParams] = useSearchParams();
   const submitting = navigation.state === "submitting";
   const catalogFetcher = useFetcher<CatalogFetcherData>();
   const networksFetcher = useFetcher<NetworksFetcherData>();
+  const dataVolumesFetcher = useFetcher<DataVolumesFetcherData>();
   const hasSavedKeys = sshKeys.length > 0;
   const reachableClusters = clusters.filter((c) => c.reachable);
-  const defaultCluster = reachableClusters[0]?.id ?? "";
+  const defaultCluster =
+    (prefill.cluster && reachableClusters.some((c) => c.id === prefill.cluster)
+      ? prefill.cluster
+      : undefined) ??
+    reachableClusters[0]?.id ??
+    "";
 
   const form = useForm({
     initialValues: {
       cluster: defaultCluster,
-      namespace: "",
+      namespace: prefill.namespace,
       name: "",
       sizeMode: "manual" as "manual" | "instancetype",
       instanceType: "",
       cpuCores: 2,
       memory: "4Gi",
+      diskSource: prefill.diskSource as CreateVmDiskSourceMode,
       diskSize: "100Gi",
       storageClass: "",
       image: "",
+      existingDataVolume: prefill.existingDataVolume,
       /** Multus NAD names in attachment order; empty = pod network only */
       networks: [] as string[],
       sshKeyMode: (hasSavedKeys ? "saved" : "paste") as "saved" | "paste",
@@ -221,8 +276,18 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
         }
         return null;
       },
-      diskSize: (v) => (!v ? "Required" : null),
-      image: (v) => (!v ? "Required" : null),
+      diskSize: (v, values) =>
+        values.diskSource === "image" && !v ? "Required" : null,
+      image: (v, values) =>
+        values.diskSource === "image" && !v ? "Required" : null,
+      existingDataVolume: (v, values) => {
+        if (values.diskSource !== "existingDataVolume") return null;
+        if (!v) return "Required";
+        if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(v)) {
+          return "DNS-1123 label required";
+        }
+        return null;
+      },
       savedSshKeyId: (v, values) =>
         values.sshKeyMode === "saved" && !v ? "Select a key" : null,
       sshPublicKey: (v, values) =>
@@ -239,9 +304,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       instanceType: values.instanceType,
       cpuCores: String(values.cpuCores),
       memory: values.memory,
-      diskSize: values.diskSize,
-      storageClass: values.storageClass,
-      image: values.image,
+      diskSource: values.diskSource,
       networks: values.networks.filter(Boolean).join(","),
       sshKeyMode: values.sshKeyMode,
       savedSshKeyId: values.savedSshKeyId,
@@ -249,8 +312,30 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       start: values.start ? "true" : "false",
       installGuestAgent: values.installGuestAgent ? "true" : "false",
     };
+    if (values.diskSource === "existingDataVolume") {
+      data.existingDataVolume = values.existingDataVolume;
+    } else {
+      data.diskSize = values.diskSize;
+      data.storageClass = values.storageClass;
+      data.image = values.image;
+    }
     submit(data, { method: "post" });
   });
+
+  // Honor deep-link query params if the user navigates with them after mount.
+  useEffect(() => {
+    const ds = searchParams.get("diskSource");
+    const dv =
+      searchParams.get("existingDataVolume") ??
+      searchParams.get("existingDataVolumeName");
+    if (ds === "existingDataVolume") {
+      form.setFieldValue("diskSource", "existingDataVolume");
+    }
+    if (dv?.trim()) {
+      form.setFieldValue("existingDataVolume", dv.trim());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const catalog = catalogFetcher.data;
 
@@ -271,10 +356,29 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
   }, [form.values.cluster, form.values.namespace]);
 
   useEffect(() => {
+    if (
+      form.values.diskSource !== "existingDataVolume" ||
+      !form.values.cluster ||
+      !form.values.namespace
+    ) {
+      return;
+    }
+    dataVolumesFetcher.load(
+      `/api/datavolumes/${form.values.cluster}?namespace=${encodeURIComponent(form.values.namespace)}`,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.values.cluster, form.values.namespace, form.values.diskSource]);
+
+  useEffect(() => {
     if (!catalog) return;
     const namespaceNames = catalog.namespaces.map((n) => n.name);
     if (!form.values.namespace || !namespaceNames.includes(form.values.namespace)) {
-      form.setFieldValue("namespace", namespaceNames[0] ?? "");
+      // Prefer prefill namespace when it is still valid.
+      if (prefill.namespace && namespaceNames.includes(prefill.namespace)) {
+        form.setFieldValue("namespace", prefill.namespace);
+      } else {
+        form.setFieldValue("namespace", namespaceNames[0] ?? "");
+      }
     }
     if (catalog.hasInstanceTypes) {
       form.setFieldValue("sizeMode", "instancetype");
@@ -358,6 +462,19 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
     [networksFetcher.data],
   );
 
+  const dataVolumeOptions = useMemo(() => {
+    const items = dataVolumesFetcher.data?.dataVolumes ?? [];
+    return items.map((dv) => {
+      const bits = [dv.name];
+      if (dv.size) bits.push(dv.size);
+      if (dv.retainedFromVm) bits.push(`retained from ${dv.retainedFromVm}`);
+      return {
+        value: dv.name,
+        label: bits.length > 1 ? `${bits[0]} (${bits.slice(1).join(" · ")})` : bits[0]!,
+      };
+    });
+  }, [dataVolumesFetcher.data]);
+
   const networkLabel = (n: NetworkInfo) => {
     const vlanPart = n.vlan != null ? `vlan ${n.vlan}` : null;
     const kindPart = n.kind === "vpc" ? "VPC" : null;
@@ -421,7 +538,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
           Launch virtual machine
         </Title>
         <Text size="sm" c="dimmed">
-          Provision a KubeVirt VM by cloning a golden image PVC
+          Provision a KubeVirt VM from a golden image or an existing DataVolume
         </Text>
       </div>
 
@@ -449,6 +566,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                   form.setFieldValue("storageClass", "");
                   form.setFieldValue("instanceType", "");
                   form.setFieldValue("networks", []);
+                  form.setFieldValue("existingDataVolume", "");
                 }}
               />
               <Select
@@ -464,6 +582,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 onChange={(v) => {
                   form.setFieldValue("namespace", v ?? "");
                   form.setFieldValue("networks", []);
+                  form.setFieldValue("existingDataVolume", "");
                 }}
               />
             </SimpleGrid>
@@ -506,38 +625,95 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 />
               </SimpleGrid>
             )}
-            <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
-              <TextInput
-                label="Disk size"
-                placeholder="100Gi"
-                required
-                {...form.getInputProps("diskSize")}
+            <div>
+              <Text size="sm" fw={500} mb={6}>
+                Disk source
+              </Text>
+              <SegmentedControl
+                fullWidth
+                value={form.values.diskSource}
+                onChange={(v) =>
+                  form.setFieldValue(
+                    "diskSource",
+                    v === "existingDataVolume" ? "existingDataVolume" : "image",
+                  )
+                }
+                data={[
+                  { label: "New disk from image", value: "image" },
+                  { label: "Existing DataVolume", value: "existingDataVolume" },
+                ]}
               />
-              <Select
-                label="Storage class"
-                data={storageOptions}
-                clearable
-                value={form.values.storageClass || null}
-                onChange={(v) => form.setFieldValue("storageClass", v ?? "")}
-              />
-            </SimpleGrid>
-            <Select
-              label="Image"
-              placeholder="Select golden image PVC"
-              description={
-                selectedImage?.preference
-                  ? `Applies cluster preference “${selectedImage.preference}”`
-                  : selectedImage
-                    ? "No cluster preference labeled on this image"
-                    : undefined
-              }
-              data={imageOptions}
-              required
-              disabled={!catalog}
-              value={form.values.image || null}
-              error={form.errors.image}
-              onChange={(v) => form.setFieldValue("image", v ?? "")}
-            />
+            </div>
+
+            {form.values.diskSource === "image" ? (
+              <>
+                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+                  <TextInput
+                    label="Disk size"
+                    placeholder="100Gi"
+                    required
+                    {...form.getInputProps("diskSize")}
+                  />
+                  <Select
+                    label="Storage class"
+                    data={storageOptions}
+                    clearable
+                    value={form.values.storageClass || null}
+                    onChange={(v) => form.setFieldValue("storageClass", v ?? "")}
+                  />
+                </SimpleGrid>
+                <Select
+                  label="Image"
+                  placeholder="Select golden image PVC"
+                  description={
+                    selectedImage?.preference
+                      ? `Applies cluster preference “${selectedImage.preference}”`
+                      : selectedImage
+                        ? "No cluster preference labeled on this image"
+                        : undefined
+                  }
+                  data={imageOptions}
+                  required
+                  disabled={!catalog}
+                  value={form.values.image || null}
+                  error={form.errors.image}
+                  onChange={(v) => form.setFieldValue("image", v ?? "")}
+                />
+              </>
+            ) : (
+              <>
+                <Select
+                  label="DataVolume"
+                  placeholder={
+                    form.values.namespace
+                      ? "Select a Succeeded DataVolume"
+                      : "Select a namespace first"
+                  }
+                  description="Same-namespace disks only. Volume name may differ from the new VM name."
+                  data={dataVolumeOptions}
+                  required
+                  searchable
+                  disabled={
+                    !form.values.cluster ||
+                    !form.values.namespace ||
+                    dataVolumesFetcher.state === "loading"
+                  }
+                  nothingFoundMessage="No Succeeded DataVolumes in this namespace"
+                  value={form.values.existingDataVolume || null}
+                  error={form.errors.existingDataVolume}
+                  onChange={(v) => form.setFieldValue("existingDataVolume", v ?? "")}
+                />
+                <Alert color="yellow" variant="light" title="Existing OS disk">
+                  Reusing a disk that already has an OS may skip cloud-init on first boot;
+                  new SSH keys from this form may not apply until cloud-init is reset inside
+                  the guest.
+                </Alert>
+                <Alert color="gray" variant="light" title="After a retain-delete">
+                  If you just deleted the previous VM, wait until its VMI/pod is gone before
+                  launching, or start may fail while the disk is still attached.
+                </Alert>
+              </>
+            )}
           </FormSection>
 
           <FormSection title="Access & network">

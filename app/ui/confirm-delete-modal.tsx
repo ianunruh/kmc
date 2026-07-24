@@ -1,5 +1,5 @@
 import { Button, Group, Modal, Stack, Text, TextInput } from "@mantine/core";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 export function ConfirmDeleteModal({
   opened,
@@ -11,6 +11,7 @@ export function ConfirmDeleteModal({
   resourceName,
   identity,
   warning,
+  extra,
 }: {
   opened: boolean;
   onClose: () => void;
@@ -23,6 +24,8 @@ export function ConfirmDeleteModal({
   /** Full identity shown in the body, e.g. cluster/ns/name. */
   identity?: string | null;
   warning?: string;
+  /** Optional content below the warning (e.g. retain-disks radios). */
+  extra?: ReactNode;
 }) {
   const [confirmName, setConfirmName] = useState("");
   const matches = resourceName != null && confirmName === resourceName;
@@ -46,6 +49,7 @@ export function ConfirmDeleteModal({
             </Text>
             .{warning ? ` ${warning}` : null}
           </Text>
+          {extra}
           <TextInput
             label={`Type ${resourceName} to confirm`}
             value={confirmName}

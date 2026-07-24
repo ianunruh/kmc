@@ -36,6 +36,7 @@ import {
   buildVirtualMachineManifest,
   cloudInitUserDataSecretName,
 } from "~/vms/template.server";
+import { ensureRootDataVolumeFromImage } from "~/vms/vms.server";
 import { getPlatformConsolePublicKey } from "~/vms/console-ssh-key.server";
 import {
   containsIpv4,
@@ -527,6 +528,26 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
   const { custom, core } = getClusterClients(input.cluster);
 
   try {
+    await ensureRootDataVolumeFromImage({
+      cluster: input.cluster,
+      namespace: input.namespace,
+      name: routerName,
+      diskSize: input.diskSize,
+      storageClass: input.storageClass,
+      image: {
+        namespace: input.image.namespace,
+        name: input.image.name,
+      },
+      labels: roleLabels,
+    });
+  } catch (err) {
+    throw new Error(
+      `Failed to create router root DataVolume: ${formatError(err)}`,
+      { cause: err },
+    );
+  }
+
+  try {
     await core.createNamespacedSecret({
       namespace: input.namespace,
       body: {
@@ -730,6 +751,20 @@ export async function deleteRouter(
       throw new Error(`Failed to delete router VM: ${formatError(err)}`, {
         cause: err,
       });
+    }
+  }
+
+  try {
+    await custom.deleteNamespacedCustomObject({
+      group: "cdi.kubevirt.io",
+      version: "v1beta1",
+      namespace,
+      plural: "datavolumes",
+      name,
+    });
+  } catch (err) {
+    if (!isNotFound(err)) {
+      console.error("delete router root DataVolume:", formatError(err));
     }
   }
 
@@ -938,6 +973,10 @@ async function recreateRouterVmFromPolicy(
         dataVolumeTemplates?: Array<{
           spec?: {
             pvc?: { storageClassName?: string; resources?: { requests?: { storage?: string } } };
+            storage?: {
+              storageClassName?: string;
+              resources?: { requests?: { storage?: string } };
+            };
             source?: { pvc?: { namespace?: string; name?: string } };
           };
         }>;
@@ -947,6 +986,7 @@ async function recreateRouterVmFromPolicy(
               resources?: { requests?: { cpu?: string; memory?: string } };
               cpu?: { cores?: number };
             };
+            volumes?: Array<{ dataVolume?: { name?: string } }>;
           };
         };
       };
@@ -962,8 +1002,48 @@ async function recreateRouterVmFromPolicy(
       };
     }
     diskSize =
-      dvt?.spec?.pvc?.resources?.requests?.storage?.trim() || diskSize;
-    storageClass = dvt?.spec?.pvc?.storageClassName || undefined;
+      dvt?.spec?.storage?.resources?.requests?.storage?.trim() ||
+      dvt?.spec?.pvc?.resources?.requests?.storage?.trim() ||
+      diskSize;
+    storageClass =
+      dvt?.spec?.storage?.storageClassName ||
+      dvt?.spec?.pvc?.storageClassName ||
+      undefined;
+    // Standalone root DV (post-template): read size/class from the DV if present
+    if (!dvt) {
+      const rootDvName =
+        vm.spec?.template?.spec?.volumes?.find((v) => v.dataVolume?.name)
+          ?.dataVolume?.name || routerName;
+      try {
+        const dv = (await custom.getNamespacedCustomObject({
+          group: "cdi.kubevirt.io",
+          version: "v1beta1",
+          namespace,
+          plural: "datavolumes",
+          name: rootDvName,
+        })) as {
+          spec?: {
+            storage?: {
+              storageClassName?: string;
+              resources?: { requests?: { storage?: string } };
+            };
+            source?: { pvc?: { namespace?: string; name?: string } };
+          };
+        };
+        diskSize =
+          dv.spec?.storage?.resources?.requests?.storage?.trim() || diskSize;
+        storageClass = dv.spec?.storage?.storageClassName || storageClass;
+        if (dv.spec?.source?.pvc?.name) {
+          image = {
+            kind: "pvc",
+            namespace: dv.spec.source.pvc.namespace || "vm-images",
+            name: dv.spec.source.pvc.name,
+          };
+        }
+      } catch {
+        /* keep defaults */
+      }
+    }
     if (!instanceType) {
       cpuCores = vm.spec?.template?.spec?.domain?.cpu?.cores ?? 1;
       memory =
@@ -1007,7 +1087,8 @@ async function recreateRouterVmFromPolicy(
     throw new Error("Provide instanceType or both cpuCores and memory");
   }
 
-  // Delete old VM + cloud-init secret (policy CM stays).
+  // Delete old VM + root DV + cloud-init secret (policy CM stays).
+  // Fresh clone on recreate (standalone DVs no longer cascade with the VM).
   try {
     await custom.deleteNamespacedCustomObject({
       group: "kubevirt.io",
@@ -1021,6 +1102,19 @@ async function recreateRouterVmFromPolicy(
       throw new Error(`Failed to delete router VM: ${formatError(err)}`, {
         cause: err,
       });
+    }
+  }
+  try {
+    await custom.deleteNamespacedCustomObject({
+      group: "cdi.kubevirt.io",
+      version: "v1beta1",
+      namespace,
+      plural: "datavolumes",
+      name: routerName,
+    });
+  } catch (err) {
+    if (!isNotFound(err)) {
+      console.error("delete router root DataVolume:", formatError(err));
     }
   }
   try {
@@ -1142,6 +1236,17 @@ async function recreateRouterVmFromPolicy(
     labels: roleLabels,
     userDataSecretName: secretName,
     includePodNetwork: true,
+  });
+
+  await ensureRootDataVolumeFromImage({
+    cluster,
+    namespace,
+    name: routerName,
+    diskSize,
+    storageClass,
+    image: { namespace: image.namespace, name: image.name },
+    labels: roleLabels,
+    replace: true,
   });
 
   await core.createNamespacedSecret({

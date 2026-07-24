@@ -149,6 +149,9 @@ export interface VmDetail extends VmSummary {
   guestAgent?: VmGuestAgentInfo;
 }
 
+/** How createVm obtains the root disk. Default is golden-image clone. */
+export type CreateVmDiskSourceMode = "image" | "existingDataVolume";
+
 export interface CreateVmRequest {
   cluster: ClusterId;
   namespace: string;
@@ -157,13 +160,26 @@ export interface CreateVmRequest {
   cpuCores?: number;
   memory?: string;
   preference?: string;
-  diskSize: string;
+  /** Required when diskSource is "image" (default). */
+  diskSize?: string;
   storageClass?: string;
-  image: {
+  /** Required when diskSource is "image" (default). */
+  image?: {
     kind: "pvc";
     namespace: string;
     name: string;
   };
+  /**
+   * Default "image". When "existingDataVolume", set existingDataVolumeName
+   * and omit clone fields (diskSize / image).
+   */
+  diskSource?: CreateVmDiskSourceMode;
+  /**
+   * Name of an existing DataVolume in the same namespace as the VM.
+   * Required when diskSource === "existingDataVolume".
+   * Volume ref uses this name (may differ from the new VM name).
+   */
+  existingDataVolumeName?: string;
   /**
    * Multus network attachments in order (first is primary for default route when IPAM applies).
    * Empty / omit → pod network only.
@@ -178,6 +194,15 @@ export interface CreateVmRequest {
    * guest OS info). Requires guest package repos on first boot.
    */
   installGuestAgent?: boolean;
+}
+
+/** Resolve create disk mode; default image for routers and legacy callers. */
+export function createVmDiskSource(
+  input: Pick<CreateVmRequest, "diskSource">,
+): CreateVmDiskSourceMode {
+  return input.diskSource === "existingDataVolume"
+    ? "existingDataVolume"
+    : "image";
 }
 
 /**
@@ -321,6 +346,11 @@ export interface DataVolumeSummary {
   message?: string;
   ownerKind?: string;
   ownerName?: string;
+  /**
+   * Former VirtualMachine name when this DV was retained on VM delete
+   * (`kmc.ianunruh.com/retained-from-vm` label).
+   */
+  retainedFromVm?: string;
 }
 
 export interface DataVolumeDetail extends DataVolumeSummary {
@@ -331,6 +361,11 @@ export interface DataVolumeDetail extends DataVolumeSummary {
   labels: Record<string, string>;
   annotations: Record<string, string>;
   conditions: VmCondition[];
+  /**
+   * VirtualMachines in the same namespace that currently reference this DV
+   * (or its backing PVC) as a volume — backref for standalone root disks.
+   */
+  attachedVms?: string[];
 }
 
 export type DataVolumeSourceKind = "blank" | "pvc" | "http";
@@ -342,6 +377,8 @@ export interface CreateDataVolumeRequest {
   size: string;
   storageClass?: string;
   volumeMode?: "Block" | "Filesystem";
+  /** Extra labels merged onto the DataVolume (e.g. kubevirt.io/vm). */
+  labels?: Record<string, string>;
   source: {
     kind: DataVolumeSourceKind;
     /** pvc clone */

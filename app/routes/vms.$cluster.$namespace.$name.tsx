@@ -7,6 +7,7 @@ import {
   Group,
   Menu,
   Paper,
+  Radio,
   SimpleGrid,
   Stack,
   Table,
@@ -27,7 +28,7 @@ import {
   IconWorldWww,
 } from "@tabler/icons-react";
 import { useState } from "react";
-import { Link, redirect, useFetcher } from "react-router";
+import { Link, useFetcher, useNavigate } from "react-router";
 import type { Route } from "./+types/vms.$cluster.$namespace.$name";
 import { StatusBadge } from "~/ui/status-badge";
 import {
@@ -185,8 +186,14 @@ export async function action({ request, params }: Route.ActionArgs) {
       return { ok: true, intent };
     }
     if (intent === "delete") {
-      await deleteVm(cluster, namespace, name);
-      return redirect("/");
+      const retainDisks = form.get("retainDisks") === "true";
+      const result = await deleteVm(cluster, namespace, name, { retainDisks });
+      return {
+        ok: true,
+        intent,
+        retainDisks,
+        retainedDisks: result.retainedDisks,
+      };
     }
     if (intent === "disassociate-fip") {
       const vpcName = String(form.get("vpcName") ?? "").trim();
@@ -291,11 +298,21 @@ function intentSuccessLabel(intent?: string): string {
   }
 }
 
+type VmDetailActionResult = {
+  ok?: boolean;
+  error?: string;
+  intent?: string;
+  retainDisks?: boolean;
+  retainedDisks?: string[];
+};
+
 export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
   const { vm, events, yaml, prometheusConfigured, floatingIps, vpcPrefill } = loaderData;
-  const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
+  const fetcher = useFetcher<VmDetailActionResult>();
+  const navigate = useNavigate();
   const { refreshNow } = useRefresh();
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [retainDisks, setRetainDisks] = useState(false);
   const [confirmIntent, setConfirmIntent] = useState<ConfirmableLifecycleIntent | null>(
     null,
   );
@@ -315,6 +332,21 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
       return;
     }
     if (data.ok) {
+      if (data.intent === "delete") {
+        if (data.retainDisks) {
+          const disks = data.retainedDisks ?? [];
+          notifyActionSuccess(
+            "Done",
+            disks.length > 0
+              ? `VM deleted; disks retained: ${disks.join(", ")}`
+              : "VM deleted; no owned disks were retained",
+          );
+        } else {
+          notifyActionSuccess("Done", "VM delete requested");
+        }
+        navigate("/");
+        return;
+      }
       if (data.intent === "disassociate-fip") {
         notifyActionSuccess(
           "Done",
@@ -327,8 +359,22 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
     }
   });
 
-  function submitIntent(intent: VmLifecycleIntent) {
-    fetcher.submit({ intent }, { method: "post" });
+  function openDelete() {
+    setRetainDisks(false);
+    setDeleteOpen(true);
+  }
+
+  function closeDelete() {
+    setRetainDisks(false);
+    setDeleteOpen(false);
+  }
+
+  function submitIntent(intent: VmLifecycleIntent, options?: { retainDisks?: boolean }) {
+    const payload: Record<string, string> = { intent };
+    if (intent === "delete") {
+      payload.retainDisks = options?.retainDisks ? "true" : "false";
+    }
+    fetcher.submit(payload, { method: "post" });
   }
 
   const intentBusy = (intent: string) =>
@@ -502,7 +548,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
             variant="light"
             leftSection={<IconTrash size={16} />}
             disabled={busy}
-            onClick={() => setDeleteOpen(true)}
+            onClick={openDelete}
           >
             Delete
           </Button>
@@ -1125,12 +1171,36 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
         identity={`${vm.cluster}/${vm.namespace}/${vm.name}`}
         title="Delete virtual machine"
         confirmLabel="Delete VM"
-        warning="Owned disks (DataVolumes) may also be removed."
+        warning={
+          retainDisks
+            ? "The VirtualMachine will be removed; root DataVolumes stay in the namespace for reuse."
+            : "Root DataVolumes referenced by this VM will also be deleted."
+        }
         loading={busy}
-        onClose={() => setDeleteOpen(false)}
+        onClose={closeDelete}
+        extra={
+          <Radio.Group
+            label="Disks"
+            value={retainDisks ? "retain" : "destroy"}
+            onChange={(v) => setRetainDisks(v === "retain")}
+          >
+            <Stack gap="xs" mt={6}>
+              <Radio
+                value="destroy"
+                label="Delete VM and disks"
+                description="Root DataVolumes will be deleted after the VM."
+              />
+              <Radio
+                value="retain"
+                label="Delete VM, keep disks"
+                description="Root DataVolumes remain for reuse on launch."
+              />
+            </Stack>
+          </Radio.Group>
+        }
         onConfirm={() => {
-          setDeleteOpen(false);
-          submitIntent("delete");
+          closeDelete();
+          submitIntent("delete", { retainDisks });
         }}
       />
 

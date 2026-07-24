@@ -1,4 +1,6 @@
 import type { CreateVmRequest } from "~/lib/types";
+import { createVmDiskSource } from "~/lib/types";
+import { KMC_ANN_DISK_SIZE } from "~/lib/k8s/constants";
 import {
   buildNetworkData,
   generateLocalMacAddress,
@@ -214,13 +216,17 @@ export function buildVirtualMachineManifest(
   allocations: AllocatedIp[] = [],
   opts?: BuildVmManifestOpts,
 ) {
+  const diskSource = createVmDiskSource(input);
   const start = input.start !== false;
-  const imageNs = input.image.namespace || "vm-images";
-  const diskName = input.name;
   const multusNames = multusNetworksFromRequest(input);
   const { interfaces, networks } = buildNetworkSpec(multusNames, allocations, {
     includePodNetwork: opts?.includePodNetwork === true,
   });
+
+  const rootDiskName =
+    diskSource === "existingDataVolume"
+      ? requireExistingDvName(input)
+      : input.name;
 
   const disks: unknown[] = [
     {
@@ -258,7 +264,7 @@ export function buildVirtualMachineManifest(
   const volumes: unknown[] = [
     {
       name: "root",
-      dataVolume: { name: diskName },
+      dataVolume: { name: rootDiskName },
     },
     {
       name: "cloudinit",
@@ -284,26 +290,6 @@ export function buildVirtualMachineManifest(
     };
   }
 
-  // CDI `storage` (not legacy `pvc`) — fills volumeMode/accessModes from StorageProfile when omitted.
-  const dataVolumeSpec: Record<string, unknown> = {
-    source: {
-      pvc: {
-        namespace: imageNs,
-        name: input.image.name,
-      },
-    },
-    storage: {
-      accessModes: ["ReadWriteOnce"],
-      volumeMode: "Block",
-      resources: {
-        requests: {
-          storage: input.diskSize,
-        },
-      },
-      ...(input.storageClass ? { storageClassName: input.storageClass } : {}),
-    },
-  };
-
   const extraLabels = opts?.labels ?? {};
   const vmLabels: Record<string, string> = {
     "kubevirt.io/vm": input.name,
@@ -311,20 +297,20 @@ export function buildVirtualMachineManifest(
     ...extraLabels,
   };
 
+  // Root disk is always a pre-created DataVolume (see createVm / ensureRootDataVolumeFromImage).
+  // Do not use dataVolumeTemplates — those tie DV lifecycle to the VM and cascade-delete on remove.
+  if (diskSource === "image") {
+    const image = input.image;
+    const diskSize = input.diskSize?.trim();
+    if (!image?.name?.trim() || !diskSize) {
+      throw new Error(
+        "buildVirtualMachineManifest: image mode requires image.name and diskSize",
+      );
+    }
+  }
+
   const spec: Record<string, unknown> = {
     runStrategy: start ? "Always" : "Halted",
-    dataVolumeTemplates: [
-      {
-        metadata: {
-          name: diskName,
-          labels: {
-            "kubevirt.io/vm": input.name,
-            "app.kubernetes.io/managed-by": "kmc",
-          },
-        },
-        spec: dataVolumeSpec,
-      },
-    ],
     template: {
       metadata: {
         labels: { ...vmLabels },
@@ -356,6 +342,10 @@ export function buildVirtualMachineManifest(
     ...(allocations.length > 0 ? ipamAnnotations(allocations) : {}),
     ...(opts?.annotations ?? {}),
   };
+  // Standalone root DV has no dataVolumeTemplates — stamp size for list/detail UI.
+  if (diskSource === "image" && input.diskSize?.trim()) {
+    annotations[KMC_ANN_DISK_SIZE] = input.diskSize.trim();
+  }
 
   return {
     apiVersion: "kubevirt.io/v1",
@@ -368,6 +358,16 @@ export function buildVirtualMachineManifest(
     },
     spec,
   };
+}
+
+function requireExistingDvName(input: CreateVmRequest): string {
+  const n = input.existingDataVolumeName?.trim();
+  if (!n) {
+    throw new Error(
+      "buildVirtualMachineManifest: existingDataVolume mode requires existingDataVolumeName",
+    );
+  }
+  return n;
 }
 
 /** Indent a script body for cloud-init `content: |` under write_files (6 spaces). */

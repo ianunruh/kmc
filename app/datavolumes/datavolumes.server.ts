@@ -5,6 +5,10 @@ import type {
   DataVolumeDetail,
   DataVolumeSummary,
 } from "~/lib/types";
+import {
+  KMC_LABEL_RETAINED_FROM_VM,
+  REUSABLE_DV_PHASES,
+} from "~/lib/k8s/constants";
 import { getClusterClients, getConfiguredContexts } from "~/lib/k8s/clients.server";
 import { listClusters } from "~/vms/vms.server";
 
@@ -84,6 +88,8 @@ function mapSummary(cluster: ClusterId, dv: KubeDataVolume): DataVolumeSummary {
     dv.spec?.storage?.storageClassName ?? dv.spec?.pvc?.storageClassName;
   const running = dv.status?.conditions?.find((c) => c.type === "Running");
   const owner = dv.metadata?.ownerReferences?.[0];
+  const retainedFromVm =
+    dv.metadata?.labels?.[KMC_LABEL_RETAINED_FROM_VM]?.trim() || undefined;
 
   return {
     cluster,
@@ -99,6 +105,7 @@ function mapSummary(cluster: ClusterId, dv: KubeDataVolume): DataVolumeSummary {
     message: running?.message ?? running?.reason,
     ownerKind: owner?.kind,
     ownerName: owner?.name,
+    retainedFromVm,
   };
 }
 
@@ -172,6 +179,61 @@ export async function listDataVolumes(clusterFilter?: ClusterId): Promise<{
   return { items, clusters };
 }
 
+/**
+ * Find VirtualMachines in the namespace that attach this DataVolume (or its PVC).
+ */
+async function findAttachedVmNames(
+  cluster: ClusterId,
+  namespace: string,
+  dataVolumeName: string,
+  claimName?: string,
+): Promise<string[]> {
+  const { custom } = getClusterClients(cluster);
+  try {
+    const res = (await custom.listNamespacedCustomObject({
+      group: "kubevirt.io",
+      version: "v1",
+      namespace,
+      plural: "virtualmachines",
+    })) as {
+      items?: Array<{
+        metadata?: { name?: string };
+        spec?: {
+          template?: {
+            spec?: {
+              volumes?: Array<{
+                dataVolume?: { name?: string };
+                persistentVolumeClaim?: { claimName?: string };
+              }>;
+            };
+          };
+        };
+      }>;
+    };
+    const names: string[] = [];
+    const claim = claimName?.trim() || dataVolumeName;
+    for (const vm of res.items ?? []) {
+      const vmName = vm.metadata?.name;
+      if (!vmName) continue;
+      for (const vol of vm.spec?.template?.spec?.volumes ?? []) {
+        if (vol.dataVolume?.name === dataVolumeName) {
+          names.push(vmName);
+          break;
+        }
+        const pvc = vol.persistentVolumeClaim?.claimName;
+        if (pvc && (pvc === claim || pvc === dataVolumeName)) {
+          names.push(vmName);
+          break;
+        }
+      }
+    }
+    names.sort((a, b) => a.localeCompare(b));
+    return names;
+  } catch {
+    return [];
+  }
+}
+
 export async function getDataVolume(
   cluster: ClusterId,
   namespace: string,
@@ -186,7 +248,17 @@ export async function getDataVolume(
       plural: "datavolumes",
       name,
     })) as KubeDataVolume;
-    return mapDetail(cluster, dv);
+    const detail = mapDetail(cluster, dv);
+    const attachedVms = await findAttachedVmNames(
+      cluster,
+      namespace,
+      name,
+      detail.claimName,
+    );
+    return {
+      ...detail,
+      attachedVms: attachedVms.length > 0 ? attachedVms : undefined,
+    };
   } catch (err) {
     const message = formatError(err);
     if (message.includes("404") || message.toLowerCase().includes("not found")) {
@@ -234,6 +306,7 @@ export async function createDataVolume(
       namespace: input.namespace,
       labels: {
         "app.kubernetes.io/managed-by": "kmc",
+        ...(input.labels ?? {}),
       },
     },
     spec: {
@@ -284,4 +357,61 @@ export async function deleteDataVolume(
   } catch (err) {
     throw new Error(formatError(err), { cause: err });
   }
+}
+
+/** Namespaced DataVolume list (prefer over cluster-wide list for pickers). */
+export async function listDataVolumesInNamespace(
+  cluster: ClusterId,
+  namespace: string,
+): Promise<DataVolumeSummary[]> {
+  if (!cluster?.trim()) throw new Error("cluster is required");
+  if (!namespace?.trim()) throw new Error("namespace is required");
+  const { custom } = getClusterClients(cluster);
+  try {
+    const res = (await custom.listNamespacedCustomObject({
+      group: "cdi.kubevirt.io",
+      version: "v1beta1",
+      namespace,
+      plural: "datavolumes",
+    })) as { items?: KubeDataVolume[] };
+    const items = (res.items ?? []).map((dv) => mapSummary(cluster, dv));
+    items.sort((a, b) => a.name.localeCompare(b.name));
+    return items;
+  } catch (err) {
+    throw new Error(formatError(err), { cause: err });
+  }
+}
+
+export type ReusableDataVolumeOption = {
+  name: string;
+  phase: string;
+  size?: string;
+  retainedFromVm?: string;
+};
+
+/**
+ * DataVolumes in a namespace suitable for create-from-existing (phase Succeeded).
+ * In-use checks still run server-side on submit.
+ */
+export async function listReusableDataVolumes(
+  cluster: ClusterId,
+  namespace: string,
+): Promise<ReusableDataVolumeOption[]> {
+  const items = await listDataVolumesInNamespace(cluster, namespace);
+  const reusable = items
+    .filter((dv) => (REUSABLE_DV_PHASES as readonly string[]).includes(dv.phase))
+    .map((dv) => ({
+      name: dv.name,
+      phase: dv.phase,
+      size: dv.size,
+      retainedFromVm: dv.retainedFromVm,
+    }));
+  // Retained disks first, then name.
+  reusable.sort((a, b) => {
+    const ar = a.retainedFromVm ? 0 : 1;
+    const br = b.retainedFromVm ? 0 : 1;
+    if (ar !== br) return ar - br;
+    return a.name.localeCompare(b.name);
+  });
+  return reusable;
 }
