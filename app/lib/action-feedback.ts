@@ -48,7 +48,7 @@ export function notifyBulkResult(
   const firstFailure = results?.find((r) => r.status === "failed" && r.error);
   const detail =
     firstFailure?.error != null
-      ? `${message}. First error (${firstFailure.name}): ${firstFailure.error}`
+      ? `${message}. First error (${firstFailure.key}): ${firstFailure.error}`
       : message;
 
   if (summary.failed > 0 && summary.succeeded === 0) {

@@ -340,16 +340,25 @@ export type VmLifecycleIntent =
 /** Bulk lifecycle intents on the VM list (home action). */
 export type VmBulkLifecycleIntent = "bulk-start" | "bulk-stop" | "bulk-delete";
 
-/** One target in a bulk action (cluster-scoped namespaced resource). */
+/** One target in a bulk action (namespaced cluster resource). */
 export interface BulkResourceTarget {
   cluster: string;
   namespace: string;
   name: string;
 }
 
+/** Cluster-scoped resource (namespace list, instance types). */
+export interface BulkClusterTarget {
+  cluster: string;
+  name: string;
+}
+
 export type BulkItemStatus = "ok" | "skipped" | "failed";
 
-export interface BulkItemResult extends BulkResourceTarget {
+/** Per-item outcome from a bulk route action. */
+export interface BulkItemResult {
+  /** Display identity, e.g. cluster/namespace/name or key id. */
+  key: string;
   status: BulkItemStatus;
   error?: string;
   retainedDisks?: string[];

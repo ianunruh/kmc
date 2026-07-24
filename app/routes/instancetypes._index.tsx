@@ -3,6 +3,7 @@ import {
   Alert,
   Badge,
   Button,
+  Checkbox,
   Menu,
   Select,
   Stack,
@@ -21,6 +22,8 @@ import { useMemo, useState } from "react";
 import { Link, useFetcher } from "react-router";
 import type { Route } from "./+types/instancetypes._index";
 import {
+  BulkActionBar,
+  ConfirmBulkDeleteModal,
   ConfirmDeleteModal,
   ConsolePaper,
   FilterBar,
@@ -29,7 +32,18 @@ import {
   ResourceTable,
   Table,
 } from "~/ui";
-import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
+import {
+  notifyActionError,
+  notifyActionSuccess,
+  notifyBulkResult,
+} from "~/lib/action-feedback";
+import {
+  bulkTargetsJson,
+  clusterScopedKey,
+  isBulkActionResult,
+  parseClusterBulkTargets,
+  runBulkAction,
+} from "~/lib/bulk-action";
 import { actionFailure } from "~/lib/errors";
 import {
   formatAge,
@@ -45,7 +59,8 @@ import {
 } from "~/instancetypes/instancetypes.server";
 import { instanceTypeClassLabel } from "~/instancetypes/options";
 import { useRefresh } from "~/lib/refresh";
-import type { ClusterInstanceTypeSummary } from "~/lib/types";
+import type { BulkActionResult, ClusterInstanceTypeSummary } from "~/lib/types";
+import { clusterResourceKey, useRowSelection } from "~/lib/use-row-selection";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 
 export function meta(_args: Route.MetaArgs) {
@@ -59,6 +74,23 @@ export async function loader({ request }: Route.LoaderArgs) {
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
+
+  if (intent === "bulk-delete") {
+    const { targets, error } = parseClusterBulkTargets(form.get("targets"));
+    if (error || !targets) {
+      return {
+        ok: false,
+        error: error ?? "Missing targets",
+        intent,
+        summary: { total: 0, succeeded: 0, skipped: 0, failed: 0 },
+        results: [],
+      };
+    }
+    return runBulkAction(intent, targets, clusterScopedKey, async (t) => {
+      await deleteClusterInstanceType(t.cluster, t.name);
+    });
+  }
+
   const cluster = String(form.get("cluster") ?? "");
   const name = String(form.get("name") ?? "");
 
@@ -80,9 +112,13 @@ export async function action({ request }: Route.ActionArgs) {
   }
 }
 
+type ActionResult =
+  | { ok?: boolean; error?: string; intent?: string }
+  | BulkActionResult;
+
 export default function InstanceTypesPage({ loaderData }: Route.ComponentProps) {
   const { items, clusters } = loaderData;
-  const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
+  const fetcher = useFetcher<ActionResult>();
   const { refreshNow } = useRefresh();
   const { filters, qDraft, setQ, setFilter } = useListFilters();
   const [classFilter, setClassFilter] = useState<string | null>(null);
@@ -90,15 +126,7 @@ export default function InstanceTypesPage({ loaderData }: Route.ComponentProps) 
   const [deleteTarget, setDeleteTarget] = useState<ClusterInstanceTypeSummary | null>(
     null,
   );
-
-  useFetcherResult(fetcher, (data) => {
-    if (data.error) {
-      notifyActionError("Action failed", data.error, { intent: data.intent });
-    } else if (data.ok) {
-      notifyActionSuccess("Done", "Instance type deleted");
-      refreshNow();
-    }
-  });
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
   const classOptions = useMemo(() => {
     const set = new Set<string>();
@@ -129,6 +157,51 @@ export default function InstanceTypesPage({ loaderData }: Route.ComponentProps) 
       ]);
     });
   }, [items, filters.cluster, classFilter, sourceFilter, qDraft]);
+
+  // Only custom (non-builtin) types are bulk-deletable.
+  const deletableFiltered = useMemo(
+    () => filtered.filter((it) => !it.builtin),
+    [filtered],
+  );
+  const visibleKeys = useMemo(
+    () => deletableFiltered.map(clusterResourceKey),
+    [deletableFiltered],
+  );
+  const {
+    selected,
+    selectedCount,
+    allSelected,
+    someSelected,
+    isSelected,
+    toggle,
+    toggleAllVisible,
+    clear,
+  } = useRowSelection(visibleKeys);
+
+  const selectedItems = useMemo(
+    () => deletableFiltered.filter((it) => selected.has(clusterResourceKey(it))),
+    [deletableFiltered, selected],
+  );
+
+  useFetcherResult(fetcher, (data) => {
+    if (isBulkActionResult(data)) {
+      if (data.error && data.results.length === 0) {
+        notifyActionError("Bulk action failed", data.error, { intent: data.intent });
+        return;
+      }
+      notifyBulkResult("deleted", data.summary, data.results);
+      clear();
+      setBulkDeleteOpen(false);
+      refreshNow();
+      return;
+    }
+    if (data.error) {
+      notifyActionError("Action failed", data.error, { intent: data.intent });
+    } else if (data.ok) {
+      notifyActionSuccess("Done", "Instance type deleted");
+      refreshNow();
+    }
+  });
 
   const busy = fetcher.state !== "idle";
   const unreachable = clusters.filter((c) => !c.reachable);
@@ -197,110 +270,161 @@ export default function InstanceTypesPage({ loaderData }: Route.ComponentProps) 
           />
         </FilterBar>
 
-        <ResourceTable
-          isEmpty={filtered.length === 0}
-          emptyMessage="No cluster instance types found (homelab may have none)."
-          headers={["Name", "Class", "Size", "CPU", "Memory", "Source", "Cluster", "Age", ""]}
-        >
-          {filtered.map((it) => {
-            const key = `${it.cluster}/${it.name}`;
-            return (
-              <Table.Tr key={key}>
-                <Table.Td>
-                  <ResourceLink to={instanceTypePath(it)}>{it.name}</ResourceLink>
-                  {it.vendor && (
-                    <Text size="xs" c="dimmed">
-                      {it.vendor}
-                    </Text>
-                  )}
-                </Table.Td>
-                <Table.Td>
-                  <Text size="sm">
-                    {it.class ? instanceTypeClassLabel(it.class) : "—"}
-                  </Text>
-                  {it.class && (
-                    <Text size="xs" c="dimmed">
-                      {it.class}
-                    </Text>
-                  )}
-                </Table.Td>
-                <Table.Td>
-                  <Text size="sm">{it.size || "—"}</Text>
-                </Table.Td>
-                <Table.Td>
-                  <Text size="sm">{it.cpu ? `${it.cpu}c` : "—"}</Text>
-                </Table.Td>
-                <Table.Td>
-                  <Text size="sm">{it.memory || "—"}</Text>
-                </Table.Td>
-                <Table.Td>
-                  {it.builtin ? (
-                    <Badge variant="light" color="blue" size="sm">
-                      Built-in
-                    </Badge>
-                  ) : (
-                    <Badge variant="light" color="gray" size="sm">
-                      Custom
-                    </Badge>
-                  )}
-                </Table.Td>
-                <Table.Td>
-                  <ResourceLink
-                    to={instanceTypesListPath({ cluster: it.cluster })}
-                    dimmed
-                  >
-                    {it.cluster}
-                  </ResourceLink>
-                </Table.Td>
-                <Table.Td>
-                  <Tooltip label={it.age || "unknown"}>
-                    <Text size="sm" c="dimmed">
-                      {formatAge(it.age)}
-                    </Text>
-                  </Tooltip>
-                </Table.Td>
-                <Table.Td>
-                  {it.builtin ? (
-                    <Tooltip label="Built-in types are managed by the KubeVirt operator and cannot be edited">
+        <Stack gap="sm">
+          <BulkActionBar
+            selectedCount={selectedCount}
+            onClear={clear}
+            disabled={busy}
+          >
+            <Button
+              size="xs"
+              variant="light"
+              color="red"
+              leftSection={<IconTrash size={14} />}
+              disabled={busy}
+              onClick={() => setBulkDeleteOpen(true)}
+            >
+              Delete
+            </Button>
+          </BulkActionBar>
+
+          <ResourceTable
+            isEmpty={filtered.length === 0}
+            emptyMessage="No cluster instance types found (homelab may have none)."
+            headers={[
+              <Checkbox
+                key="select-all"
+                aria-label="Select all visible custom types"
+                checked={allSelected}
+                indeterminate={someSelected}
+                disabled={busy || deletableFiltered.length === 0}
+                onChange={() => toggleAllVisible()}
+              />,
+              "Name",
+              "Class",
+              "Size",
+              "CPU",
+              "Memory",
+              "Source",
+              "Cluster",
+              "Age",
+              "",
+            ]}
+          >
+            {filtered.map((it) => {
+              const key = clusterResourceKey(it);
+              const selectable = !it.builtin;
+              return (
+                <Table.Tr
+                  key={key}
+                  bg={selectable && isSelected(key) ? "dark.7" : undefined}
+                >
+                  <Table.Td w={40}>
+                    {selectable ? (
+                      <Checkbox
+                        aria-label={`Select ${it.name}`}
+                        checked={isSelected(key)}
+                        disabled={busy}
+                        onChange={() => toggle(key)}
+                      />
+                    ) : null}
+                  </Table.Td>
+                  <Table.Td>
+                    <ResourceLink to={instanceTypePath(it)}>{it.name}</ResourceLink>
+                    {it.vendor && (
                       <Text size="xs" c="dimmed">
-                        —
+                        {it.vendor}
+                      </Text>
+                    )}
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="sm">
+                      {it.class ? instanceTypeClassLabel(it.class) : "—"}
+                    </Text>
+                    {it.class && (
+                      <Text size="xs" c="dimmed">
+                        {it.class}
+                      </Text>
+                    )}
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="sm">{it.size || "—"}</Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="sm">{it.cpu ? `${it.cpu}c` : "—"}</Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="sm">{it.memory || "—"}</Text>
+                  </Table.Td>
+                  <Table.Td>
+                    {it.builtin ? (
+                      <Badge variant="light" color="blue" size="sm">
+                        Built-in
+                      </Badge>
+                    ) : (
+                      <Badge variant="light" color="gray" size="sm">
+                        Custom
+                      </Badge>
+                    )}
+                  </Table.Td>
+                  <Table.Td>
+                    <ResourceLink
+                      to={instanceTypesListPath({ cluster: it.cluster })}
+                      dimmed
+                    >
+                      {it.cluster}
+                    </ResourceLink>
+                  </Table.Td>
+                  <Table.Td>
+                    <Tooltip label={it.age || "unknown"}>
+                      <Text size="sm" c="dimmed">
+                        {formatAge(it.age)}
                       </Text>
                     </Tooltip>
-                  ) : (
-                    <Menu shadow="md" width={150} position="bottom-end">
-                      <Menu.Target>
-                        <ActionIcon
-                          variant="subtle"
-                          color="gray"
-                          aria-label={`Actions for ${it.name}`}
-                        >
-                          <IconDotsVertical size={16} />
-                        </ActionIcon>
-                      </Menu.Target>
-                      <Menu.Dropdown>
-                        <Menu.Item
-                          leftSection={<IconPencil size={14} />}
-                          component={Link}
-                          to={instanceTypeEditPath(it)}
-                        >
-                          Edit
-                        </Menu.Item>
-                        <Menu.Item
-                          color="red"
-                          leftSection={<IconTrash size={14} />}
-                          disabled={busy}
-                          onClick={() => setDeleteTarget(it)}
-                        >
-                          Delete
-                        </Menu.Item>
-                      </Menu.Dropdown>
-                    </Menu>
-                  )}
-                </Table.Td>
-              </Table.Tr>
-            );
-          })}
-        </ResourceTable>
+                  </Table.Td>
+                  <Table.Td>
+                    {it.builtin ? (
+                      <Tooltip label="Built-in types are managed by the KubeVirt operator and cannot be edited">
+                        <Text size="xs" c="dimmed">
+                          —
+                        </Text>
+                      </Tooltip>
+                    ) : (
+                      <Menu shadow="md" width={150} position="bottom-end">
+                        <Menu.Target>
+                          <ActionIcon
+                            variant="subtle"
+                            color="gray"
+                            aria-label={`Actions for ${it.name}`}
+                          >
+                            <IconDotsVertical size={16} />
+                          </ActionIcon>
+                        </Menu.Target>
+                        <Menu.Dropdown>
+                          <Menu.Item
+                            leftSection={<IconPencil size={14} />}
+                            component={Link}
+                            to={instanceTypeEditPath(it)}
+                          >
+                            Edit
+                          </Menu.Item>
+                          <Menu.Item
+                            color="red"
+                            leftSection={<IconTrash size={14} />}
+                            disabled={busy}
+                            onClick={() => setDeleteTarget(it)}
+                          >
+                            Delete
+                          </Menu.Item>
+                        </Menu.Dropdown>
+                      </Menu>
+                    )}
+                  </Table.Td>
+                </Table.Tr>
+              );
+            })}
+          </ResourceTable>
+        </Stack>
       </ConsolePaper>
 
       <ConfirmDeleteModal
@@ -323,6 +447,31 @@ export default function InstanceTypesPage({ loaderData }: Route.ComponentProps) 
             { method: "post" },
           );
           setDeleteTarget(null);
+        }}
+      />
+
+      <ConfirmBulkDeleteModal
+        opened={bulkDeleteOpen}
+        count={selectedItems.length}
+        identities={selectedItems.map(clusterResourceKey)}
+        title={`Delete ${selectedItems.length} instance type${selectedItems.length === 1 ? "" : "s"}`}
+        confirmLabel={`Delete ${selectedItems.length}`}
+        warning="VMs already bound to these types keep their revision; new VMs cannot use them."
+        loading={busy}
+        onClose={() => setBulkDeleteOpen(false)}
+        onConfirm={() => {
+          fetcher.submit(
+            {
+              intent: "bulk-delete",
+              targets: bulkTargetsJson(
+                selectedItems.map((it) => ({
+                  cluster: it.cluster,
+                  name: it.name,
+                })),
+              ),
+            },
+            { method: "post" },
+          );
         }}
       />
     </Stack>

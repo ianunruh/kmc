@@ -82,3 +82,11 @@ export function resourceKey(r: {
 }): string {
   return `${r.cluster}/${r.namespace}/${r.name}`;
 }
+
+/** Stable identity for cluster-scoped resources (no namespace). */
+export function clusterResourceKey(r: {
+  cluster: string;
+  name: string;
+}): string {
+  return `${r.cluster}/${r.name}`;
+}

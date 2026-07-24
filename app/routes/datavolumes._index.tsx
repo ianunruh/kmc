@@ -3,6 +3,7 @@ import {
   Alert,
   Badge,
   Button,
+  Checkbox,
   Group,
   Menu,
   Select,
@@ -23,7 +24,9 @@ import { Link, useFetcher } from "react-router";
 import type { Route } from "./+types/datavolumes._index";
 import { StatusBadge } from "~/ui/status-badge";
 import {
+  BulkActionBar,
   ClampedText,
+  ConfirmBulkDeleteModal,
   ConfirmDeleteModal,
   ConsolePaper,
   FilterBar,
@@ -32,14 +35,26 @@ import {
   ResourceTable,
   Table,
 } from "~/ui";
-import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
+import {
+  notifyActionError,
+  notifyActionSuccess,
+  notifyBulkResult,
+} from "~/lib/action-feedback";
+import {
+  bulkTargetsJson,
+  isBulkActionResult,
+  namespacedKey,
+  parseNamespacedBulkTargets,
+  runBulkAction,
+} from "~/lib/bulk-action";
 import { actionFailure } from "~/lib/errors";
 import { dataVolumePath, dataVolumesListPath, formatAge, vmPath } from "~/lib/format";
 import { clusterFromRequest } from "~/lib/search-params";
 import { matchesQuery, useListFilters } from "~/lib/use-list-filters";
 import { deleteDataVolume, listDataVolumes } from "~/datavolumes/datavolumes.server";
 import { useRefresh } from "~/lib/refresh";
-import type { DataVolumeSummary } from "~/lib/types";
+import type { BulkActionResult, DataVolumeSummary } from "~/lib/types";
+import { resourceKey, useRowSelection } from "~/lib/use-row-selection";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 
 export function meta(_args: Route.MetaArgs) {
@@ -53,6 +68,23 @@ export async function loader({ request }: Route.LoaderArgs) {
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
+
+  if (intent === "bulk-delete") {
+    const { targets, error } = parseNamespacedBulkTargets(form.get("targets"));
+    if (error || !targets) {
+      return {
+        ok: false,
+        error: error ?? "Missing targets",
+        intent,
+        summary: { total: 0, succeeded: 0, skipped: 0, failed: 0 },
+        results: [],
+      };
+    }
+    return runBulkAction(intent, targets, namespacedKey, async (t) => {
+      await deleteDataVolume(t.cluster, t.namespace, t.name);
+    });
+  }
+
   const cluster = String(form.get("cluster") ?? "");
   const namespace = String(form.get("namespace") ?? "");
   const name = String(form.get("name") ?? "");
@@ -76,33 +108,18 @@ export async function action({ request }: Route.ActionArgs) {
   }
 }
 
+type ActionResult =
+  | { ok?: boolean; error?: string; intent?: string }
+  | BulkActionResult;
+
 export default function DataVolumesPage({ loaderData }: Route.ComponentProps) {
   const { items, clusters } = loaderData;
-  const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
+  const fetcher = useFetcher<ActionResult>();
   const { refreshNow } = useRefresh();
   const { filters, qDraft, setQ, setFilter } = useListFilters();
   const [deleteTarget, setDeleteTarget] = useState<DataVolumeSummary | null>(null);
-  /** Local filter: all | retained | owned */
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [ownership, setOwnership] = useState<string | null>(null);
-
-  useFetcherResult(fetcher, (data) => {
-    if (data.error) {
-      notifyActionError("Action failed", data.error, { intent: data.intent });
-    } else if (data.ok) {
-      notifyActionSuccess("Done", "DataVolume deleted");
-      refreshNow();
-    }
-  });
-
-  const namespaces = useMemo(() => {
-    const set = new Set(items.map((dv) => dv.namespace));
-    return Array.from(set).sort();
-  }, [items]);
-
-  const phases = useMemo(() => {
-    const set = new Set(items.map((dv) => dv.phase));
-    return Array.from(set).sort();
-  }, [items]);
 
   const filtered = useMemo(() => {
     return items.filter((dv) => {
@@ -131,6 +148,53 @@ export default function DataVolumesPage({ loaderData }: Route.ComponentProps) {
     ownership,
     qDraft,
   ]);
+
+  const visibleKeys = useMemo(() => filtered.map(resourceKey), [filtered]);
+  const {
+    selected,
+    selectedCount,
+    allSelected,
+    someSelected,
+    isSelected,
+    toggle,
+    toggleAllVisible,
+    clear,
+  } = useRowSelection(visibleKeys);
+
+  const selectedItems = useMemo(
+    () => filtered.filter((dv) => selected.has(resourceKey(dv))),
+    [filtered, selected],
+  );
+
+  useFetcherResult(fetcher, (data) => {
+    if (isBulkActionResult(data)) {
+      if (data.error && data.results.length === 0) {
+        notifyActionError("Bulk action failed", data.error, { intent: data.intent });
+        return;
+      }
+      notifyBulkResult("deleted", data.summary, data.results);
+      clear();
+      setBulkDeleteOpen(false);
+      refreshNow();
+      return;
+    }
+    if (data.error) {
+      notifyActionError("Action failed", data.error, { intent: data.intent });
+    } else if (data.ok) {
+      notifyActionSuccess("Done", "DataVolume deleted");
+      refreshNow();
+    }
+  });
+
+  const namespaces = useMemo(() => {
+    const set = new Set(items.map((dv) => dv.namespace));
+    return Array.from(set).sort();
+  }, [items]);
+
+  const phases = useMemo(() => {
+    const set = new Set(items.map((dv) => dv.phase));
+    return Array.from(set).sort();
+  }, [items]);
 
   const busy = fetcher.state !== "idle";
   const unreachable = clusters.filter((c) => !c.reachable);
@@ -205,140 +269,187 @@ export default function DataVolumesPage({ loaderData }: Route.ComponentProps) {
           />
         </FilterBar>
 
-        <ResourceTable
-          isEmpty={filtered.length === 0}
-          emptyMessage="No data volumes found across configured clusters."
-          headers={["Name", "Cluster", "Namespace", "Phase", "Size", "Source", "Age", ""]}
-        >
-          {filtered.map((dv) => {
-            const key = `${dv.cluster}/${dv.namespace}/${dv.name}`;
-            return (
-              <Table.Tr key={key}>
-                <Table.Td>
-                  <Group gap={6} wrap="nowrap">
-                    <ResourceLink to={dataVolumePath(dv)}>{dv.name}</ResourceLink>
-                    {dv.retainedFromVm ? (
-                      <Badge size="xs" variant="light" color="grape">
-                        retained
-                      </Badge>
-                    ) : null}
-                  </Group>
-                  {dv.retainedFromVm && (
-                    <Text size="xs" c="dimmed">
-                      retained from VM {dv.retainedFromVm}
-                    </Text>
-                  )}
-                  {dv.ownerName && (
-                    <Text size="xs" c="dimmed">
-                      owned by{" "}
-                      {dv.ownerKind === "VirtualMachine" ? (
-                        <ResourceLink
-                          to={vmPath({
-                            cluster: dv.cluster,
-                            namespace: dv.namespace,
-                            name: dv.ownerName,
-                          })}
-                          dimmed
-                        >
-                          {dv.ownerKind}/{dv.ownerName}
-                        </ResourceLink>
-                      ) : (
-                        `${dv.ownerKind}/${dv.ownerName}`
-                      )}
-                    </Text>
-                  )}
-                </Table.Td>
-                <Table.Td>
-                  <ResourceLink to={dataVolumesListPath({ cluster: dv.cluster })} dimmed>
-                    {dv.cluster}
-                  </ResourceLink>
-                </Table.Td>
-                <Table.Td>
-                  <ResourceLink
-                    to={dataVolumesListPath({
-                      cluster: dv.cluster,
-                      namespace: dv.namespace,
-                    })}
-                    dimmed
-                  >
-                    {dv.namespace}
-                  </ResourceLink>
-                </Table.Td>
-                <Table.Td>
-                  <ResourceLink
-                    to={dataVolumesListPath({
-                      cluster: dv.cluster,
-                      phase: dv.phase,
-                    })}
-                    underline="never"
-                  >
-                    <StatusBadge status={dv.phase} />
-                  </ResourceLink>
-                </Table.Td>
-                <Table.Td>
-                  <Text size="sm">{dv.size ?? "—"}</Text>
-                </Table.Td>
-                <Table.Td>
-                  <ClampedText
-                    size="sm"
-                    lineClamp={2}
-                    tooltip={
-                      dv.sourceDetail
-                        ? `${dv.sourceKind} ${dv.sourceDetail}`
-                        : dv.sourceKind
-                    }
-                  >
-                    {dv.sourceKind}
-                    {dv.sourceDetail ? (
-                      <Text span size="xs" c="dimmed" ml={6}>
-                        {dv.sourceDetail}
-                      </Text>
-                    ) : null}
-                  </ClampedText>
-                </Table.Td>
-                <Table.Td>
-                  <Tooltip label={dv.age || "unknown"}>
-                    <Text size="sm" c="dimmed">
-                      {formatAge(dv.age)}
-                    </Text>
-                  </Tooltip>
-                </Table.Td>
-                <Table.Td>
-                  <Menu shadow="md" width={200} position="bottom-end">
-                    <Menu.Target>
-                      <ActionIcon
-                        variant="subtle"
-                        color="gray"
-                        aria-label={`Actions for ${dv.name}`}
-                      >
-                        <IconDotsVertical size={16} />
-                      </ActionIcon>
-                    </Menu.Target>
-                    <Menu.Dropdown>
-                      {!dv.ownerName && dv.phase === "Succeeded" ? (
-                        <Menu.Item
-                          leftSection={<IconRocket size={14} />}
-                          component={Link}
-                          to={`/vms/create?cluster=${encodeURIComponent(dv.cluster)}&namespace=${encodeURIComponent(dv.namespace)}&diskSource=existingDataVolume&existingDataVolume=${encodeURIComponent(dv.name)}`}
-                        >
-                          Launch VM with this disk
-                        </Menu.Item>
+        <Stack gap="sm">
+          <BulkActionBar
+            selectedCount={selectedCount}
+            onClear={clear}
+            disabled={busy}
+          >
+            <Button
+              size="xs"
+              variant="light"
+              color="red"
+              leftSection={<IconTrash size={14} />}
+              disabled={busy}
+              onClick={() => setBulkDeleteOpen(true)}
+            >
+              Delete
+            </Button>
+          </BulkActionBar>
+
+          <ResourceTable
+            isEmpty={filtered.length === 0}
+            emptyMessage="No data volumes found across configured clusters."
+            headers={[
+              <Checkbox
+                key="select-all"
+                aria-label="Select all visible"
+                checked={allSelected}
+                indeterminate={someSelected}
+                disabled={busy || filtered.length === 0}
+                onChange={() => toggleAllVisible()}
+              />,
+              "Name",
+              "Cluster",
+              "Namespace",
+              "Phase",
+              "Size",
+              "Source",
+              "Age",
+              "",
+            ]}
+          >
+            {filtered.map((dv) => {
+              const key = resourceKey(dv);
+              return (
+                <Table.Tr key={key} bg={isSelected(key) ? "dark.7" : undefined}>
+                  <Table.Td w={40}>
+                    <Checkbox
+                      aria-label={`Select ${dv.name}`}
+                      checked={isSelected(key)}
+                      disabled={busy}
+                      onChange={() => toggle(key)}
+                    />
+                  </Table.Td>
+                  <Table.Td>
+                    <Group gap={6} wrap="nowrap">
+                      <ResourceLink to={dataVolumePath(dv)}>{dv.name}</ResourceLink>
+                      {dv.retainedFromVm ? (
+                        <Badge size="xs" variant="light" color="grape">
+                          retained
+                        </Badge>
                       ) : null}
-                      <Menu.Item
-                        color="red"
-                        leftSection={<IconTrash size={14} />}
-                        disabled={busy}
-                        onClick={() => setDeleteTarget(dv)}
-                      >
-                        Delete
-                      </Menu.Item>
-                    </Menu.Dropdown>
-                  </Menu>
-                </Table.Td>
-              </Table.Tr>
-            );
-          })}
-        </ResourceTable>
+                    </Group>
+                    {dv.retainedFromVm && (
+                      <Text size="xs" c="dimmed">
+                        retained from VM {dv.retainedFromVm}
+                      </Text>
+                    )}
+                    {dv.ownerName && (
+                      <Text size="xs" c="dimmed">
+                        owned by{" "}
+                        {dv.ownerKind === "VirtualMachine" ? (
+                          <ResourceLink
+                            to={vmPath({
+                              cluster: dv.cluster,
+                              namespace: dv.namespace,
+                              name: dv.ownerName,
+                            })}
+                            dimmed
+                          >
+                            {dv.ownerKind}/{dv.ownerName}
+                          </ResourceLink>
+                        ) : (
+                          `${dv.ownerKind}/${dv.ownerName}`
+                        )}
+                      </Text>
+                    )}
+                  </Table.Td>
+                  <Table.Td>
+                    <ResourceLink
+                      to={dataVolumesListPath({ cluster: dv.cluster })}
+                      dimmed
+                    >
+                      {dv.cluster}
+                    </ResourceLink>
+                  </Table.Td>
+                  <Table.Td>
+                    <ResourceLink
+                      to={dataVolumesListPath({
+                        cluster: dv.cluster,
+                        namespace: dv.namespace,
+                      })}
+                      dimmed
+                    >
+                      {dv.namespace}
+                    </ResourceLink>
+                  </Table.Td>
+                  <Table.Td>
+                    <ResourceLink
+                      to={dataVolumesListPath({
+                        cluster: dv.cluster,
+                        phase: dv.phase,
+                      })}
+                      underline="never"
+                    >
+                      <StatusBadge status={dv.phase} />
+                    </ResourceLink>
+                  </Table.Td>
+                  <Table.Td>
+                    <Text size="sm">{dv.size ?? "—"}</Text>
+                  </Table.Td>
+                  <Table.Td>
+                    <ClampedText
+                      size="sm"
+                      lineClamp={2}
+                      tooltip={
+                        dv.sourceDetail
+                          ? `${dv.sourceKind} ${dv.sourceDetail}`
+                          : dv.sourceKind
+                      }
+                    >
+                      {dv.sourceKind}
+                      {dv.sourceDetail ? (
+                        <Text span size="xs" c="dimmed" ml={6}>
+                          {dv.sourceDetail}
+                        </Text>
+                      ) : null}
+                    </ClampedText>
+                  </Table.Td>
+                  <Table.Td>
+                    <Tooltip label={dv.age || "unknown"}>
+                      <Text size="sm" c="dimmed">
+                        {formatAge(dv.age)}
+                      </Text>
+                    </Tooltip>
+                  </Table.Td>
+                  <Table.Td>
+                    <Menu shadow="md" width={200} position="bottom-end">
+                      <Menu.Target>
+                        <ActionIcon
+                          variant="subtle"
+                          color="gray"
+                          aria-label={`Actions for ${dv.name}`}
+                        >
+                          <IconDotsVertical size={16} />
+                        </ActionIcon>
+                      </Menu.Target>
+                      <Menu.Dropdown>
+                        {!dv.ownerName && dv.phase === "Succeeded" ? (
+                          <Menu.Item
+                            leftSection={<IconRocket size={14} />}
+                            component={Link}
+                            to={`/vms/create?cluster=${encodeURIComponent(dv.cluster)}&namespace=${encodeURIComponent(dv.namespace)}&diskSource=existingDataVolume&existingDataVolume=${encodeURIComponent(dv.name)}`}
+                          >
+                            Launch VM with this disk
+                          </Menu.Item>
+                        ) : null}
+                        <Menu.Item
+                          color="red"
+                          leftSection={<IconTrash size={14} />}
+                          disabled={busy}
+                          onClick={() => setDeleteTarget(dv)}
+                        >
+                          Delete
+                        </Menu.Item>
+                      </Menu.Dropdown>
+                    </Menu>
+                  </Table.Td>
+                </Table.Tr>
+              );
+            })}
+          </ResourceTable>
+        </Stack>
       </ConsolePaper>
 
       <ConfirmDeleteModal
@@ -366,6 +477,32 @@ export default function DataVolumesPage({ loaderData }: Route.ComponentProps) {
             { method: "post" },
           );
           setDeleteTarget(null);
+        }}
+      />
+
+      <ConfirmBulkDeleteModal
+        opened={bulkDeleteOpen}
+        count={selectedItems.length}
+        identities={selectedItems.map(resourceKey)}
+        title={`Delete ${selectedItems.length} data volume${selectedItems.length === 1 ? "" : "s"}`}
+        confirmLabel={`Delete ${selectedItems.length}`}
+        warning="Backing PVCs may also be removed."
+        loading={busy}
+        onClose={() => setBulkDeleteOpen(false)}
+        onConfirm={() => {
+          fetcher.submit(
+            {
+              intent: "bulk-delete",
+              targets: bulkTargetsJson(
+                selectedItems.map((dv) => ({
+                  cluster: dv.cluster,
+                  namespace: dv.namespace,
+                  name: dv.name,
+                })),
+              ),
+            },
+            { method: "post" },
+          );
         }}
       />
     </Stack>

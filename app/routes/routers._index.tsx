@@ -2,6 +2,7 @@ import {
   ActionIcon,
   Alert,
   Button,
+  Checkbox,
   Menu,
   Select,
   Stack,
@@ -18,6 +19,8 @@ import { useMemo, useState } from "react";
 import { Link, useFetcher } from "react-router";
 import type { Route } from "./+types/routers._index";
 import {
+  BulkActionBar,
+  ConfirmBulkDeleteModal,
   ConfirmDeleteModal,
   FilterBar,
   PageHeader,
@@ -26,13 +29,25 @@ import {
   StatusBadge,
   Table,
 } from "~/ui";
-import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
+import {
+  notifyActionError,
+  notifyActionSuccess,
+  notifyBulkResult,
+} from "~/lib/action-feedback";
+import {
+  bulkTargetsJson,
+  isBulkActionResult,
+  namespacedKey,
+  parseNamespacedBulkTargets,
+  runBulkAction,
+} from "~/lib/bulk-action";
 import { actionFailure } from "~/lib/errors";
 import { routerPath, routersListPath } from "~/lib/format";
 import { clusterFromRequest } from "~/lib/search-params";
 import { matchesQuery, useListFilters } from "~/lib/use-list-filters";
 import { useRefresh } from "~/lib/refresh";
-import type { RouterSummary } from "~/lib/types";
+import type { BulkActionResult, RouterSummary } from "~/lib/types";
+import { resourceKey, useRowSelection } from "~/lib/use-row-selection";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 import { deleteRouter, listRouters } from "~/vpcs/routers.server";
 
@@ -47,6 +62,23 @@ export async function loader({ request }: Route.LoaderArgs) {
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
+
+  if (intent === "bulk-delete") {
+    const { targets, error } = parseNamespacedBulkTargets(form.get("targets"));
+    if (error || !targets) {
+      return {
+        ok: false,
+        error: error ?? "Missing targets",
+        intent,
+        summary: { total: 0, succeeded: 0, skipped: 0, failed: 0 },
+        results: [],
+      };
+    }
+    return runBulkAction(intent, targets, namespacedKey, async (t) => {
+      await deleteRouter(t.cluster, t.namespace, t.name, { force: false });
+    });
+  }
+
   const cluster = String(form.get("cluster") ?? "");
   const namespace = String(form.get("namespace") ?? "");
   const name = String(form.get("name") ?? "");
@@ -71,21 +103,17 @@ export async function action({ request }: Route.ActionArgs) {
   }
 }
 
+type ActionResult =
+  | { ok?: boolean; error?: string; intent?: string }
+  | BulkActionResult;
+
 export default function RoutersPage({ loaderData }: Route.ComponentProps) {
   const { items, clusters } = loaderData;
-  const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
+  const fetcher = useFetcher<ActionResult>();
   const { refreshNow } = useRefresh();
   const { filters, qDraft, setQ, setFilter } = useListFilters();
   const [deleteTarget, setDeleteTarget] = useState<RouterSummary | null>(null);
-
-  useFetcherResult(fetcher, (data) => {
-    if (data.error) {
-      notifyActionError("Action failed", data.error, { intent: data.intent });
-    } else if (data.ok) {
-      notifyActionSuccess("Done", "Router deleted");
-      refreshNow();
-    }
-  });
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
   const namespaces = useMemo(() => {
     const set = new Set(items.map((r) => r.namespace));
@@ -104,6 +132,43 @@ export default function RoutersPage({ loaderData }: Route.ComponentProps) {
       ]);
     });
   }, [items, filters.cluster, filters.namespace, qDraft]);
+
+  const visibleKeys = useMemo(() => filtered.map(resourceKey), [filtered]);
+  const {
+    selected,
+    selectedCount,
+    allSelected,
+    someSelected,
+    isSelected,
+    toggle,
+    toggleAllVisible,
+    clear,
+  } = useRowSelection(visibleKeys);
+
+  const selectedItems = useMemo(
+    () => filtered.filter((r) => selected.has(resourceKey(r))),
+    [filtered, selected],
+  );
+
+  useFetcherResult(fetcher, (data) => {
+    if (isBulkActionResult(data)) {
+      if (data.error && data.results.length === 0) {
+        notifyActionError("Bulk action failed", data.error, { intent: data.intent });
+        return;
+      }
+      notifyBulkResult("deleted", data.summary, data.results);
+      clear();
+      setBulkDeleteOpen(false);
+      refreshNow();
+      return;
+    }
+    if (data.error) {
+      notifyActionError("Action failed", data.error, { intent: data.intent });
+    } else if (data.ok) {
+      notifyActionSuccess("Done", "Router deleted");
+      refreshNow();
+    }
+  });
 
   const busy = fetcher.state !== "idle";
   const unreachable = clusters.filter((c) => !c.reachable);
@@ -159,66 +224,112 @@ export default function RoutersPage({ loaderData }: Route.ComponentProps) {
         />
       </FilterBar>
 
-      <ResourceTable
-        isEmpty={filtered.length === 0}
-        emptyMessage="No routers. Create one and attach a VPC with private IPAM for DHCP/DNS."
-        headers={["Name", "Namespace", "Cluster", "VPCs", "Agent", "Age", ""]}
-      >
-        {filtered.map((r) => (
-          <Table.Tr key={`${r.cluster}/${r.namespace}/${r.name}`}>
-            <Table.Td>
-              <ResourceLink to={routerPath(r)}>{r.name}</ResourceLink>
-            </Table.Td>
-            <Table.Td>
-              <Text size="sm" c="dimmed">
-                {r.namespace}
-              </Text>
-            </Table.Td>
-            <Table.Td>
-              <ResourceLink to={routersListPath({ cluster: r.cluster })} dimmed>
-                {r.cluster}
-              </ResourceLink>
-            </Table.Td>
-            <Table.Td>
-              <Text size="sm" ff="monospace">
-                {r.vpcNames.length ? r.vpcNames.join(", ") : "—"}
-              </Text>
-            </Table.Td>
-            <Table.Td>
-              {r.agentStatus ? (
-                <StatusBadge status={r.agentStatus} />
-              ) : (
-                <Text size="sm" c="dimmed">
-                  —
-                </Text>
-              )}
-            </Table.Td>
-            <Table.Td>
-              <Text size="sm" c="dimmed">
-                {r.age}
-              </Text>
-            </Table.Td>
-            <Table.Td>
-              <Menu withinPortal position="bottom-end">
-                <Menu.Target>
-                  <ActionIcon variant="subtle" disabled={busy}>
-                    <IconDotsVertical size={16} />
-                  </ActionIcon>
-                </Menu.Target>
-                <Menu.Dropdown>
-                  <Menu.Item
-                    color="red"
-                    leftSection={<IconTrash size={14} />}
-                    onClick={() => setDeleteTarget(r)}
-                  >
-                    Delete
-                  </Menu.Item>
-                </Menu.Dropdown>
-              </Menu>
-            </Table.Td>
-          </Table.Tr>
-        ))}
-      </ResourceTable>
+      <Stack gap="sm">
+        <BulkActionBar
+          selectedCount={selectedCount}
+          onClear={clear}
+          disabled={busy}
+        >
+          <Button
+            size="xs"
+            variant="light"
+            color="red"
+            leftSection={<IconTrash size={14} />}
+            disabled={busy}
+            onClick={() => setBulkDeleteOpen(true)}
+          >
+            Delete
+          </Button>
+        </BulkActionBar>
+
+        <ResourceTable
+          isEmpty={filtered.length === 0}
+          emptyMessage="No routers. Create one and attach a VPC with private IPAM for DHCP/DNS."
+          headers={[
+            <Checkbox
+              key="select-all"
+              aria-label="Select all visible"
+              checked={allSelected}
+              indeterminate={someSelected}
+              disabled={busy || filtered.length === 0}
+              onChange={() => toggleAllVisible()}
+            />,
+            "Name",
+            "Namespace",
+            "Cluster",
+            "VPCs",
+            "Agent",
+            "Age",
+            "",
+          ]}
+        >
+          {filtered.map((r) => {
+            const key = resourceKey(r);
+            return (
+              <Table.Tr key={key} bg={isSelected(key) ? "dark.7" : undefined}>
+                <Table.Td w={40}>
+                  <Checkbox
+                    aria-label={`Select ${r.name}`}
+                    checked={isSelected(key)}
+                    disabled={busy}
+                    onChange={() => toggle(key)}
+                  />
+                </Table.Td>
+                <Table.Td>
+                  <ResourceLink to={routerPath(r)}>{r.name}</ResourceLink>
+                </Table.Td>
+                <Table.Td>
+                  <Text size="sm" c="dimmed">
+                    {r.namespace}
+                  </Text>
+                </Table.Td>
+                <Table.Td>
+                  <ResourceLink to={routersListPath({ cluster: r.cluster })} dimmed>
+                    {r.cluster}
+                  </ResourceLink>
+                </Table.Td>
+                <Table.Td>
+                  <Text size="sm" ff="monospace">
+                    {r.vpcNames.length ? r.vpcNames.join(", ") : "—"}
+                  </Text>
+                </Table.Td>
+                <Table.Td>
+                  {r.agentStatus ? (
+                    <StatusBadge status={r.agentStatus} />
+                  ) : (
+                    <Text size="sm" c="dimmed">
+                      —
+                    </Text>
+                  )}
+                </Table.Td>
+                <Table.Td>
+                  <Text size="sm" c="dimmed">
+                    {r.age}
+                  </Text>
+                </Table.Td>
+                <Table.Td>
+                  <Menu withinPortal position="bottom-end">
+                    <Menu.Target>
+                      <ActionIcon variant="subtle" disabled={busy}>
+                        <IconDotsVertical size={16} />
+                      </ActionIcon>
+                    </Menu.Target>
+                    <Menu.Dropdown>
+                      <Menu.Item
+                        color="red"
+                        leftSection={<IconTrash size={14} />}
+                        onClick={() => setDeleteTarget(r)}
+                      >
+                        Delete
+                      </Menu.Item>
+                    </Menu.Dropdown>
+                  </Menu>
+                </Table.Td>
+              </Table.Tr>
+            );
+          })}
+        </ResourceTable>
+      </Stack>
 
       <ConfirmDeleteModal
         opened={Boolean(deleteTarget)}
@@ -243,6 +354,31 @@ export default function RoutersPage({ loaderData }: Route.ComponentProps) {
             { method: "post" },
           );
           setDeleteTarget(null);
+        }}
+      />
+
+      <ConfirmBulkDeleteModal
+        opened={bulkDeleteOpen}
+        count={selectedItems.length}
+        identities={selectedItems.map(resourceKey)}
+        title={`Delete ${selectedItems.length} router${selectedItems.length === 1 ? "" : "s"}`}
+        confirmLabel={`Delete ${selectedItems.length}`}
+        loading={busy}
+        onClose={() => setBulkDeleteOpen(false)}
+        onConfirm={() => {
+          fetcher.submit(
+            {
+              intent: "bulk-delete",
+              targets: bulkTargetsJson(
+                selectedItems.map((r) => ({
+                  cluster: r.cluster,
+                  namespace: r.namespace,
+                  name: r.name,
+                })),
+              ),
+            },
+            { method: "post" },
+          );
         }}
       />
     </Stack>

@@ -35,6 +35,7 @@ import {
   notifyActionSuccess,
   notifyBulkResult,
 } from "~/lib/action-feedback";
+import { bulkTargetsJson, isBulkActionResult } from "~/lib/bulk-action";
 import {
   canOpenConsole,
   canPause,
@@ -74,15 +75,6 @@ type VmActionResult =
       retainedDisks?: string[];
     }
   | BulkActionResult;
-
-function isBulkResult(data: VmActionResult): data is BulkActionResult {
-  return (
-    "summary" in data &&
-    data.summary != null &&
-    typeof data.intent === "string" &&
-    data.intent.startsWith("bulk-")
-  );
-}
 
 /**
  * Strip optional /prefix from kmc.ianunruh.com/ipv4 for the list column.
@@ -138,8 +130,8 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
   );
 
   useFetcherResult(fetcher, (data) => {
-    if (isBulkResult(data)) {
-      if (data.error && (!data.results || data.results.length === 0)) {
+    if (isBulkActionResult(data)) {
+      if (data.error && data.results.length === 0) {
         notifyActionError("Bulk action failed", data.error, {
           intent: data.intent,
         });
@@ -237,7 +229,7 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
     clientSkippedRef.current = clientSkipped;
     const payload: Record<string, string> = {
       intent,
-      targets: JSON.stringify(
+      targets: bulkTargetsJson(
         targets.map((vm) => ({
           cluster: vm.cluster,
           namespace: vm.namespace,
