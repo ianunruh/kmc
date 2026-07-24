@@ -590,6 +590,8 @@ export interface RouterDetail extends RouterSummary {
   vmName: string;
   vmStatus?: string;
   vmReady?: boolean;
+  /** True when the policy ConfigMap exists but the appliance VirtualMachine does not. */
+  vmMissing?: boolean;
 }
 
 /**

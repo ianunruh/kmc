@@ -259,6 +259,12 @@ addresses reserved via the policy document. Recreating a router reuses the
 existing policy, updates NIC metadata, and re-stamps floating IPs onto the new
 VM. The control plane is removed when the router is deleted.
 
+If the appliance **VirtualMachine** is deleted out-of-band (e.g. from the VMs
+list) while the router policy remains, open **Routers → detail** — the page
+shows **VM missing** and a **Recreate appliance VM** form (image, size, SSH
+key). Do not use **Routers → Create** with the same name; that fails because the
+policy ConfigMap already exists.
+
 **Disassociate vs release:** Disassociating a floating IP unmaps it from the
 private target but **keeps** the public address held (secondary IP stays on the
 router; IPAM still reserves it). **Release** removes the policy entry so the

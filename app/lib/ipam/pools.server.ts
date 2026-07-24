@@ -648,6 +648,14 @@ function matchLinesFor(allocation: AllocatedIp): string[] {
 }
 
 /**
+ * Fallback resolvers for static Multus netplan. Ubuntu/netplan generates
+ * `systemd-networkd-wait-online --dns` for non-optional ethernets; without
+ * nameservers that unit times out (~2m) even when addresses are already up.
+ * DHCP clients get DNS from the server; static must declare them.
+ */
+const STATIC_NETPLAN_FALLBACK_DNS = ["1.1.1.1", "1.0.0.1"];
+
+/**
  * cloud-init network-config (netplan) for one or more Multus IPAM allocations.
  * At most one default route is installed (primary = first with gateway, else first).
  */
@@ -680,11 +688,15 @@ export function buildNetworkData(allocations: AllocatedIp | AllocatedIp[]): stri
       lines.push("    routes:", "      - to: default", `        via: ${gateway}`);
     }
 
-    if (allocation.dns.length > 0) {
-      lines.push("    nameservers:", "      addresses:");
-      for (const d of allocation.dns) {
-        lines.push(`        - ${d}`);
-      }
+    // Always emit nameservers on static NICs so wait-online --dns can succeed.
+    // Empty dns (common on router recreate / VPC gateway claim) previously hung boot.
+    const nameservers =
+      allocation.dns.length > 0
+        ? allocation.dns
+        : STATIC_NETPLAN_FALLBACK_DNS;
+    lines.push("    nameservers:", "      addresses:");
+    for (const d of nameservers) {
+      lines.push(`        - ${d}`);
     }
   });
 

@@ -36,6 +36,7 @@ import {
   buildVirtualMachineManifest,
   cloudInitUserDataSecretName,
 } from "~/vms/template.server";
+import { getPlatformConsolePublicKey } from "~/vms/console-ssh-key.server";
 import {
   containsIpv4,
   formatIpv4,
@@ -232,6 +233,7 @@ export async function getRouter(
 
   let vmStatus: string | undefined;
   let vmReady: boolean | undefined;
+  let vmMissing = false;
   try {
     const { custom } = getClusterClients(cluster);
     const vm = (await custom.getNamespacedCustomObject({
@@ -243,8 +245,11 @@ export async function getRouter(
     })) as KubeVm;
     vmStatus = vm.status?.printableStatus;
     vmReady = vm.status?.ready === true;
-  } catch {
-    /* VM may be missing while policy remains */
+  } catch (err) {
+    /* Policy survives appliance delete — surface missing VM for recreate UI */
+    if (isNotFound(err)) {
+      vmMissing = true;
+    }
   }
 
   return {
@@ -272,6 +277,7 @@ export async function getRouter(
     vmName: name,
     vmStatus,
     vmReady,
+    vmMissing,
   };
 }
 
@@ -491,8 +497,9 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
     start: input.start !== false,
   };
 
+  const platformPub = await getPlatformConsolePublicKey();
   const userData = buildRouterUserData({
-    sshPublicKey: input.sshPublicKey,
+    sshPublicKey: [input.sshPublicKey, ...(platformPub ? [platformPub] : [])],
     privateMacs: interfaceSpecs.map((i) => i.mac),
     publicMac: publicBound?.macAddress,
     podCIDRs: controlPlane.podCIDRs,
@@ -864,25 +871,51 @@ export async function setRouterExternalGateway(
   });
 }
 
-/**
- * Recreate the router appliance VM from policy (preserves leases/FIPs/interfaces).
- * Requires a live or recently known image on the existing VM, or falls back to
- * reading the current VM template.
- */
-async function recreateRouterVmFromPolicy(input: {
+export type RecreateRouterVmRequest = {
   cluster: ClusterId;
   namespace: string;
   routerName: string;
   sshPublicKey: string;
-}): Promise<void> {
+  /**
+   * Appliance shape. Required when the VirtualMachine is already gone
+   * (policy-only). When the VM still exists, omitted fields are snapshotted
+   * from it before delete.
+   */
+  image?: { kind: "pvc"; namespace: string; name: string };
+  diskSize?: string;
+  storageClass?: string;
+  instanceType?: string;
+  cpuCores?: number;
+  memory?: string;
+};
+
+/**
+ * Recreate the router appliance VM from policy (preserves leases/FIPs/interfaces).
+ * Use when the VM was deleted out-of-band or after enabling external gateway.
+ */
+export async function recreateRouterVm(
+  input: RecreateRouterVmRequest,
+): Promise<void> {
+  return recreateRouterVmFromPolicy(input);
+}
+
+/**
+ * Recreate the router appliance VM from policy (preserves leases/FIPs/interfaces).
+ * Snapshots size/image from the existing VM when present; otherwise requires
+ * image + size fields on the request.
+ */
+async function recreateRouterVmFromPolicy(
+  input: RecreateRouterVmRequest,
+): Promise<void> {
   const { cluster, namespace, routerName, sshPublicKey } = input;
+  if (!sshPublicKey?.trim()) throw new Error("sshPublicKey is required");
   const policy = await getRouterPolicyConfigMap(cluster, namespace, routerName);
   if (!policy?.doc?.interfaces?.length) {
     throw new Error("Router policy has no VPC interfaces");
   }
   const doc = policy.doc;
 
-  // Snapshot appliance shape from existing VM before delete.
+  // Snapshot appliance shape from existing VM before delete (when present).
   const { custom, core } = getClusterClients(cluster);
   let image = { kind: "pvc" as const, namespace: "vm-images", name: "ubuntu" };
   let diskSize = "10Gi";
@@ -890,6 +923,7 @@ async function recreateRouterVmFromPolicy(input: {
   let instanceType: string | undefined;
   let cpuCores: number | undefined;
   let memory: string | undefined;
+  let hadExistingVm = false;
 
   try {
     const vm = (await custom.getNamespacedCustomObject({
@@ -917,6 +951,7 @@ async function recreateRouterVmFromPolicy(input: {
         };
       };
     };
+    hadExistingVm = true;
     instanceType = vm.spec?.instancetype?.name;
     const dvt = vm.spec?.dataVolumeTemplates?.[0];
     if (dvt?.spec?.source?.pvc?.name) {
@@ -934,10 +969,42 @@ async function recreateRouterVmFromPolicy(input: {
       memory =
         vm.spec?.template?.spec?.domain?.resources?.requests?.memory || "1Gi";
     }
-  } catch {
+  } catch (err) {
+    if (!isNotFound(err)) {
+      throw new Error(
+        `Failed to read router VM ${namespace}/${routerName}: ${formatError(err)}`,
+        { cause: err },
+      );
+    }
+  }
+
+  // Explicit request fields override snapshot (and supply shape when VM is gone).
+  if (input.image?.name?.trim()) {
+    image = {
+      kind: "pvc",
+      namespace: input.image.namespace?.trim() || "vm-images",
+      name: input.image.name.trim(),
+    };
+  }
+  if (input.diskSize?.trim()) diskSize = input.diskSize.trim();
+  if (input.storageClass?.trim()) storageClass = input.storageClass.trim();
+  if (input.instanceType?.trim()) {
+    instanceType = input.instanceType.trim();
+    cpuCores = undefined;
+    memory = undefined;
+  } else if (input.cpuCores != null || input.memory?.trim()) {
+    instanceType = undefined;
+    cpuCores = input.cpuCores ?? cpuCores ?? 1;
+    memory = input.memory?.trim() || memory || "1Gi";
+  }
+
+  if (!hadExistingVm && !input.image?.name?.trim()) {
     throw new Error(
-      `Router VM ${namespace}/${routerName} not found — cannot recreate appliance (create a new router instead)`,
+      `Router VM ${namespace}/${routerName} is missing — choose an image, disk size, and size to recreate the appliance from policy`,
     );
+  }
+  if (!instanceType && !(cpuCores && memory)) {
+    throw new Error("Provide instanceType or both cpuCores and memory");
   }
 
   // Delete old VM + cloud-init secret (policy CM stays).
@@ -973,6 +1040,16 @@ async function recreateRouterVmFromPolicy(input: {
     ...(doc.external?.multusNetwork ? [doc.external.multusNetwork] : []),
   ];
   // Rebuild allocations with MACs from policy (stable).
+  // No default route on private NICs (this appliance *is* the gateway).
+  // DNS: prefer external pool resolvers when present; private side uses
+  // buildNetworkData fallbacks so wait-online --dns does not hang boot.
+  const externalPool = doc.external?.multusNetwork
+    ? findIpPoolForMultus(cluster, doc.external.multusNetwork)
+    : undefined;
+  const externalDns = (externalPool?.dns ?? [])
+    .map((d) => d.trim())
+    .filter(Boolean);
+
   const allocations: AllocatedIp[] = doc.interfaces.map((iface) => {
     const gwAddr = iface.gateway.split("/")[0]!;
     const prefix = parseCidr(iface.cidr).prefix;
@@ -982,7 +1059,7 @@ async function recreateRouterVmFromPolicy(input: {
       prefix,
       cidrHost: `${gwAddr}/${prefix}`,
       gateway: undefined,
-      dns: [],
+      dns: externalDns,
       macAddress: iface.mac,
     };
   });
@@ -991,12 +1068,12 @@ async function recreateRouterVmFromPolicy(input: {
     const addr = primary.split("/")[0]!;
     const prefix = Number(primary.split("/")[1]) || 24;
     allocations.push({
-      poolId: "external",
+      poolId: externalPool?.id ?? "external",
       address: addr,
       prefix,
       cidrHost: primary,
       gateway: doc.external.gateway,
-      dns: [],
+      dns: externalDns,
       macAddress: doc.external.mac,
     });
   }
@@ -1041,8 +1118,9 @@ async function recreateRouterVmFromPolicy(input: {
     start: true,
   };
 
+  const platformPub = await getPlatformConsolePublicKey();
   const userData = buildRouterUserData({
-    sshPublicKey,
+    sshPublicKey: [sshPublicKey, ...(platformPub ? [platformPub] : [])],
     privateMacs: doc.interfaces.map((i) => i.mac),
     publicMac: doc.external?.mac,
     podCIDRs: controlPlane.podCIDRs,
