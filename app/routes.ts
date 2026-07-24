@@ -35,6 +35,11 @@ export default [
   route(
     "datavolumes/:cluster/:namespace/:name",
     "routes/datavolumes.$cluster.$namespace.$name.tsx",
+    [
+      index("routes/datavolumes.$cluster.$namespace.$name._index.tsx"),
+      route("events", "routes/datavolumes.$cluster.$namespace.$name.events.tsx"),
+      route("yaml", "routes/datavolumes.$cluster.$namespace.$name.yaml.tsx"),
+    ],
   ),
 
   route("ingresses", "routes/ingresses._index.tsx"),
@@ -42,6 +47,11 @@ export default [
   route(
     "ingresses/:cluster/:namespace/:name",
     "routes/ingresses.$cluster.$namespace.$name.tsx",
+    [
+      index("routes/ingresses.$cluster.$namespace.$name._index.tsx"),
+      route("events", "routes/ingresses.$cluster.$namespace.$name.events.tsx"),
+      route("yaml", "routes/ingresses.$cluster.$namespace.$name.yaml.tsx"),
+    ],
   ),
 
   route("vpcs", "routes/vpcs._index.tsx"),
@@ -50,13 +60,22 @@ export default [
     "vpcs/:cluster/:namespace/:name/edit",
     "routes/vpcs.$cluster.$namespace.$name.edit.tsx",
   ),
-  route("vpcs/:cluster/:namespace/:name", "routes/vpcs.$cluster.$namespace.$name.tsx"),
+  route("vpcs/:cluster/:namespace/:name", "routes/vpcs.$cluster.$namespace.$name.tsx", [
+    index("routes/vpcs.$cluster.$namespace.$name._index.tsx"),
+    route("vms", "routes/vpcs.$cluster.$namespace.$name.vms.tsx"),
+    route("yaml", "routes/vpcs.$cluster.$namespace.$name.yaml.tsx"),
+  ]),
 
   route("routers", "routes/routers._index.tsx"),
   route("routers/create", "routes/routers.create.tsx"),
   route(
     "routers/:cluster/:namespace/:name",
     "routes/routers.$cluster.$namespace.$name.tsx",
+    [
+      index("routes/routers.$cluster.$namespace.$name._index.tsx"),
+      route("leases", "routes/routers.$cluster.$namespace.$name.leases.tsx"),
+      route("yaml", "routes/routers.$cluster.$namespace.$name.yaml.tsx"),
+    ],
   ),
 
   route("floating-ips", "routes/floating-ips._index.tsx"),
@@ -64,13 +83,19 @@ export default [
 
   route("namespaces", "routes/namespaces._index.tsx"),
   route("namespaces/create", "routes/namespaces.create.tsx"),
-  route("namespaces/:cluster/:name", "routes/namespaces.$cluster.$name.tsx"),
+  route("namespaces/:cluster/:name", "routes/namespaces.$cluster.$name.tsx", [
+    index("routes/namespaces.$cluster.$name._index.tsx"),
+    route("yaml", "routes/namespaces.$cluster.$name.yaml.tsx"),
+  ]),
 
   route("topology", "routes/topology._index.tsx"),
 
   route("instancetypes", "routes/instancetypes._index.tsx"),
   route("instancetypes/create", "routes/instancetypes.create.tsx"),
-  route("instancetypes/:cluster/:name", "routes/instancetypes.$cluster.$name.tsx"),
+  route("instancetypes/:cluster/:name", "routes/instancetypes.$cluster.$name.tsx", [
+    index("routes/instancetypes.$cluster.$name._index.tsx"),
+    route("yaml", "routes/instancetypes.$cluster.$name.yaml.tsx"),
+  ]),
   route(
     "instancetypes/:cluster/:name/edit",
     "routes/instancetypes.$cluster.$name.edit.tsx",

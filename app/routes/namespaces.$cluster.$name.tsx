@@ -1,42 +1,29 @@
 import {
   Alert,
+  Anchor,
   Badge,
   Button,
-  Code,
   Group,
-  SimpleGrid,
   Stack,
-  Text,
   Title,
-  Anchor,
 } from "@mantine/core";
 import { IconArrowLeft, IconTrash } from "@tabler/icons-react";
 import { useState } from "react";
-import { Link, redirect, useFetcher } from "react-router";
+import { Link, Outlet, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/namespaces.$cluster.$name";
 import {
   ConfirmDeleteModal,
-  DetailField,
-  DetailSection,
+  DetailTabs,
   ResourceIdentity,
-  ResourceLink,
-  YamlPanel,
 } from "~/ui";
 import { notifyActionError } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
 import {
-  formatAge,
-  formatDateTime,
+  detailTabPath,
+  namespacePath,
   namespacesListPath,
-  vpcsListPath,
-  vmsListPath,
 } from "~/lib/format";
-import { VM_ALLOWED_LABEL } from "~/lib/k8s/constants";
-import {
-  deleteNamespace,
-  getNamespace,
-  getNamespaceYaml,
-} from "~/namespaces/namespaces.server";
+import { deleteNamespace, getNamespace } from "~/namespaces/namespaces.server";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 
 export function meta({ params }: Route.MetaArgs) {
@@ -48,11 +35,8 @@ export async function loader({ params }: Route.LoaderArgs) {
   if (!cluster || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
-  const [ns, yaml] = await Promise.all([
-    getNamespace(cluster, name),
-    getNamespaceYaml(cluster, name),
-  ]);
-  return { ns, yaml };
+  const ns = await getNamespace(cluster, name);
+  return { ns };
 }
 
 export async function action({ request, params }: Route.ActionArgs) {
@@ -77,12 +61,13 @@ export async function action({ request, params }: Route.ActionArgs) {
   }
 }
 
-export default function NamespaceDetailPage({ loaderData }: Route.ComponentProps) {
-  const { ns, yaml } = loaderData;
+export default function NamespaceDetailLayout({ loaderData }: Route.ComponentProps) {
+  const { ns } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string }>();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const busy = fetcher.state !== "idle";
   const hasVms = ns.vmCount > 0;
+  const base = namespacePath(ns);
 
   useFetcherResult(fetcher, (data) => {
     if (data.error) {
@@ -147,100 +132,14 @@ export default function NamespaceDetailPage({ loaderData }: Route.ComponentProps
         </Alert>
       )}
 
-      <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
-        <DetailSection title="Overview">
-          <SimpleGrid cols={2} spacing="sm">
-            <DetailField
-              label="Cluster"
-              value={
-                <ResourceLink
-                  to={namespacesListPath({ cluster: ns.cluster })}
-                  dimmed
-                >
-                  {ns.cluster}
-                </ResourceLink>
-              }
-            />
-            <DetailField label="Name" value={ns.name} />
-            <DetailField label="Phase" value={ns.phase} />
-            <DetailField label="Age" value={formatAge(ns.age)} />
-            <DetailField label="Created" value={formatDateTime(ns.age)} />
-            <DetailField
-              label="Virtual Machines"
-              value={
-                <ResourceLink
-                  to={vmsListPath({
-                    cluster: ns.cluster,
-                    namespace: ns.name,
-                  })}
-                >
-                  View VMs ({ns.vmCount})
-                </ResourceLink>
-              }
-            />
-            <DetailField
-              label="VPCs"
-              value={
-                <ResourceLink
-                  to={vpcsListPath({
-                    cluster: ns.cluster,
-                    namespace: ns.name,
-                  })}
-                >
-                  View VPCs
-                </ResourceLink>
-              }
-            />
-            <DetailField
-              label="UID"
-              value={ns.uid ? <Code>{ns.uid}</Code> : undefined}
-            />
-          </SimpleGrid>
-        </DetailSection>
+      <DetailTabs
+        items={[
+          { label: "Overview", to: detailTabPath(base, "overview"), end: true },
+          { label: "YAML", to: detailTabPath(base, "yaml") },
+        ]}
+      />
 
-        <DetailSection title="Labels">
-          {Object.keys(ns.labels).length === 0 ? (
-            <Text size="sm" c="dimmed">
-              None
-            </Text>
-          ) : (
-            <Stack gap={6}>
-              {Object.entries(ns.labels).map(([k, v]) => (
-                <Group key={k} gap="xs" wrap="nowrap" align="flex-start">
-                  <Code
-                    style={{
-                      color:
-                        k === VM_ALLOWED_LABEL ? "var(--mantine-color-teal-4)" : undefined,
-                    }}
-                  >
-                    {k}
-                  </Code>
-                  <Text size="sm" c="dimmed">
-                    {v}
-                  </Text>
-                </Group>
-              ))}
-            </Stack>
-          )}
-        </DetailSection>
-      </SimpleGrid>
-
-      {Object.keys(ns.annotations).length > 0 && (
-        <DetailSection title="Annotations">
-          <Stack gap={6}>
-            {Object.entries(ns.annotations).map(([k, v]) => (
-              <Group key={k} gap="xs" wrap="nowrap" align="flex-start">
-                <Code>{k}</Code>
-                <Text size="sm" c="dimmed" style={{ wordBreak: "break-all" }}>
-                  {v}
-                </Text>
-              </Group>
-            ))}
-          </Stack>
-        </DetailSection>
-      )}
-
-      <YamlPanel yaml={yaml} />
+      <Outlet />
 
       <ConfirmDeleteModal
         opened={deleteOpen}

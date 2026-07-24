@@ -6,6 +6,7 @@ export { ConfirmDeleteModal } from "./confirm-delete-modal";
 export { ConsolePaper } from "./console-paper";
 export { DetailField } from "./detail-field";
 export { DetailSection } from "./detail-section";
+export { DetailTabs, type DetailTabItem } from "./detail-tabs";
 export { EventsPanel } from "./events-panel";
 export { FilterBar } from "./filter-bar";
 export { FormActions } from "./form-actions";

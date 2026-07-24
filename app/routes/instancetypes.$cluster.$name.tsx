@@ -1,39 +1,29 @@
 import {
   Alert,
+  Anchor,
   Badge,
   Button,
-  Code,
   Group,
-  SimpleGrid,
   Stack,
-  Text,
   Title,
-  Anchor,
 } from "@mantine/core";
 import { IconArrowLeft, IconPencil, IconTrash } from "@tabler/icons-react";
 import { useState } from "react";
-import { Link, redirect, useFetcher } from "react-router";
+import { Link, Outlet, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/instancetypes.$cluster.$name";
 import {
   ConfirmDeleteModal,
-  DetailField,
-  DetailSection,
-  EventsPanel,
+  DetailTabs,
   ResourceIdentity,
-  ResourceLink,
-  YamlPanel,
 } from "~/ui";
 import { notifyActionError } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
 import {
-  formatAge,
-  formatDateTime,
+  detailTabPath,
   instanceTypeEditPath,
+  instanceTypePath,
   instanceTypesListPath,
-  vmsListPath,
 } from "~/lib/format";
-import { listResourceEvents } from "~/lib/k8s/events.server";
-import { getCustomObjectYaml } from "~/lib/k8s/yaml.server";
 import {
   deleteClusterInstanceType,
   getClusterInstanceType,
@@ -50,22 +40,8 @@ export async function loader({ params }: Route.LoaderArgs) {
   if (!cluster || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
-  const [it, events, yaml] = await Promise.all([
-    getClusterInstanceType(cluster, name),
-    listResourceEvents({
-      cluster,
-      name,
-      kinds: ["VirtualMachineClusterInstancetype"],
-    }),
-    getCustomObjectYaml({
-      cluster,
-      group: "instancetype.kubevirt.io",
-      version: "v1beta1",
-      plural: "virtualmachineclusterinstancetypes",
-      name,
-    }),
-  ]);
-  return { it, events, yaml };
+  const it = await getClusterInstanceType(cluster, name);
+  return { it };
 }
 
 export async function action({ request, params }: Route.ActionArgs) {
@@ -90,11 +66,14 @@ export async function action({ request, params }: Route.ActionArgs) {
   }
 }
 
-export default function InstanceTypeDetailPage({ loaderData }: Route.ComponentProps) {
-  const { it, events, yaml } = loaderData;
+export default function InstanceTypeDetailLayout({
+  loaderData,
+}: Route.ComponentProps) {
+  const { it } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string }>();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const busy = fetcher.state !== "idle";
+  const base = instanceTypePath(it);
 
   useFetcherResult(fetcher, (data) => {
     if (data.error) {
@@ -173,82 +152,14 @@ export default function InstanceTypeDetailPage({ loaderData }: Route.ComponentPr
         </Alert>
       )}
 
-      <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
-        <DetailSection title="Overview">
-          <SimpleGrid cols={2} spacing="sm">
-            <DetailField
-              label="Cluster"
-              value={
-                <ResourceLink to={instanceTypesListPath({ cluster: it.cluster })} dimmed>
-                  {it.cluster}
-                </ResourceLink>
-              }
-            />
-            <DetailField label="Name" value={it.name} />
-            <DetailField
-              label="Class"
-              value={
-                it.class ? (
-                  <Stack gap={2}>
-                    <Text size="sm">{instanceTypeClassLabel(it.class)}</Text>
-                    <Text size="xs" c="dimmed">
-                      {it.class}
-                    </Text>
-                  </Stack>
-                ) : (
-                  "—"
-                )
-              }
-            />
-            <DetailField label="Size" value={it.size || "—"} />
-            <DetailField label="CPU" value={it.cpu ? `${it.cpu} cores` : "—"} />
-            <DetailField label="Memory" value={it.memory || "—"} />
-            <DetailField label="Vendor" value={it.vendor || "—"} />
-            <DetailField
-              label="common-instancetypes"
-              value={it.commonVersion || (it.builtin ? "yes" : "—")}
-            />
-            <DetailField label="Age" value={formatAge(it.age)} />
-            <DetailField label="Created" value={formatDateTime(it.age)} />
-            <DetailField
-              label="VMs using type"
-              value={
-                <ResourceLink
-                  to={vmsListPath({
-                    cluster: it.cluster,
-                    instancetype: it.name,
-                  })}
-                >
-                  View VMs ({it.cluster})
-                </ResourceLink>
-              }
-            />
-            <DetailField label="UID" value={it.uid ? <Code>{it.uid}</Code> : undefined} />
-          </SimpleGrid>
-        </DetailSection>
+      <DetailTabs
+        items={[
+          { label: "Overview", to: detailTabPath(base, "overview"), end: true },
+          { label: "YAML", to: detailTabPath(base, "yaml") },
+        ]}
+      />
 
-        <DetailSection title="Labels">
-          {Object.keys(it.labels).length === 0 ? (
-            <Text size="sm" c="dimmed">
-              None
-            </Text>
-          ) : (
-            <Stack gap={6}>
-              {Object.entries(it.labels).map(([k, v]) => (
-                <Group key={k} gap="xs">
-                  <Code>{k}</Code>
-                  <Text size="sm" c="dimmed">
-                    {v}
-                  </Text>
-                </Group>
-              ))}
-            </Stack>
-          )}
-        </DetailSection>
-      </SimpleGrid>
-
-      <EventsPanel events={events} />
-      <YamlPanel yaml={yaml} />
+      <Outlet />
 
       {!it.builtin && (
         <ConfirmDeleteModal

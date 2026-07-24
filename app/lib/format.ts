@@ -154,6 +154,15 @@ export function vmPath(vm: Pick<VmSummary, "cluster" | "namespace" | "name">): s
   return `/vms/${encodeURIComponent(vm.cluster)}/${encodeURIComponent(vm.namespace)}/${encodeURIComponent(vm.name)}`;
 }
 
+/** Common detail subpages (overview is the bare resource URL). */
+export type DetailSubTab = "overview" | "events" | "yaml";
+
+/** Append a detail tab segment to a resource path (`overview` → base). */
+export function detailTabPath(base: string, tab: string = "overview"): string {
+  if (!tab || tab === "overview") return base;
+  return `${base}/${tab}`;
+}
+
 export type VmDetailTab = "overview" | "networking" | "storage" | "events" | "yaml";
 
 /** Tab subpages under the VM detail layout (overview is the index URL). */
@@ -161,9 +170,7 @@ export function vmTabPath(
   vm: Pick<VmSummary, "cluster" | "namespace" | "name">,
   tab: VmDetailTab = "overview",
 ): string {
-  const base = vmPath(vm);
-  if (tab === "overview") return base;
-  return `${base}/${tab}`;
+  return detailTabPath(vmPath(vm), tab);
 }
 
 export function vmEditPath(

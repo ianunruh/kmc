@@ -1,37 +1,25 @@
 import {
   Alert,
   Anchor,
-  Badge,
   Button,
-  Code,
   Group,
-  SimpleGrid,
   Stack,
-  Text,
   Title,
 } from "@mantine/core";
 import { IconArrowLeft, IconTrash } from "@tabler/icons-react";
 import { useState } from "react";
-import { Link, redirect, useFetcher } from "react-router";
+import { Link, Outlet, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/datavolumes.$cluster.$namespace.$name";
 import { StatusBadge } from "~/ui/status-badge";
 import {
-  ClampedText,
   ConfirmDeleteModal,
-  DetailField,
-  DetailSection,
-  EventsPanel,
+  DetailTabs,
   ResourceIdentity,
   ResourceLink,
-  ResourceTable,
-  Table,
-  YamlPanel,
 } from "~/ui";
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
-import { dataVolumesListPath, formatAge, formatDateTime, vmPath } from "~/lib/format";
-import { listResourceEvents } from "~/lib/k8s/events.server";
-import { getCustomObjectYaml } from "~/lib/k8s/yaml.server";
+import { dataVolumePath, dataVolumesListPath, detailTabPath } from "~/lib/format";
 import { deleteDataVolume, getDataVolume } from "~/datavolumes/datavolumes.server";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 
@@ -44,24 +32,8 @@ export async function loader({ params }: Route.LoaderArgs) {
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
-  const [dv, events, yaml] = await Promise.all([
-    getDataVolume(cluster, namespace, name),
-    listResourceEvents({
-      cluster,
-      namespace,
-      name,
-      kinds: ["DataVolume", "PersistentVolumeClaim"],
-    }),
-    getCustomObjectYaml({
-      cluster,
-      group: "cdi.kubevirt.io",
-      version: "v1beta1",
-      plural: "datavolumes",
-      namespace,
-      name,
-    }),
-  ]);
-  return { dv, events, yaml };
+  const dv = await getDataVolume(cluster, namespace, name);
+  return { dv };
 }
 
 export async function action({ request, params }: Route.ActionArgs) {
@@ -87,11 +59,12 @@ export async function action({ request, params }: Route.ActionArgs) {
   }
 }
 
-export default function DataVolumeDetailPage({ loaderData }: Route.ComponentProps) {
-  const { dv, events, yaml } = loaderData;
+export default function DataVolumeDetailLayout({ loaderData }: Route.ComponentProps) {
+  const { dv } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string }>();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const busy = fetcher.state !== "idle";
+  const base = dataVolumePath(dv);
 
   useFetcherResult(fetcher, (data) => {
     if (data.error) {
@@ -152,179 +125,15 @@ export default function DataVolumeDetailPage({ loaderData }: Route.ComponentProp
         </Alert>
       )}
 
-      <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
-        <DetailSection title="Overview">
-          <SimpleGrid cols={2} spacing="sm">
-            <DetailField
-              label="Phase"
-              value={
-                <ResourceLink
-                  to={dataVolumesListPath({
-                    cluster: dv.cluster,
-                    phase: dv.phase,
-                  })}
-                  underline="never"
-                >
-                  <StatusBadge status={dv.phase} />
-                </ResourceLink>
-              }
-            />
-            <DetailField label="Progress" value={dv.progress} />
-            <DetailField label="Age" value={formatAge(dv.age)} />
-            <DetailField label="Created" value={formatDateTime(dv.age)} />
-            <DetailField
-              label="Cluster"
-              value={
-                <ResourceLink to={dataVolumesListPath({ cluster: dv.cluster })} dimmed>
-                  {dv.cluster}
-                </ResourceLink>
-              }
-            />
-            <DetailField
-              label="Namespace"
-              value={
-                <ResourceLink
-                  to={dataVolumesListPath({
-                    cluster: dv.cluster,
-                    namespace: dv.namespace,
-                  })}
-                  dimmed
-                >
-                  {dv.namespace}
-                </ResourceLink>
-              }
-            />
-            <DetailField label="Size" value={dv.size} />
-            <DetailField label="Storage class" value={dv.storageClass} />
-            <DetailField label="Volume mode" value={dv.volumeMode} />
-            <DetailField label="Access modes" value={dv.accessModes?.join(", ")} />
-            <DetailField label="Claim" value={dv.claimName} />
-            <DetailField
-              label="Owner"
-              value={
-                dv.ownerName ? (
-                  dv.ownerKind === "VirtualMachine" ? (
-                    <ResourceLink
-                      to={vmPath({
-                        cluster: dv.cluster,
-                        namespace: dv.namespace,
-                        name: dv.ownerName,
-                      })}
-                    >
-                      {dv.ownerKind}/{dv.ownerName}
-                    </ResourceLink>
-                  ) : (
-                    `${dv.ownerKind}/${dv.ownerName}`
-                  )
-                ) : undefined
-              }
-            />
-            <DetailField
-              label="Attached VM"
-              value={
-                dv.attachedVms && dv.attachedVms.length > 0 ? (
-                  <Stack gap={4}>
-                    {dv.attachedVms.map((vmName) => (
-                      <ResourceLink
-                        key={vmName}
-                        to={vmPath({
-                          cluster: dv.cluster,
-                          namespace: dv.namespace,
-                          name: vmName,
-                        })}
-                      >
-                        {vmName}
-                      </ResourceLink>
-                    ))}
-                  </Stack>
-                ) : undefined
-              }
-            />
-            {dv.retainedFromVm ? (
-              <DetailField
-                label="Retained from"
-                value={
-                  <Text size="sm">
-                    VM{" "}
-                    <Text span c="dimmed">
-                      {dv.retainedFromVm}
-                    </Text>
-                    {" "}
-                    <Badge size="xs" variant="light" color="grape" ml={4}>
-                      retained
-                    </Badge>
-                  </Text>
-                }
-              />
-            ) : null}
-            <DetailField label="Source" value={dv.sourceKind} />
-            <DetailField label="Source detail" value={dv.sourceDetail} />
-            <DetailField label="UID" value={dv.uid ? <Code>{dv.uid}</Code> : undefined} />
-          </SimpleGrid>
-        </DetailSection>
+      <DetailTabs
+        items={[
+          { label: "Overview", to: detailTabPath(base, "overview"), end: true },
+          { label: "Events", to: detailTabPath(base, "events") },
+          { label: "YAML", to: detailTabPath(base, "yaml") },
+        ]}
+      />
 
-        <DetailSection title="Labels">
-          {Object.keys(dv.labels).length === 0 ? (
-            <Text size="sm" c="dimmed">
-              None
-            </Text>
-          ) : (
-            <Stack gap={6}>
-              {Object.entries(dv.labels).map(([k, v]) => (
-                <Group key={k} gap="xs">
-                  <Code>{k}</Code>
-                  <Text size="sm" c="dimmed">
-                    {v}
-                  </Text>
-                </Group>
-              ))}
-            </Stack>
-          )}
-        </DetailSection>
-      </SimpleGrid>
-
-      <DetailSection title="Conditions">
-        <ResourceTable
-          isEmpty={dv.conditions.length === 0}
-          emptyMessage="No conditions"
-          headers={["Type", "Status", "Reason", "Message", "Last transition"]}
-        >
-          {dv.conditions.map((c) => (
-            <Table.Tr key={c.type}>
-              <Table.Td>{c.type}</Table.Td>
-              <Table.Td>
-                <Badge
-                  size="sm"
-                  variant="light"
-                  color={
-                    c.status === "True"
-                      ? "teal"
-                      : c.status === "False"
-                        ? "gray"
-                        : "yellow"
-                  }
-                >
-                  {c.status}
-                </Badge>
-              </Table.Td>
-              <Table.Td>{c.reason ?? "—"}</Table.Td>
-              <Table.Td>
-                <ClampedText size="sm" c="dimmed" maw={420} lineClamp={3}>
-                  {c.message ?? "—"}
-                </ClampedText>
-              </Table.Td>
-              <Table.Td>
-                <Text size="sm" c="dimmed">
-                  {formatDateTime(c.lastTransitionTime)}
-                </Text>
-              </Table.Td>
-            </Table.Tr>
-          ))}
-        </ResourceTable>
-      </DetailSection>
-
-      <EventsPanel events={events} showKind />
-      <YamlPanel yaml={yaml} />
+      <Outlet />
 
       <ConfirmDeleteModal
         opened={deleteOpen}

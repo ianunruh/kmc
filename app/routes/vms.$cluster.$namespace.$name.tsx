@@ -25,12 +25,13 @@ import {
   IconTrash,
 } from "@tabler/icons-react";
 import { useState } from "react";
-import { Link, NavLink, Outlet, useFetcher, useNavigate, useLocation } from "react-router";
+import { Link, Outlet, useFetcher, useNavigate } from "react-router";
 import type { Route } from "./+types/vms.$cluster.$namespace.$name";
 import { StatusBadge } from "~/ui/status-badge";
 import {
   ConfirmActionModal,
   ConfirmDeleteModal,
+  DetailTabs,
   ResourceIdentity,
   ResourceLink,
 } from "~/ui";
@@ -46,11 +47,9 @@ import {
   canUnpause,
   vmConsolePath,
   vmEditPath,
-  vmPath,
   vmTabPath,
   vmTerminalPath,
   vmsListPath,
-  type VmDetailTab,
 } from "~/lib/format";
 import { hasClusterPrometheus } from "~/lib/k8s/cluster-config.server";
 import type { VmLifecycleIntent } from "~/lib/types";
@@ -186,30 +185,10 @@ const LIFECYCLE_CONFIRM: Record<
   },
 };
 
-const TABS: { tab: VmDetailTab; label: string }[] = [
-  { tab: "overview", label: "Overview" },
-  { tab: "networking", label: "Networking" },
-  { tab: "storage", label: "Storage" },
-  { tab: "events", label: "Events" },
-  { tab: "yaml", label: "YAML" },
-];
-
-function activeTabFromPath(pathname: string, base: string): VmDetailTab {
-  if (pathname === base || pathname === `${base}/`) return "overview";
-  for (const { tab } of TABS) {
-    if (tab === "overview") continue;
-    if (pathname === `${base}/${tab}` || pathname.startsWith(`${base}/${tab}/`)) {
-      return tab;
-    }
-  }
-  return "overview";
-}
-
 export default function VmDetailLayout({ loaderData }: Route.ComponentProps) {
   const { vm } = loaderData;
   const fetcher = useFetcher<VmDetailActionResult>();
   const navigate = useNavigate();
-  const location = useLocation();
   const { refreshNow } = useRefresh();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [retainDisks, setRetainDisks] = useState(false);
@@ -219,8 +198,6 @@ export default function VmDetailLayout({ loaderData }: Route.ComponentProps) {
   const [createSnapshotOpen, setCreateSnapshotOpen] = useState(false);
   const [snapshotNameInput, setSnapshotNameInput] = useState("");
   const busy = fetcher.state !== "idle";
-  const base = vmPath(vm);
-  const activeTab = activeTabFromPath(location.pathname, base);
 
   useFetcherResult(fetcher, (data) => {
     if (data.error) {
@@ -472,32 +449,15 @@ export default function VmDetailLayout({ loaderData }: Route.ComponentProps) {
         </Alert>
       )}
 
-      <Group gap={0} style={{ borderBottom: "1px solid #1e242c" }}>
-        {TABS.map(({ tab, label }) => {
-          const to = vmTabPath(vm, tab);
-          const active = activeTab === tab;
-          return (
-            <NavLink
-              key={tab}
-              to={to}
-              end={tab === "overview"}
-              style={{
-                textDecoration: "none",
-                color: active ? "var(--mantine-color-teal-4)" : "var(--mantine-color-dimmed)",
-                borderBottom: active
-                  ? "2px solid var(--mantine-color-teal-5)"
-                  : "2px solid transparent",
-                padding: "8px 14px",
-                fontSize: "var(--mantine-font-size-sm)",
-                fontWeight: active ? 600 : 500,
-                marginBottom: -1,
-              }}
-            >
-              {label}
-            </NavLink>
-          );
-        })}
-      </Group>
+      <DetailTabs
+        items={[
+          { label: "Overview", to: vmTabPath(vm, "overview"), end: true },
+          { label: "Networking", to: vmTabPath(vm, "networking") },
+          { label: "Storage", to: vmTabPath(vm, "storage") },
+          { label: "Events", to: vmTabPath(vm, "events") },
+          { label: "YAML", to: vmTabPath(vm, "yaml") },
+        ]}
+      />
 
       <Outlet />
 
