@@ -337,6 +337,42 @@ export interface ClusterCatalog {
 export type VmLifecycleIntent =
   "stop" | "start" | "restart" | "softreboot" | "pause" | "unpause" | "delete";
 
+/** Bulk lifecycle intents on the VM list (home action). */
+export type VmBulkLifecycleIntent = "bulk-start" | "bulk-stop" | "bulk-delete";
+
+/** One target in a bulk action (cluster-scoped namespaced resource). */
+export interface BulkResourceTarget {
+  cluster: string;
+  namespace: string;
+  name: string;
+}
+
+export type BulkItemStatus = "ok" | "skipped" | "failed";
+
+export interface BulkItemResult extends BulkResourceTarget {
+  status: BulkItemStatus;
+  error?: string;
+  retainedDisks?: string[];
+}
+
+export interface BulkActionSummary {
+  total: number;
+  succeeded: number;
+  skipped: number;
+  failed: number;
+}
+
+/** Structured result from a bulk route action (partial success is normal). */
+export interface BulkActionResult {
+  ok: boolean;
+  intent: string;
+  summary: BulkActionSummary;
+  results: BulkItemResult[];
+  retainDisks?: boolean;
+  /** Top-level error when the bulk request itself is invalid (empty targets, etc.). */
+  error?: string;
+}
+
 // --- VM snapshots / restores (snapshot.kubevirt.io/v1beta1) ---
 
 /** KubeVirt VirtualMachineSnapshot projected for list/detail UI. */

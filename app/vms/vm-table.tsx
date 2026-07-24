@@ -1,6 +1,8 @@
 import {
   ActionIcon,
   Badge,
+  Button,
+  Checkbox,
   Group,
   Menu,
   Radio,
@@ -19,10 +21,20 @@ import {
   IconTerminal2,
   IconTrash,
 } from "@tabler/icons-react";
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link, useFetcher } from "react-router";
-import type { VmLifecycleIntent, VmSummary } from "~/lib/types";
-import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
+import type {
+  BulkActionResult,
+  BulkActionSummary,
+  VmBulkLifecycleIntent,
+  VmLifecycleIntent,
+  VmSummary,
+} from "~/lib/types";
+import {
+  notifyActionError,
+  notifyActionSuccess,
+  notifyBulkResult,
+} from "~/lib/action-feedback";
 import {
   canOpenConsole,
   canPause,
@@ -42,17 +54,35 @@ import {
   vmsListPath,
 } from "~/lib/format";
 import { useRefresh } from "~/lib/refresh";
+import { resourceKey, useRowSelection } from "~/lib/use-row-selection";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
-import { ClampedText, ConfirmDeleteModal, ResourceLink } from "~/ui";
+import {
+  BulkActionBar,
+  ClampedText,
+  ConfirmBulkDeleteModal,
+  ConfirmDeleteModal,
+  ResourceLink,
+} from "~/ui";
 import { StatusBadge } from "~/ui/status-badge";
 
-type VmActionResult = {
-  ok?: boolean;
-  error?: string;
-  intent?: string;
-  retainDisks?: boolean;
-  retainedDisks?: string[];
-};
+type VmActionResult =
+  | {
+      ok?: boolean;
+      error?: string;
+      intent?: string;
+      retainDisks?: boolean;
+      retainedDisks?: string[];
+    }
+  | BulkActionResult;
+
+function isBulkResult(data: VmActionResult): data is BulkActionResult {
+  return (
+    "summary" in data &&
+    data.summary != null &&
+    typeof data.intent === "string" &&
+    data.intent.startsWith("bulk-")
+  );
+}
 
 /**
  * Strip optional /prefix from kmc.ianunruh.com/ipv4 for the list column.
@@ -65,13 +95,74 @@ function displayAllocatedIpv4(value?: string): string | undefined {
   return first.includes("/") ? first.slice(0, first.indexOf("/")) : first;
 }
 
+function mergeClientSkipped(
+  summary: BulkActionSummary,
+  clientSkipped: number,
+): BulkActionSummary {
+  if (clientSkipped <= 0) return summary;
+  return {
+    total: summary.total + clientSkipped,
+    succeeded: summary.succeeded,
+    skipped: summary.skipped + clientSkipped,
+    failed: summary.failed,
+  };
+}
+
 export function VmTable({ vms }: { vms: VmSummary[] }) {
   const fetcher = useFetcher<VmActionResult>();
   const { refreshNow } = useRefresh();
   const [deleteTarget, setDeleteTarget] = useState<VmSummary | null>(null);
   const [retainDisks, setRetainDisks] = useState(false);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [bulkRetainDisks, setBulkRetainDisks] = useState(false);
+  /** Eligibility skips computed client-side before bulk start/stop submit. */
+  const clientSkippedRef = useRef(0);
+
+  const visibleKeys = useMemo(() => vms.map(resourceKey), [vms]);
+  const selection = useRowSelection(visibleKeys);
+  const { selected, selectedCount, clear, isSelected, toggle, toggleAllVisible, allSelected, someSelected } =
+    selection;
+
+  const selectedVms = useMemo(() => {
+    if (selectedCount === 0) return [] as VmSummary[];
+    return vms.filter((vm) => selected.has(resourceKey(vm)));
+  }, [vms, selected, selectedCount]);
+
+  const startableSelected = useMemo(
+    () => selectedVms.filter(canStart),
+    [selectedVms],
+  );
+  const stoppableSelected = useMemo(
+    () => selectedVms.filter(canStop),
+    [selectedVms],
+  );
 
   useFetcherResult(fetcher, (data) => {
+    if (isBulkResult(data)) {
+      if (data.error && (!data.results || data.results.length === 0)) {
+        notifyActionError("Bulk action failed", data.error, {
+          intent: data.intent,
+        });
+        clientSkippedRef.current = 0;
+        return;
+      }
+      const verb =
+        data.intent === "bulk-start"
+          ? "started"
+          : data.intent === "bulk-stop"
+            ? "stopped"
+            : data.retainDisks
+              ? "deleted (disks retained)"
+              : "deleted";
+      const summary = mergeClientSkipped(data.summary, clientSkippedRef.current);
+      clientSkippedRef.current = 0;
+      notifyBulkResult(verb, summary, data.results);
+      clear();
+      setBulkDeleteOpen(false);
+      refreshNow();
+      return;
+    }
+
     if (data.error) {
       notifyActionError("Action failed", data.error, { intent: data.intent });
     } else if (data.ok) {
@@ -125,6 +216,41 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
     fetcher.submit(payload, { method: "post" });
   }
 
+  function submitBulk(
+    intent: VmBulkLifecycleIntent,
+    targets: VmSummary[],
+    options?: { retainDisks?: boolean; clientSkipped?: number },
+  ) {
+    const clientSkipped = options?.clientSkipped ?? 0;
+    if (targets.length === 0) {
+      if (clientSkipped > 0) {
+        notifyBulkResult(intent === "bulk-start" ? "started" : "stopped", {
+          total: clientSkipped,
+          succeeded: 0,
+          skipped: clientSkipped,
+          failed: 0,
+        });
+        clear();
+      }
+      return;
+    }
+    clientSkippedRef.current = clientSkipped;
+    const payload: Record<string, string> = {
+      intent,
+      targets: JSON.stringify(
+        targets.map((vm) => ({
+          cluster: vm.cluster,
+          namespace: vm.namespace,
+          name: vm.name,
+        })),
+      ),
+    };
+    if (intent === "bulk-delete") {
+      payload.retainDisks = options?.retainDisks ? "true" : "false";
+    }
+    fetcher.submit(payload, { method: "post" });
+  }
+
   if (vms.length === 0) {
     return (
       <Text c="dimmed" size="sm" py="xl" ta="center">
@@ -133,256 +259,360 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
     );
   }
 
+  const bulkIdentities = selectedVms.map(resourceKey);
+
   return (
     <>
-      <Table.ScrollContainer className="kmc-table-scroll" minWidth={800} type="native">
-        <Table
-          className="kmc-table"
-          highlightOnHover
-          verticalSpacing="sm"
-          horizontalSpacing="md"
-          withRowBorders
+      <Stack gap="sm">
+        <BulkActionBar
+          selectedCount={selectedCount}
+          onClear={clear}
+          disabled={busy}
         >
-          <Table.Thead>
-            <Table.Tr>
-              <Table.Th>Name</Table.Th>
-              <Table.Th>Cluster</Table.Th>
-              <Table.Th>Namespace</Table.Th>
-              <Table.Th>Status</Table.Th>
-              <Table.Th>IPv4</Table.Th>
-              <Table.Th>Instance type</Table.Th>
-              <Table.Th>Disk</Table.Th>
-              <Table.Th>Age</Table.Th>
-              <Table.Th w={48} />
-            </Table.Tr>
-          </Table.Thead>
-          <Table.Tbody>
-            {vms.map((vm) => {
-              const key = `${vm.cluster}/${vm.namespace}/${vm.name}`;
-              const ipv4 = displayAllocatedIpv4(vm.allocatedIpv4);
-              return (
-                <Table.Tr key={key}>
-                  <Table.Td>
-                    <ResourceLink to={vmPath(vm)}>{vm.name}</ResourceLink>
-                    {vm.message && (
-                      <ClampedText size="xs" c="dimmed" lineClamp={1} maw={280}>
-                        {vm.message}
-                      </ClampedText>
-                    )}
-                  </Table.Td>
-                  <Table.Td>
-                    <ResourceLink to={vmsListPath({ cluster: vm.cluster })} dimmed>
-                      {vm.cluster}
-                    </ResourceLink>
-                  </Table.Td>
-                  <Table.Td>
-                    <ResourceLink
-                      to={vmsListPath({ cluster: vm.cluster, namespace: vm.namespace })}
-                      dimmed
-                    >
-                      {vm.namespace}
-                    </ResourceLink>
-                  </Table.Td>
-                  <Table.Td>
-                    <Group gap={6} wrap="nowrap">
-                      <ResourceLink
-                        to={vmsListPath({ cluster: vm.cluster, status: vm.status })}
-                        underline="never"
-                      >
-                        <StatusBadge status={vm.status} />
+          <Tooltip
+            label={
+              startableSelected.length === 0
+                ? "No selected VMs are eligible to start"
+                : selectedCount > startableSelected.length
+                  ? `Start ${startableSelected.length} · ${selectedCount - startableSelected.length} will be skipped`
+                  : `Start ${startableSelected.length} VM${startableSelected.length === 1 ? "" : "s"}`
+            }
+          >
+            <span>
+              <Button
+                size="xs"
+                variant="light"
+                leftSection={<IconPlayerPlay size={14} />}
+                disabled={busy || startableSelected.length === 0}
+                onClick={() =>
+                  submitBulk("bulk-start", startableSelected, {
+                    clientSkipped: selectedVms.length - startableSelected.length,
+                  })
+                }
+              >
+                Start
+              </Button>
+            </span>
+          </Tooltip>
+          <Tooltip
+            label={
+              stoppableSelected.length === 0
+                ? "No selected VMs are eligible to stop"
+                : selectedCount > stoppableSelected.length
+                  ? `Stop ${stoppableSelected.length} · ${selectedCount - stoppableSelected.length} will be skipped`
+                  : `Stop ${stoppableSelected.length} VM${stoppableSelected.length === 1 ? "" : "s"}`
+            }
+          >
+            <span>
+              <Button
+                size="xs"
+                variant="light"
+                leftSection={<IconPlayerStop size={14} />}
+                disabled={busy || stoppableSelected.length === 0}
+                onClick={() =>
+                  submitBulk("bulk-stop", stoppableSelected, {
+                    clientSkipped: selectedVms.length - stoppableSelected.length,
+                  })
+                }
+              >
+                Stop
+              </Button>
+            </span>
+          </Tooltip>
+          <Button
+            size="xs"
+            variant="light"
+            color="red"
+            leftSection={<IconTrash size={14} />}
+            disabled={busy}
+            onClick={() => {
+              setBulkRetainDisks(false);
+              setBulkDeleteOpen(true);
+            }}
+          >
+            Delete
+          </Button>
+        </BulkActionBar>
+
+        <Table.ScrollContainer className="kmc-table-scroll" minWidth={800} type="native">
+          <Table
+            className="kmc-table"
+            highlightOnHover
+            verticalSpacing="sm"
+            horizontalSpacing="md"
+            withRowBorders
+          >
+            <Table.Thead>
+              <Table.Tr>
+                <Table.Th w={40}>
+                  <Checkbox
+                    aria-label="Select all visible VMs"
+                    checked={allSelected}
+                    indeterminate={someSelected}
+                    disabled={busy}
+                    onChange={() => toggleAllVisible()}
+                  />
+                </Table.Th>
+                <Table.Th>Name</Table.Th>
+                <Table.Th>Cluster</Table.Th>
+                <Table.Th>Namespace</Table.Th>
+                <Table.Th>Status</Table.Th>
+                <Table.Th>IPv4</Table.Th>
+                <Table.Th>Instance type</Table.Th>
+                <Table.Th>Disk</Table.Th>
+                <Table.Th>Age</Table.Th>
+                <Table.Th w={48} />
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {vms.map((vm) => {
+                const key = resourceKey(vm);
+                const ipv4 = displayAllocatedIpv4(vm.allocatedIpv4);
+                return (
+                  <Table.Tr
+                    key={key}
+                    bg={isSelected(key) ? "dark.7" : undefined}
+                  >
+                    <Table.Td>
+                      <Checkbox
+                        aria-label={`Select ${vm.name}`}
+                        checked={isSelected(key)}
+                        disabled={busy}
+                        onChange={() => toggle(key)}
+                      />
+                    </Table.Td>
+                    <Table.Td>
+                      <ResourceLink to={vmPath(vm)}>{vm.name}</ResourceLink>
+                      {vm.message && (
+                        <ClampedText size="xs" c="dimmed" lineClamp={1} maw={280}>
+                          {vm.message}
+                        </ClampedText>
+                      )}
+                    </Table.Td>
+                    <Table.Td>
+                      <ResourceLink to={vmsListPath({ cluster: vm.cluster })} dimmed>
+                        {vm.cluster}
                       </ResourceLink>
-                      {vm.restartRequired && (
-                        <Tooltip
-                          label={
-                            vm.restartRequiredMessage?.trim() ||
-                            "LiveUpdate change needs a guest reboot"
-                          }
-                        >
-                          <Badge size="xs" variant="light" color="orange">
-                            restart
-                          </Badge>
-                        </Tooltip>
-                      )}
-                    </Group>
-                  </Table.Td>
-                  <Table.Td>
-                    <Stack gap={2}>
-                      <Text size="sm" ff="monospace" c={ipv4 ? undefined : "dimmed"}>
-                        {ipv4 ?? "—"}
-                      </Text>
-                      {vm.floatingIpv4 && vm.floatingIpv4.length > 0 ? (
-                        <Tooltip
-                          label={`Floating IP${vm.floatingIpv4.length > 1 ? "s" : ""}`}
-                        >
-                          <Text size="xs" ff="monospace" c="teal.5">
-                            {vm.floatingIpv4.join(", ")}
-                          </Text>
-                        </Tooltip>
-                      ) : null}
-                    </Stack>
-                  </Table.Td>
-                  <Table.Td>
-                    <Stack gap={2}>
-                      {vm.instanceType ? (
-                        <ResourceLink
-                          to={instanceTypePath({
-                            cluster: vm.cluster,
-                            name: vm.instanceType,
-                          })}
-                        >
-                          {vm.instanceType}
-                        </ResourceLink>
-                      ) : (
-                        <Text size="sm" c="dimmed">
-                          Custom
-                        </Text>
-                      )}
-                      <Text size="xs" c="dimmed">
-                        {sizeLabel(vm)}
-                      </Text>
-                    </Stack>
-                  </Table.Td>
-                  <Table.Td>
-                    {vm.disk && vm.diskDataVolume ? (
+                    </Table.Td>
+                    <Table.Td>
                       <ResourceLink
-                        to={dataVolumePath({
+                        to={vmsListPath({
                           cluster: vm.cluster,
                           namespace: vm.namespace,
-                          name: vm.diskDataVolume,
                         })}
                         dimmed
                       >
-                        {vm.disk}
+                        {vm.namespace}
                       </ResourceLink>
-                    ) : (
-                      <Text size="sm" c="dimmed">
-                        {vm.disk ?? "—"}
-                      </Text>
-                    )}
-                  </Table.Td>
-                  <Table.Td>
-                    <Tooltip label={vm.age || "unknown"}>
-                      <Text size="sm" c="dimmed">
-                        {formatAge(vm.age)}
-                      </Text>
-                    </Tooltip>
-                  </Table.Td>
-                  <Table.Td>
-                    <Menu shadow="md" width={190} position="bottom-end">
-                      <Menu.Target>
-                        <ActionIcon
-                          variant="subtle"
-                          color="gray"
-                          aria-label={`Actions for ${vm.name}`}
+                    </Table.Td>
+                    <Table.Td>
+                      <Group gap={6} wrap="nowrap">
+                        <ResourceLink
+                          to={vmsListPath({
+                            cluster: vm.cluster,
+                            status: vm.status,
+                          })}
+                          underline="never"
                         >
-                          <IconDotsVertical size={16} />
-                        </ActionIcon>
-                      </Menu.Target>
-                      <Menu.Dropdown>
-                        <Menu.Item
-                          component={Link}
-                          to={vmTerminalPath(vm)}
-                          leftSection={<IconTerminal2 size={14} />}
-                          disabled={!canOpenConsole(vm)}
-                          title={
-                            canOpenConsole(vm)
-                              ? "Open SSH terminal"
-                              : "Terminal requires a live VMI (Running)"
-                          }
+                          <StatusBadge status={vm.status} />
+                        </ResourceLink>
+                        {vm.restartRequired && (
+                          <Tooltip
+                            label={
+                              vm.restartRequiredMessage?.trim() ||
+                              "LiveUpdate change needs a guest reboot"
+                            }
+                          >
+                            <Badge size="xs" variant="light" color="orange">
+                              restart
+                            </Badge>
+                          </Tooltip>
+                        )}
+                      </Group>
+                    </Table.Td>
+                    <Table.Td>
+                      <Stack gap={2}>
+                        <Text
+                          size="sm"
+                          ff="monospace"
+                          c={ipv4 ? undefined : "dimmed"}
                         >
-                          Terminal
-                        </Menu.Item>
-                        <Menu.Item
-                          component={Link}
-                          to={vmConsolePath(vm)}
-                          leftSection={<IconTerminal2 size={14} />}
-                          disabled={!canOpenConsole(vm)}
-                          title={
-                            canOpenConsole(vm)
-                              ? "Open serial console"
-                              : "Serial console requires a live VMI (Running)"
-                          }
+                          {ipv4 ?? "—"}
+                        </Text>
+                        {vm.floatingIpv4 && vm.floatingIpv4.length > 0 ? (
+                          <Tooltip
+                            label={`Floating IP${vm.floatingIpv4.length > 1 ? "s" : ""}`}
+                          >
+                            <Text size="xs" ff="monospace" c="teal.5">
+                              {vm.floatingIpv4.join(", ")}
+                            </Text>
+                          </Tooltip>
+                        ) : null}
+                      </Stack>
+                    </Table.Td>
+                    <Table.Td>
+                      <Stack gap={2}>
+                        {vm.instanceType ? (
+                          <ResourceLink
+                            to={instanceTypePath({
+                              cluster: vm.cluster,
+                              name: vm.instanceType,
+                            })}
+                          >
+                            {vm.instanceType}
+                          </ResourceLink>
+                        ) : (
+                          <Text size="sm" c="dimmed">
+                            Custom
+                          </Text>
+                        )}
+                        <Text size="xs" c="dimmed">
+                          {sizeLabel(vm)}
+                        </Text>
+                      </Stack>
+                    </Table.Td>
+                    <Table.Td>
+                      {vm.disk && vm.diskDataVolume ? (
+                        <ResourceLink
+                          to={dataVolumePath({
+                            cluster: vm.cluster,
+                            namespace: vm.namespace,
+                            name: vm.diskDataVolume,
+                          })}
+                          dimmed
                         >
-                          Serial
-                        </Menu.Item>
-                        <Menu.Item
-                          component={Link}
-                          to={vmEditPath(vm)}
-                          leftSection={<IconEdit size={14} />}
-                        >
-                          Edit
-                        </Menu.Item>
-                        <Menu.Divider />
-                        <Menu.Item
-                          leftSection={<IconPlayerStop size={14} />}
-                          disabled={!canStop(vm) || busy}
-                          title={
-                            vm.status === "Paused"
-                              ? "Unpause the VM before stopping"
-                              : undefined
-                          }
-                          onClick={() => submitIntent("stop", vm)}
-                        >
-                          Stop
-                        </Menu.Item>
-                        <Menu.Item
-                          leftSection={<IconPlayerPlay size={14} />}
-                          disabled={!canStart(vm) || busy}
-                          onClick={() => submitIntent("start", vm)}
-                        >
-                          Start
-                        </Menu.Item>
-                        <Menu.Item
-                          leftSection={<IconRefresh size={14} />}
-                          disabled={!canSoftReboot(vm) || busy}
-                          title="ACPI soft reboot (guest-initiated)"
-                          onClick={() => submitIntent("softreboot", vm)}
-                        >
-                          Soft reboot
-                        </Menu.Item>
-                        <Menu.Item
-                          leftSection={<IconRefresh size={14} />}
-                          disabled={!canRestart(vm) || busy}
-                          title="Tear down and recreate the domain"
-                          onClick={() => submitIntent("restart", vm)}
-                        >
-                          Hard restart
-                        </Menu.Item>
-                        {canUnpause(vm) ? (
+                          {vm.disk}
+                        </ResourceLink>
+                      ) : (
+                        <Text size="sm" c="dimmed">
+                          {vm.disk ?? "—"}
+                        </Text>
+                      )}
+                    </Table.Td>
+                    <Table.Td>
+                      <Tooltip label={vm.age || "unknown"}>
+                        <Text size="sm" c="dimmed">
+                          {formatAge(vm.age)}
+                        </Text>
+                      </Tooltip>
+                    </Table.Td>
+                    <Table.Td>
+                      <Menu shadow="md" width={190} position="bottom-end">
+                        <Menu.Target>
+                          <ActionIcon
+                            variant="subtle"
+                            color="gray"
+                            aria-label={`Actions for ${vm.name}`}
+                          >
+                            <IconDotsVertical size={16} />
+                          </ActionIcon>
+                        </Menu.Target>
+                        <Menu.Dropdown>
+                          <Menu.Item
+                            component={Link}
+                            to={vmTerminalPath(vm)}
+                            leftSection={<IconTerminal2 size={14} />}
+                            disabled={!canOpenConsole(vm)}
+                            title={
+                              canOpenConsole(vm)
+                                ? "Open SSH terminal"
+                                : "Terminal requires a live VMI (Running)"
+                            }
+                          >
+                            Terminal
+                          </Menu.Item>
+                          <Menu.Item
+                            component={Link}
+                            to={vmConsolePath(vm)}
+                            leftSection={<IconTerminal2 size={14} />}
+                            disabled={!canOpenConsole(vm)}
+                            title={
+                              canOpenConsole(vm)
+                                ? "Open serial console"
+                                : "Serial console requires a live VMI (Running)"
+                            }
+                          >
+                            Serial
+                          </Menu.Item>
+                          <Menu.Item
+                            component={Link}
+                            to={vmEditPath(vm)}
+                            leftSection={<IconEdit size={14} />}
+                          >
+                            Edit
+                          </Menu.Item>
+                          <Menu.Divider />
+                          <Menu.Item
+                            leftSection={<IconPlayerStop size={14} />}
+                            disabled={!canStop(vm) || busy}
+                            title={
+                              vm.status === "Paused"
+                                ? "Unpause the VM before stopping"
+                                : undefined
+                            }
+                            onClick={() => submitIntent("stop", vm)}
+                          >
+                            Stop
+                          </Menu.Item>
                           <Menu.Item
                             leftSection={<IconPlayerPlay size={14} />}
-                            disabled={busy}
-                            onClick={() => submitIntent("unpause", vm)}
+                            disabled={!canStart(vm) || busy}
+                            onClick={() => submitIntent("start", vm)}
                           >
-                            Unpause
+                            Start
                           </Menu.Item>
-                        ) : (
                           <Menu.Item
-                            leftSection={<IconPlayerPause size={14} />}
-                            disabled={!canPause(vm) || busy}
-                            onClick={() => submitIntent("pause", vm)}
+                            leftSection={<IconRefresh size={14} />}
+                            disabled={!canSoftReboot(vm) || busy}
+                            title="ACPI soft reboot (guest-initiated)"
+                            onClick={() => submitIntent("softreboot", vm)}
                           >
-                            Pause
+                            Soft reboot
                           </Menu.Item>
-                        )}
-                        <Menu.Divider />
-                        <Menu.Item
-                          color="red"
-                          leftSection={<IconTrash size={14} />}
-                          disabled={busy}
-                          onClick={() => openDelete(vm)}
-                        >
-                          Delete
-                        </Menu.Item>
-                      </Menu.Dropdown>
-                    </Menu>
-                  </Table.Td>
-                </Table.Tr>
-              );
-            })}
-          </Table.Tbody>
-        </Table>
-      </Table.ScrollContainer>
+                          <Menu.Item
+                            leftSection={<IconRefresh size={14} />}
+                            disabled={!canRestart(vm) || busy}
+                            title="Tear down and recreate the domain"
+                            onClick={() => submitIntent("restart", vm)}
+                          >
+                            Hard restart
+                          </Menu.Item>
+                          {canUnpause(vm) ? (
+                            <Menu.Item
+                              leftSection={<IconPlayerPlay size={14} />}
+                              disabled={busy}
+                              onClick={() => submitIntent("unpause", vm)}
+                            >
+                              Unpause
+                            </Menu.Item>
+                          ) : (
+                            <Menu.Item
+                              leftSection={<IconPlayerPause size={14} />}
+                              disabled={!canPause(vm) || busy}
+                              onClick={() => submitIntent("pause", vm)}
+                            >
+                              Pause
+                            </Menu.Item>
+                          )}
+                          <Menu.Divider />
+                          <Menu.Item
+                            color="red"
+                            leftSection={<IconTrash size={14} />}
+                            disabled={busy}
+                            onClick={() => openDelete(vm)}
+                          >
+                            Delete
+                          </Menu.Item>
+                        </Menu.Dropdown>
+                      </Menu>
+                    </Table.Td>
+                  </Table.Tr>
+                );
+              })}
+            </Table.Tbody>
+          </Table>
+        </Table.ScrollContainer>
+      </Stack>
 
       <ConfirmDeleteModal
         opened={deleteTarget != null}
@@ -426,6 +656,49 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
             submitIntent("delete", deleteTarget, { retainDisks });
             closeDelete();
           }
+        }}
+      />
+
+      <ConfirmBulkDeleteModal
+        opened={bulkDeleteOpen}
+        count={selectedVms.length}
+        identities={bulkIdentities}
+        title={`Delete ${selectedVms.length} virtual machine${selectedVms.length === 1 ? "" : "s"}`}
+        confirmLabel={`Delete ${selectedVms.length} VM${selectedVms.length === 1 ? "" : "s"}`}
+        warning={
+          bulkRetainDisks
+            ? "VirtualMachines will be removed; root DataVolumes stay in their namespaces for reuse."
+            : "Root DataVolumes referenced by these VMs will also be deleted."
+        }
+        loading={busy}
+        onClose={() => {
+          setBulkDeleteOpen(false);
+          setBulkRetainDisks(false);
+        }}
+        extra={
+          <Radio.Group
+            label="Disks"
+            value={bulkRetainDisks ? "retain" : "destroy"}
+            onChange={(v) => setBulkRetainDisks(v === "retain")}
+          >
+            <Stack gap="xs" mt={6}>
+              <Radio
+                value="destroy"
+                label="Delete VMs and disks"
+                description="Root DataVolumes will be deleted after each VM."
+              />
+              <Radio
+                value="retain"
+                label="Delete VMs, keep disks"
+                description="Root DataVolumes remain for reuse on launch."
+              />
+            </Stack>
+          </Radio.Group>
+        }
+        onConfirm={() => {
+          submitBulk("bulk-delete", selectedVms, {
+            retainDisks: bulkRetainDisks,
+          });
         }}
       />
     </>
