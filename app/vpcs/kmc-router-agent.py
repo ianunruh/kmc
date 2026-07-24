@@ -25,7 +25,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "6"
+AGENT_VERSION = "7"
 
 ENV_FILE = os.environ.get("KMC_ENV_FILE", "/etc/kmc/router-agent.env")
 STATE_DIR = Path(os.environ.get("KMC_STATE_DIR", "/var/lib/kmc"))
@@ -356,17 +356,18 @@ def render_vpc_dnsmasq(
 
 
 def reload_dnsmasq() -> None:
-    # Prefer systemd; fall back to SIGHUP / start
-    r = run(["systemctl", "reload", "dnsmasq"], check=False)
-    if r.returncode == 0:
-        return
+    # MUST restart (not reload/SIGHUP). dnsmasq SIGHUP only re-reads
+    # dhcp-hostsfile / dhcp-hostsdir / hosts — it does NOT re-read conf-dir
+    # (our per-VPC *.conf with dhcp-host + dhcp-range). A bare reload left new
+    # static leases on disk while the running process still said
+    # "no address available" for those MACs.
     r = run(["systemctl", "restart", "dnsmasq"], check=False)
     if r.returncode == 0:
         return
     r = run(["systemctl", "start", "dnsmasq"], check=False)
     if r.returncode != 0:
-        # Try direct
         run(["pkill", "-HUP", "dnsmasq"], check=False)
+        log("dnsmasq restart/start failed; sent SIGHUP as last resort")
 
 
 def iptables(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
