@@ -1,14 +1,14 @@
 import { Badge, Box, Group, Stack, Text } from "@mantine/core";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { vpcPath, vmPath } from "~/lib/format";
+import { ingressesListPath, vpcPath, vmPath } from "~/lib/format";
 import type {
   TopologyEdge,
   TopologyNetworkNode,
   TopologyVmNode,
 } from "~/lib/types";
 
-const NODE_W = 180;
+const NODE_W = 220;
 const NODE_H = 52;
 const ROW_GAP = 16;
 const COL_GAP = 220;
@@ -16,20 +16,30 @@ const PAD_X = 24;
 const PAD_Y = 28;
 const HEADER_H = 22;
 
+/** Right-column kinds (pod NIC + HTTP ingress exposure). */
+const RIGHT_COL_KINDS = new Set<TopologyNetworkNode["kind"]>([
+  "pod",
+  "ingress",
+]);
+
 const KIND_COLORS: Record<TopologyNetworkNode["kind"], string> = {
   vpc: "#20c997",
   multus: "#339af0",
   pod: "#868e96",
+  ingress: "#cc5de8",
 };
 
 const KIND_LABELS: Record<TopologyNetworkNode["kind"], string> = {
   vpc: "VPC",
   multus: "Multus",
   pod: "Pod",
+  ingress: "Ingress",
 };
 
 /** Floating IP (public Multus → private target) edges. */
 const FLOATING_EDGE_COLOR = "#fab005";
+/** Ingress (pod network → VM) edges. */
+const INGRESS_EDGE_COLOR = "#cc5de8";
 
 const STATUS_STROKE: Record<string, string> = {
   Running: "#20c997",
@@ -76,17 +86,25 @@ function edgePath(
   from: LayoutNode,
   to: LayoutNode,
   fromRight: boolean,
+  /** Vertical bias on control points so parallel edges (e.g. attach + ingress) fan apart. */
+  curveBias = 0,
 ): string {
   const x1 = fromRight ? from.x + NODE_W : from.x;
   const y1 = from.cy;
   const x2 = fromRight ? to.x : to.x + NODE_W;
   const y2 = to.cy;
   const mid = (x1 + x2) / 2;
-  return `M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`;
+  return `M ${x1} ${y1} C ${mid} ${y1 + curveBias}, ${mid} ${y2 + curveBias}, ${x2} ${y2}`;
 }
 
 function networkHref(n: TopologyNetworkNode): string | null {
   if (n.kind === "pod") return null;
+  if (n.kind === "ingress") {
+    return ingressesListPath({
+      cluster: n.cluster,
+      namespace: n.namespace,
+    });
+  }
   if (n.kind === "vpc" && n.exists !== false) {
     return vpcPath(n);
   }
@@ -100,6 +118,7 @@ function networkSubtitle(n: TopologyNetworkNode): string {
   if (n.exists === false) bits.push("missing NAD");
   if (bits.length === 0) {
     if (n.kind === "pod") return "default cluster network";
+    if (n.kind === "ingress") return "HTTP(S) exposure";
     if (n.kind === "multus") return "NetworkAttachmentDefinition";
     return "VPC";
   }
@@ -133,17 +152,59 @@ export function NetworkGraph({
   }, [hoverId, edges]);
 
   const layout = useMemo(() => {
-    const netIds = networks.map((n) => n.id);
+    // Three columns: networks (left) · VMs (middle) · pod network (right).
+    // Right column holds pod + ingress nodes; edges leave the right of each VM.
+    // Empty columns collapse so the graph doesn't reserve blank space.
+    const leftNets = networks.filter((n) => !RIGHT_COL_KINDS.has(n.kind));
+    const rightNets = networks.filter((n) => RIGHT_COL_KINDS.has(n.kind));
+    // Pod above ingress within the column
+    rightNets.sort((a, b) => {
+      if (a.kind === b.kind) return a.name.localeCompare(b.name);
+      if (a.kind === "pod") return -1;
+      if (b.kind === "pod") return 1;
+      return a.name.localeCompare(b.name);
+    });
+    const leftIds = leftNets.map((n) => n.id);
+    const rightIds = rightNets.map((n) => n.id);
     const vmIds = vms.map((v) => v.id);
-    const leftX = PAD_X;
-    const rightX = PAD_X + NODE_W + COL_GAP;
+
+    const hasLeftCol = leftIds.length > 0;
+    const hasVmCol = vmIds.length > 0;
+    const hasRightCol = rightIds.length > 0;
+
+    let nextX = PAD_X;
+    const leftX = nextX;
+    if (hasLeftCol) nextX += NODE_W + COL_GAP;
+    const midX = nextX;
+    if (hasVmCol) nextX += NODE_W + COL_GAP;
+    // Keep a gap between left nets and right column even when VMs are absent
+    else if (hasLeftCol && hasRightCol) nextX += NODE_W + COL_GAP;
+    const rightX = nextX;
+
     const startY = PAD_Y + HEADER_H;
-    const netLayout = layoutColumn(netIds, leftX, startY);
-    const vmLayout = layoutColumn(vmIds, rightX, startY);
-    const rows = Math.max(netIds.length, vmIds.length, 1);
-    const width = rightX + NODE_W + PAD_X;
+
+    const netLayout = layoutColumn(leftIds, leftX, startY);
+    const rightLayout = layoutColumn(rightIds, rightX, startY);
+    // Merge right-column positions into netLayout so edge lookup stays simple
+    for (const [id, pos] of rightLayout) netLayout.set(id, pos);
+    const vmLayout = layoutColumn(vmIds, midX, startY);
+
+    const rows = Math.max(leftIds.length, vmIds.length, rightIds.length, 1);
+    const rightmostX = hasRightCol ? rightX : hasVmCol ? midX : leftX;
+    const width = rightmostX + NODE_W + PAD_X;
     const height = startY + rows * (NODE_H + ROW_GAP) - ROW_GAP + PAD_Y;
-    return { netLayout, vmLayout, width, height, leftX, rightX };
+    return {
+      netLayout,
+      vmLayout,
+      width,
+      height,
+      leftX,
+      midX,
+      rightX,
+      hasLeftCol,
+      hasVmCol,
+      hasRightCol,
+    };
   }, [networks, vms]);
 
   const networkById = useMemo(
@@ -208,6 +269,18 @@ export function NetworkGraph({
             Floating IP
           </Text>
         </Group>
+        <Group gap={6}>
+          <Box
+            w={16}
+            h={0}
+            style={{
+              borderTop: `2px dashed ${INGRESS_EDGE_COLOR}`,
+            }}
+          />
+          <Text size="xs" c="dimmed">
+            Ingress
+          </Text>
+        </Group>
         <Text size="xs" c="dimmed">
           · VM stroke = status
         </Text>
@@ -230,46 +303,75 @@ export function NetworkGraph({
           aria-label="Network topology graph"
           style={{ display: "block", minWidth: layout.width }}
         >
-          <text
-            x={layout.leftX}
-            y={PAD_Y}
-            fill="#868e96"
-            fontSize={11}
-            fontFamily="inherit"
-            letterSpacing="0.06em"
-          >
-            NETWORKS
-          </text>
-          <text
-            x={layout.rightX}
-            y={PAD_Y}
-            fill="#868e96"
-            fontSize={11}
-            fontFamily="inherit"
-            letterSpacing="0.06em"
-          >
-            VIRTUAL MACHINES
-          </text>
+          {layout.hasLeftCol ? (
+            <text
+              x={layout.leftX}
+              y={PAD_Y}
+              fill="#868e96"
+              fontSize={11}
+              fontFamily="inherit"
+              letterSpacing="0.06em"
+            >
+              NETWORKS
+            </text>
+          ) : null}
+          {layout.hasVmCol ? (
+            <text
+              x={layout.midX}
+              y={PAD_Y}
+              fill="#868e96"
+              fontSize={11}
+              fontFamily="inherit"
+              letterSpacing="0.06em"
+            >
+              VIRTUAL MACHINES
+            </text>
+          ) : null}
+          {layout.hasRightCol ? (
+            <text
+              x={layout.rightX}
+              y={PAD_Y}
+              fill="#868e96"
+              fontSize={11}
+              fontFamily="inherit"
+              letterSpacing="0.06em"
+            >
+              POD NETWORK
+            </text>
+          ) : null}
 
           {edges.map((e) => {
-            const from = layout.netLayout.get(e.networkId);
-            const to = layout.vmLayout.get(e.vmId);
-            if (!from || !to) return null;
+            const netPos = layout.netLayout.get(e.networkId);
+            const vmPos = layout.vmLayout.get(e.vmId);
+            if (!netPos || !vmPos) return null;
             const net = networkById.get(e.networkId);
             const isFloating = e.role === "floating";
+            const isIngress = e.role === "ingress";
+            const fromRightCol =
+              net != null && RIGHT_COL_KINDS.has(net.kind);
+            // Fan FIP / Ingress slightly so they don't sit on top of attachment edges.
+            const curveBias = isFloating ? -22 : isIngress ? 22 : 0;
+            // Left nets → into VM left; right-column nodes leave the VM right edge.
+            const d = fromRightCol
+              ? edgePath(vmPos, netPos, true, curveBias)
+              : edgePath(netPos, vmPos, true, curveBias);
             const stroke = isFloating
               ? FLOATING_EDGE_COLOR
-              : net
-                ? KIND_COLORS[net.kind]
-                : "#868e96";
+              : isIngress
+                ? INGRESS_EDGE_COLOR
+                : net
+                  ? KIND_COLORS[net.kind]
+                  : "#868e96";
             return (
               <path
                 key={e.id}
-                d={edgePath(from, to, true)}
+                d={d}
                 fill="none"
                 stroke={stroke}
                 strokeWidth={related?.edgeIds.has(e.id) ? 2.25 : 1.5}
-                strokeDasharray={isFloating ? "5 4" : undefined}
+                strokeDasharray={
+                  isFloating || isIngress ? "5 4" : undefined
+                }
                 opacity={edgeOpacity(e.id)}
                 style={{ transition: "opacity 120ms ease, stroke-width 120ms ease" }}
               >
@@ -339,7 +441,7 @@ export function NetworkGraph({
                   fontFamily="inherit"
                   fontWeight={600}
                 >
-                  {truncate(n.name, 20)}
+                  {truncate(n.name, 26)}
                 </text>
                 <text
                   x={pos.x + 14}
@@ -348,7 +450,7 @@ export function NetworkGraph({
                   fontSize={10}
                   fontFamily="inherit"
                 >
-                  {truncate(networkSubtitle(n), 24)}
+                  {truncate(networkSubtitle(n), 30)}
                 </text>
               </g>
             );
@@ -404,21 +506,32 @@ export function NetworkGraph({
                   fontFamily="inherit"
                   fontWeight={600}
                 >
-                  {truncate(v.name, 18)}
+                  {truncate(v.name, 24)}
                 </text>
                 <text
                   x={pos.x + 26}
                   y={pos.y + 38}
-                  fill={v.floatingIpv4?.length ? FLOATING_EDGE_COLOR : "#868e96"}
+                  fill={
+                    v.floatingIpv4?.length
+                      ? FLOATING_EDGE_COLOR
+                      : v.ingressHosts?.length
+                        ? INGRESS_EDGE_COLOR
+                        : "#868e96"
+                  }
                   fontSize={10}
                   fontFamily="inherit"
                 >
                   {v.floatingIpv4?.length
                     ? truncate(
                         `${v.status} · ${v.floatingIpv4.join(", ")}`,
-                        22,
+                        28,
                       )
-                    : v.status}
+                    : v.ingressHosts?.length
+                      ? truncate(
+                          `${v.status} · ${v.ingressHosts.join(", ")}`,
+                          28,
+                        )
+                      : v.status}
                 </text>
               </g>
             );
@@ -454,10 +567,15 @@ function HoverSummary({
 
   if (net) {
     const attachEdges = edges.filter(
-      (e) => e.networkId === hoverId && e.role !== "floating",
+      (e) =>
+        e.networkId === hoverId &&
+        (e.role == null || e.role === "attachment"),
     );
     const floatEdges = edges.filter(
       (e) => e.networkId === hoverId && e.role === "floating",
+    );
+    const ingressEdges = edges.filter(
+      (e) => e.networkId === hoverId && e.role === "ingress",
     );
     const attached = attachEdges
       .map((e) => vmById.get(e.vmId)?.name)
@@ -465,9 +583,31 @@ function HoverSummary({
     const floatLabels = floatEdges
       .map((e) => e.label ?? vmById.get(e.vmId)?.name)
       .filter(Boolean);
+    const ingressLabels = ingressEdges
+      .map((e) => e.label ?? vmById.get(e.vmId)?.name)
+      .filter(Boolean);
+    const ingressVmNames = [
+      ...new Set(
+        ingressEdges
+          .map((e) => vmById.get(e.vmId)?.name)
+          .filter(Boolean) as string[],
+      ),
+    ];
     return (
       <Group gap="xs" wrap="wrap">
-        <Badge size="sm" variant="light" color={net.kind === "vpc" ? "teal" : net.kind === "pod" ? "gray" : "blue"}>
+        <Badge
+          size="sm"
+          variant="light"
+          color={
+            net.kind === "vpc"
+              ? "teal"
+              : net.kind === "pod"
+                ? "gray"
+                : net.kind === "ingress"
+                  ? "grape"
+                  : "blue"
+          }
+        >
           {KIND_LABELS[net.kind]}
         </Badge>
         <Text size="sm" fw={600}>
@@ -476,15 +616,40 @@ function HoverSummary({
         <Text size="xs" c="dimmed">
           {net.namespace} · {net.cluster}
         </Text>
-        <Text size="xs" c="dimmed">
-          → {attached.length} VM{attached.length === 1 ? "" : "s"}
-          {attached.length > 0 ? `: ${attached.slice(0, 8).join(", ")}` : ""}
-          {attached.length > 8 ? "…" : ""}
-        </Text>
+        {net.kind === "ingress" ? (
+          <Text size="xs" c="dimmed">
+            → {ingressVmNames.length} VM
+            {ingressVmNames.length === 1 ? "" : "s"}
+            {ingressVmNames.length > 0
+              ? `: ${ingressVmNames.slice(0, 8).join(", ")}`
+              : ""}
+            {ingressVmNames.length > 8 ? "…" : ""}
+          </Text>
+        ) : (
+          <Text size="xs" c="dimmed">
+            → {attached.length} VM{attached.length === 1 ? "" : "s"}
+            {attached.length > 0
+              ? `: ${attached.slice(0, 8).join(", ")}`
+              : ""}
+            {attached.length > 8 ? "…" : ""}
+          </Text>
+        )}
         {floatLabels.length > 0 ? (
           <Text size="xs" c="yellow.6">
             FIP → {floatLabels.slice(0, 6).join(", ")}
             {floatLabels.length > 6 ? "…" : ""}
+          </Text>
+        ) : null}
+        {net.kind !== "ingress" && ingressLabels.length > 0 ? (
+          <Text size="xs" c="grape.5">
+            Ingress → {ingressLabels.slice(0, 6).join(", ")}
+            {ingressLabels.length > 6 ? "…" : ""}
+          </Text>
+        ) : null}
+        {net.kind === "ingress" && ingressLabels.length > 0 ? (
+          <Text size="xs" c="grape.5">
+            {ingressLabels.slice(0, 6).join(", ")}
+            {ingressLabels.length > 6 ? "…" : ""}
           </Text>
         ) : null}
       </Group>
@@ -493,10 +658,14 @@ function HoverSummary({
 
   if (vm) {
     const attachEdges = edges.filter(
-      (e) => e.vmId === hoverId && e.role !== "floating",
+      (e) =>
+        e.vmId === hoverId && (e.role == null || e.role === "attachment"),
     );
     const floatEdges = edges.filter(
       (e) => e.vmId === hoverId && e.role === "floating",
+    );
+    const ingressEdges = edges.filter(
+      (e) => e.vmId === hoverId && e.role === "ingress",
     );
     const nets = attachEdges
       .map((e) => networkById.get(e.networkId)?.name)
@@ -505,6 +674,10 @@ function HoverSummary({
       vm.floatingIpv4?.length
         ? vm.floatingIpv4
         : floatEdges.map((e) => e.label).filter(Boolean);
+    const ingressHosts =
+      vm.ingressHosts?.length
+        ? vm.ingressHosts
+        : ingressEdges.map((e) => e.label).filter(Boolean);
     return (
       <Group gap="xs" wrap="wrap">
         <Badge size="sm" variant="light" color={vm.ready ? "teal" : "gray"}>
@@ -517,12 +690,17 @@ function HoverSummary({
           {vm.status} · {vm.namespace} · {vm.cluster}
         </Text>
         <Text size="xs" c="dimmed">
-          ← {nets.length} network{nets.length === 1 ? "" : "s"}
+          {nets.length} network{nets.length === 1 ? "" : "s"}
           {nets.length > 0 ? `: ${nets.join(", ")}` : ""}
         </Text>
         {floats.length > 0 ? (
           <Text size="xs" c="yellow.6">
             FIP {floats.join(", ")}
+          </Text>
+        ) : null}
+        {ingressHosts.length > 0 ? (
+          <Text size="xs" c="grape.5">
+            Ingress {ingressHosts.join(", ")}
           </Text>
         ) : null}
       </Group>

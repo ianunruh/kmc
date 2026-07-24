@@ -11,7 +11,9 @@ import {
 } from "~/lib/ipam/pools.server";
 import {
   KMC_ANN_CIDR,
+  KMC_INGRESS_LABEL_SELECTOR,
   KMC_LABEL_RESOURCE,
+  KMC_LABEL_VM,
   KMC_LABEL_VLAN,
   KMC_MANAGED_BY,
   KMC_RESOURCE_NETWORK,
@@ -29,6 +31,18 @@ import type {
 import { listFloatingIpsFromRouterPolicies } from "~/vpcs/router-policy.server";
 
 import { listClusters } from "~/vms/vms.server";
+
+type KubeIngress = {
+  metadata?: {
+    name?: string;
+    namespace?: string;
+    labels?: Record<string, string>;
+  };
+  spec?: {
+    rules?: Array<{ host?: string }>;
+    tls?: Array<{ hosts?: string[] }>;
+  };
+};
 
 type KubeNad = {
   metadata?: {
@@ -69,6 +83,10 @@ function nodeId(cluster: string, namespace: string, name: string): string {
 
 function podNodeId(cluster: string, namespace: string): string {
   return nodeId(cluster, namespace, "__pod__");
+}
+
+function ingressNodeId(cluster: string, namespace: string): string {
+  return nodeId(cluster, namespace, "__ingress__");
 }
 
 /**
@@ -333,11 +351,81 @@ async function loadClusterTopology(
     );
   }
 
+  // Ingresses: one synthetic "ingress" node per namespace + edges to target VMs.
+  try {
+    const { networking } = getClusterClients(cluster);
+    const ingRes = await networking.listIngressForAllNamespaces({
+      labelSelector: KMC_INGRESS_LABEL_SELECTOR,
+    });
+    for (const ing of (ingRes.items ?? []) as KubeIngress[]) {
+      const name = ing.metadata?.name;
+      const namespace = ing.metadata?.namespace;
+      if (!name || !namespace) continue;
+
+      const vmName = ing.metadata?.labels?.[KMC_LABEL_VM]?.trim();
+      if (!vmName) continue;
+      const target = vmByNsName.get(`${namespace}/${vmName}`);
+      if (!target) continue;
+
+      const hosts = new Set<string>();
+      for (const rule of ing.spec?.rules ?? []) {
+        if (rule.host) hosts.add(rule.host);
+      }
+      for (const tls of ing.spec?.tls ?? []) {
+        for (const h of tls.hosts ?? []) {
+          if (h) hosts.add(h);
+        }
+      }
+      const hostList = Array.from(hosts);
+      const label = hostList[0] ?? name;
+
+      if (hostList.length > 0) {
+        const existing = target.ingressHosts ?? [];
+        const merged = [...existing];
+        for (const h of hostList) {
+          if (!merged.includes(h)) merged.push(h);
+        }
+        target.ingressHosts = merged;
+      }
+
+      const iid = ingressNodeId(cluster, namespace);
+      if (!networksById.has(iid)) {
+        networksById.set(iid, {
+          id: iid,
+          kind: "ingress",
+          cluster,
+          namespace,
+          name: "ingress",
+          exists: true,
+        });
+      }
+
+      edges.push({
+        id: `ing:${iid}->${target.id}:${name}`,
+        networkId: iid,
+        vmId: target.id,
+        role: "ingress",
+        label,
+      });
+    }
+  } catch (err) {
+    console.error(
+      `topology ingresses (${cluster}):`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
+  const kindOrder = (k: TopologyNetworkNode["kind"]) => {
+    if (k === "pod") return 0;
+    if (k === "ingress") return 1;
+    return 2;
+  };
+
   const networks = Array.from(networksById.values()).sort((a, b) => {
     const n = a.namespace.localeCompare(b.namespace);
     if (n) return n;
-    if (a.kind === "pod" && b.kind !== "pod") return -1;
-    if (a.kind !== "pod" && b.kind === "pod") return 1;
+    const ko = kindOrder(a.kind) - kindOrder(b.kind);
+    if (ko) return ko;
     return a.name.localeCompare(b.name);
   });
 
@@ -384,13 +472,19 @@ export async function listNetworkTopology(clusterFilter?: ClusterId): Promise<{
     }),
   );
 
+  const kindOrder = (k: TopologyNetworkNode["kind"]) => {
+    if (k === "pod") return 0;
+    if (k === "ingress") return 1;
+    return 2;
+  };
+
   networks.sort((a, b) => {
     const c = a.cluster.localeCompare(b.cluster);
     if (c) return c;
     const n = a.namespace.localeCompare(b.namespace);
     if (n) return n;
-    if (a.kind === "pod" && b.kind !== "pod") return -1;
-    if (a.kind !== "pod" && b.kind === "pod") return 1;
+    const ko = kindOrder(a.kind) - kindOrder(b.kind);
+    if (ko) return ko;
     return a.name.localeCompare(b.name);
   });
 
