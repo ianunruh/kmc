@@ -187,6 +187,13 @@ export interface CreateVmRequest {
   networks?: Array<{
     multusNetworkName: string;
   }>;
+  /**
+   * When Multus attachments are present, also attach the pod network (masquerade)
+   * as the first interface so KubeVirt port-forward / browser Terminal can reach
+   * the guest. Default true when Multus is used; set false to Multus-only.
+   * Ignored when networks is empty (pod-only VMs).
+   */
+  includePodNetwork?: boolean;
   sshPublicKey: string;
   start?: boolean;
   /**

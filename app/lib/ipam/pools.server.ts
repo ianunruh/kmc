@@ -641,7 +641,14 @@ function matchLinesFor(allocation: AllocatedIp): string[] {
     return [`    match:`, `      name: "${allocation.interfaceName}"`];
   }
   if (allocation.macAddress) {
-    return [`    match:`, `      macaddress: "${allocation.macAddress.toLowerCase()}"`];
+    const mac = allocation.macAddress.toLowerCase();
+    const lines = [`    match:`, `      macaddress: "${mac}"`];
+    // Rename Multus NICs so a dual-home pod entry can match leftover en* safely.
+    const setName = allocation.networkName?.trim();
+    if (setName && /^[a-zA-Z][a-zA-Z0-9_-]*$/.test(setName)) {
+      lines.push(`    set-name: ${setName}`);
+    }
+    return lines;
   }
   // Single-NIC fallback when no MAC was stamped (legacy behavior)
   return [`    match:`, `      driver: virtio_net`];
@@ -656,10 +663,39 @@ function matchLinesFor(allocation: AllocatedIp): string[] {
 const STATIC_NETPLAN_FALLBACK_DNS = ["1.1.1.1", "1.0.0.1"];
 
 /**
+ * KubeVirt masquerade default guest subnet gateway (virt-launcher side).
+ * Used for dual-home cluster CIDR routes when DHCP default route is suppressed.
+ * @see https://kubevirt.io/user-guide/network/interfaces_and_networks/#masquerade
+ */
+export const KUBEVIRT_MASQUERADE_GATEWAY = "10.0.2.1";
+
+export type BuildNetworkDataOpts = {
+  /**
+   * Dual-home Multus + pod: configure the remaining virtio NIC (pod/masquerade)
+   * with DHCP and no default route so KubeVirt port-forward can reach sshd.
+   * Multus NICs should be MAC-matched (and set-name'd) so they are not en*.
+   */
+  includePodDhcp?: boolean;
+  /**
+   * Cluster underlay CIDRs (pod + service) to route via the masquerade gateway.
+   * Without these, the guest has a pod NIC address but all cluster traffic still
+   * follows the Multus default route. Only applied when includePodDhcp is set.
+   */
+  clusterCidrs?: string[];
+  /**
+   * Next hop for clusterCidrs (default KubeVirt masquerade gateway 10.0.2.1).
+   */
+  masqueradeGateway?: string;
+};
+
+/**
  * cloud-init network-config (netplan) for one or more Multus IPAM allocations.
  * At most one default route is installed (primary = first with gateway, else first).
  */
-export function buildNetworkData(allocations: AllocatedIp | AllocatedIp[]): string {
+export function buildNetworkData(
+  allocations: AllocatedIp | AllocatedIp[],
+  opts?: BuildNetworkDataOpts,
+): string {
   const list = Array.isArray(allocations) ? allocations : [allocations];
   if (list.length === 0) {
     throw new Error("buildNetworkData requires at least one allocation");
@@ -699,6 +735,32 @@ export function buildNetworkData(allocations: AllocatedIp | AllocatedIp[]): stri
       lines.push(`        - ${d}`);
     }
   });
+
+  if (opts?.includePodDhcp) {
+    // After Multus set-name, the pod/masquerade NIC remains en*; DHCP for
+    // address only (no default route — Multus stays L3 primary). Explicit
+    // routes for pod/service CIDRs so guest → cluster works over masquerade.
+    const gw =
+      opts.masqueradeGateway?.trim() || KUBEVIRT_MASQUERADE_GATEWAY;
+    const clusterCidrs = (opts.clusterCidrs ?? [])
+      .map((c) => c.trim())
+      .filter(Boolean);
+    lines.push(
+      "  pod:",
+      "    match:",
+      '      name: "en*"',
+      "    dhcp4: true",
+      "    dhcp4-overrides:",
+      "      use-routes: false",
+    );
+    if (clusterCidrs.length > 0) {
+      lines.push("    routes:");
+      for (const cidr of clusterCidrs) {
+        lines.push(`      - to: ${cidr}`, `        via: ${gw}`);
+      }
+    }
+    lines.push("    optional: true");
+  }
 
   return lines.join("\n") + "\n";
 }

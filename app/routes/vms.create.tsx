@@ -107,6 +107,8 @@ export async function action({ request }: Route.ActionArgs) {
         .map((s) => s.trim())
         .filter(Boolean)
     : [];
+  /** Multus + pod dual-home (default on); form sends "false" to opt out. */
+  const includePodNetwork = form.get("includePodNetwork") !== "false";
   const sshKeyMode = String(form.get("sshKeyMode") ?? "paste").trim();
   const savedSshKeyId = String(form.get("savedSshKeyId") ?? "").trim();
   let sshPublicKey = String(form.get("sshPublicKey") ?? "").trim();
@@ -192,6 +194,8 @@ export async function action({ request }: Route.ActionArgs) {
     payload.networks = multusNetworks.map((multusNetworkName) => ({
       multusNetworkName,
     }));
+    // Default dual-home; only send false when the user opts out.
+    payload.includePodNetwork = includePodNetwork;
   }
 
   try {
@@ -259,6 +263,11 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       existingDataVolume: prefill.existingDataVolume,
       /** Multus NAD names in attachment order; empty = pod network only */
       networks: [] as string[],
+      /**
+       * Dual-home Multus + pod/masquerade (pod first). Enables browser Terminal
+       * via KubeVirt port-forward. Opt out for Multus-only guests.
+       */
+      includePodNetwork: true,
       sshKeyMode: (hasSavedKeys ? "saved" : "paste") as "saved" | "paste",
       savedSshKeyId: hasSavedKeys ? sshKeys[0]!.id : "",
       sshPublicKey: "",
@@ -306,6 +315,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       memory: values.memory,
       diskSource: values.diskSource,
       networks: values.networks.filter(Boolean).join(","),
+      includePodNetwork: values.includePodNetwork ? "true" : "false",
       sshKeyMode: values.sshKeyMode,
       savedSshKeyId: values.savedSshKeyId,
       sshPublicKey: values.sshPublicKey,
@@ -785,9 +795,11 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                   Networks
                 </Text>
                 <Text size="xs" c="dimmed">
-                  Multus attachments in order (first is primary for the default
-                  route when IPAM applies). Leave empty for pod network only
-                  (masquerade NAT via virt-launcher — works with Ingress).
+                  Multus attachments in order (first Multus is primary for the
+                  default route when IPAM applies). Leave empty for pod network
+                  only (masquerade NAT via virt-launcher — works with Ingress).
+                  With Multus, a pod NIC is added first by default so Terminal
+                  port-forward works.
                 </Text>
               </div>
               {form.values.networks.length === 0 ? (
@@ -802,9 +814,9 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                       label={
                         form.values.networks.length > 1
                           ? index === 0
-                            ? "Primary"
-                            : `NIC ${index + 1}`
-                          : "Network"
+                            ? "Primary Multus"
+                            : `Multus NIC ${index + 1}`
+                          : "Multus network"
                       }
                       placeholder="Select Multus network"
                       description={
@@ -835,6 +847,19 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                   </Group>
                 ))
               )}
+              {form.values.networks.length > 0 ? (
+                <Switch
+                  label="Include pod network (management)"
+                  description="Adds a masquerade pod NIC as the first interface so browser Terminal (SSH port-forward) and Ingress-style access work. Multus stays the default route. Turn off for Multus-only guests."
+                  checked={form.values.includePodNetwork}
+                  onChange={(e) =>
+                    form.setFieldValue(
+                      "includePodNetwork",
+                      e.currentTarget.checked,
+                    )
+                  }
+                />
+              ) : null}
               <Group gap="sm">
                 <Button
                   type="button"

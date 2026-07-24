@@ -122,7 +122,9 @@ When a Multus network on create matches a cluster `ipPools` entry **or** a self-
 3. Annotates the VM (`kmc.ianunruh.com/ipv4`, `kmc.ianunruh.com/ipam-pool`) and injects cloud-init `networkData` (netplan static config; omits default route if the pool has no gateway)
 4. Frees the address automatically when the VM is deleted (next create re-scans)
 
-**Multi-attach:** Launch VM can attach multiple Multus NADs (up to 8). Each attachment that has a pool gets its own address; netplan matches NICs by MAC. Only one default route is installed (first attachment with a gateway, else the first pooled NIC). Empty network list keeps the historical **pod network only** behavior.
+**Multi-attach:** Launch VM can attach multiple Multus NADs (up to 8). Each attachment that has a pool gets its own address; netplan matches NICs by MAC. Only one default route is installed (first Multus with a gateway, else the first pooled NIC). Empty network list keeps the historical **pod network only** behavior.
+
+**Dual-home (default):** When any Multus network is selected, kmc also attaches the **pod network** (masquerade) as the **first** interface so KubeVirt port-forward / browser Terminal can reach guest `:22`. Multus remains L3 primary (default route). Cloud-init installs **cluster routes** (`network.podCIDR` / `serviceCIDR` from `clusters.yaml`) via the masquerade gateway (`10.0.2.1`) so guest → pod/service traffic uses the pod NIC. Opt out on Launch VM → “Include pod network (management)” for Multus-only guests.
 No separate IPAM database — the cluster is the source of truth. Concurrent creates in a single kmc process are serialized per pool; multi-replica kmc can still race (use one replica or graduate to explicit leases later).
 
 ### GitHub OAuth App (impersonate mode)
@@ -345,5 +347,6 @@ Interactive shell without guest passwords or pasting private keys into the brows
 - Guest authorized_keys includes the platform key (VMs created through kmc after this feature)
 - Caller needs `update` on `virtualmachineinstances/portforward` (included in `kubevirt.io:edit`)
 - Platform SA needs Secrets in `kmc-system` (see `deploy/impersonator/rbac.yaml`)
+- Multus guests need a **pod/masquerade** NIC (dual-home default on Launch VM) so port-forward dials a cluster-routable address; Multus-only guests often fail Terminal (use Serial, or recreate with dual-home)
 
 **Not for older VMs** until recreated or the platform public key is added manually to the guest.

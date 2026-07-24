@@ -435,7 +435,10 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
     extraUsed.push(publicAlloc.address);
   }
 
-  const bound = bindAllocationsToNetworks(multusNames, allocations);
+  // Dual-home (pod first + Multus): always stamp Multus MACs for netplan / agent.
+  const bound = bindAllocationsToNetworks(multusNames, allocations, {
+    forceMac: true,
+  });
   for (let i = 0; i < interfaceSpecs.length; i++) {
     const mac = bound[i]?.macAddress?.trim().toLowerCase();
     if (!mac) {
@@ -879,7 +882,9 @@ export async function setRouterExternalGateway(
   }
 
   // Bind MAC for the public NIC only (private MACs already in policy).
-  const publicBound = bindAllocationsToNetworks([publicNet], [publicAlloc])[0];
+  const publicBound = bindAllocationsToNetworks([publicNet], [publicAlloc], {
+    forceMac: true,
+  })[0];
   if (!publicBound?.macAddress) {
     throw new Error("Failed to assign MAC for external gateway NIC");
   }
@@ -1172,7 +1177,9 @@ async function recreateRouterVmFromPolicy(
     });
   }
 
-  const bound = bindAllocationsToNetworks(multusNames, allocations);
+  const bound = bindAllocationsToNetworks(multusNames, allocations, {
+    forceMac: true,
+  });
   // Preserve policy MACs (bindAllocations may generate new ones).
   for (let i = 0; i < doc.interfaces.length; i++) {
     if (bound[i] && doc.interfaces[i]?.mac) {

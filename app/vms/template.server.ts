@@ -34,16 +34,19 @@ export const POD_NETWORK_NAME = "pod";
 export type BuildNetworkSpecOpts = {
   /**
    * When true and Multus attachments are present, also attach the pod network
-   * (masquerade) as interface/network name `pod`. Used by shared routers so the
-   * in-guest agent can reach the apiserver.
+   * (masquerade) as the **first** interface/network name `pod`. Keeps
+   * KubeVirt port-forward / browser Terminal working (dials interfaces[0]) and
+   * lets shared routers reach the apiserver from the guest agent.
    */
   includePodNetwork?: boolean;
 };
 
 /**
  * Build domain interfaces + template networks for Multus multi-attach, pod-only,
- * or Multus + pod (shared router).
+ * or Multus + pod (dual-home).
  * When allocations include a MAC for a Multus interface name, stamp it on the iface.
+ * With includePodNetwork, pod/masquerade is listed first so status.interfaces[0]
+ * is cluster-routable for port-forward.
  */
 export function buildNetworkSpec(
   multusNames: string[],
@@ -68,6 +71,12 @@ export function buildNetworkSpec(
   const interfaces: Array<Record<string, unknown>> = [];
   const networks: Array<Record<string, unknown>> = [];
 
+  // Pod first when dual-homed: KubeVirt port-forward dials interfaces[0].IP.
+  if (opts?.includePodNetwork) {
+    interfaces.push({ name: POD_NETWORK_NAME, masquerade: {} });
+    networks.push({ name: POD_NETWORK_NAME, pod: {} });
+  }
+
   multusNames.forEach((multusNetworkName, index) => {
     const name = interfaceNameForAttachment(index, multusNames.length);
     const alloc = allocByNetwork.get(name);
@@ -85,13 +94,16 @@ export function buildNetworkSpec(
     });
   });
 
-  if (opts?.includePodNetwork) {
-    interfaces.push({ name: POD_NETWORK_NAME, masquerade: {} });
-    networks.push({ name: POD_NETWORK_NAME, pod: {} });
-  }
-
   return { interfaces, networks };
 }
+
+export type BindAllocationsOpts = {
+  /**
+   * Dual-home Multus + pod: always stamp Multus MACs so netplan can match by
+   * MAC (and set-name), leaving the pod NIC for dhcp4 match on en*.
+   */
+  forceMac?: boolean;
+};
 
 /**
  * Pair Multus attachments with IPAM results: assign KubeVirt network names and MACs
@@ -100,6 +112,7 @@ export function buildNetworkSpec(
 export function bindAllocationsToNetworks(
   multusNames: string[],
   rawAllocations: Array<AllocatedIp | null>,
+  opts?: BindAllocationsOpts,
 ): AllocatedIp[] {
   const bound: AllocatedIp[] = [];
   multusNames.forEach((_multusName, index) => {
@@ -107,10 +120,13 @@ export function bindAllocationsToNetworks(
     if (!raw) return;
     const networkName = interfaceNameForAttachment(index, multusNames.length);
     const multiNic = multusNames.length > 1;
-    // Multi-NIC always needs MAC match; single-NIC with pool.interface keeps name match.
-    const needsMac = multiNic || !raw.interfaceName;
+    // Multi-NIC / dual-home always need MAC match; single Multus-only with
+    // pool.interface may keep guest name match.
+    const needsMac = opts?.forceMac || multiNic || !raw.interfaceName;
     bound.push({
       ...raw,
+      // Dual-home: prefer MAC match over guest interface name (two virtio NICs).
+      interfaceName: needsMac ? undefined : raw.interfaceName,
       networkName,
       macAddress: needsMac
         ? (raw.macAddress ?? generateLocalMacAddress())
@@ -147,10 +163,16 @@ export type BuildVmManifestOpts = {
    */
   userDataSecretName?: string;
   /**
-   * Attach the pod network in addition to Multus (shared routers).
-   * Multus interface names stay net0/net1/…; pod is always named `pod`.
+   * Attach the pod network in addition to Multus (dual-home).
+   * Pod is always named `pod` and listed first; Multus names stay default/netN.
    */
   includePodNetwork?: boolean;
+  /**
+   * Cluster pod/service CIDRs to route via the masquerade gateway on dual-home
+   * guests (from clusters.yaml `network`). Without these, Multus default route
+   * steals all cluster-bound traffic.
+   */
+  clusterCidrs?: string[];
 };
 
 /** Stable Secret name for a VM's cloud-init user-data (same namespace as the VM). */
@@ -219,8 +241,9 @@ export function buildVirtualMachineManifest(
   const diskSource = createVmDiskSource(input);
   const start = input.start !== false;
   const multusNames = multusNetworksFromRequest(input);
+  const includePodNetwork = opts?.includePodNetwork === true;
   const { interfaces, networks } = buildNetworkSpec(multusNames, allocations, {
-    includePodNetwork: opts?.includePodNetwork === true,
+    includePodNetwork,
   });
 
   const rootDiskName =
@@ -258,7 +281,12 @@ export function buildVirtualMachineManifest(
   }
 
   if (allocations.length > 0) {
-    cloudInitNoCloud.networkData = buildNetworkData(allocations);
+    cloudInitNoCloud.networkData = buildNetworkData(allocations, {
+      // Masquerade needs guest DHCP on the pod NIC so port-forward can land.
+      includePodDhcp: includePodNetwork,
+      // Specific routes so guest→pod/service does not follow Multus default.
+      clusterCidrs: includePodNetwork ? opts?.clusterCidrs : undefined,
+    });
   }
 
   const volumes: unknown[] = [

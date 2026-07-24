@@ -21,6 +21,10 @@ import {
 } from "~/lib/k8s/clients.server";
 import type { KubeConfig } from "@kubernetes/client-node";
 import { assertVmNamespaceAllowed } from "~/lib/k8s/catalog.server";
+import {
+  clusterNetworkCidrList,
+  getClusterNetwork,
+} from "~/lib/k8s/cluster-config.server";
 import { ensureStaticMultusNads } from "~/lib/k8s/static-nads.server";
 import {
   allocateIpv4ForMultus,
@@ -1123,7 +1127,11 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
     rawAllocations.push(alloc);
     if (alloc) extraUsed.push(alloc.address);
   }
-  const allocations = bindAllocationsToNetworks(multusNames, rawAllocations);
+  // Dual-home Multus VMs by default so browser Terminal (port-forward) works.
+  const dualHome = multusNames.length > 0 && input.includePodNetwork !== false;
+  const allocations = bindAllocationsToNetworks(multusNames, rawAllocations, {
+    forceMac: dualHome,
+  });
 
   // Shared router: DHCP for VPC NICs + register static leases on the router policy.
   for (let i = 0; i < multusNames.length; i++) {
@@ -1183,8 +1191,19 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
 
   // Platform console key so browser Terminal can SSH without the user's private key.
   const platformPub = await getPlatformConsolePublicKey();
+  // Dual-home: route cluster CIDRs via masquerade GW (not Multus default).
+  let clusterCidrs: string[] | undefined;
+  if (dualHome) {
+    const net = getClusterNetwork(input.cluster);
+    if (net) {
+      const { podCIDRs, serviceCIDRs } = clusterNetworkCidrList(net);
+      clusterCidrs = [...podCIDRs, ...serviceCIDRs].map((c) => c.trim()).filter(Boolean);
+    }
+  }
   const body = buildVirtualMachineManifest(input, allocations, {
     extraAuthorizedKeys: platformPub ? [platformPub] : [],
+    includePodNetwork: dualHome,
+    clusterCidrs,
   }) as {
     metadata?: { annotations?: Record<string, string> };
     [key: string]: unknown;
