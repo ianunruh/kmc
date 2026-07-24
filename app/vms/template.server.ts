@@ -130,6 +130,12 @@ export type BuildVmManifestOpts = {
    */
   userData?: string;
   /**
+   * Extra OpenSSH public keys merged into the default cloud-init user-data
+   * (alongside `input.sshPublicKey`). Used for the platform console key.
+   * Ignored when `userData` or `userDataSecretName` is set.
+   */
+  extraAuthorizedKeys?: string[];
+  /**
    * Secret name in the VM namespace with key `userdata`.
    * Preferred for payloads over KubeVirt's 2048-byte inline userData limit.
    *
@@ -151,22 +157,46 @@ export function cloudInitUserDataSecretName(vmName: string): string {
 }
 
 /**
- * Minimal cloud-config that installs an SSH public key on the image default user.
+ * Normalize OpenSSH public key lines (dedupe, drop empties).
+ * Accepts a single key string or a list (user key + platform console key, …).
+ */
+export function normalizeAuthorizedKeys(
+  keys: string | string[] | undefined | null,
+): string[] {
+  const list = Array.isArray(keys) ? keys : keys ? [keys] : [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of list) {
+    const key = raw.trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
+}
+
+/**
+ * Minimal cloud-config that installs SSH public key(s) on the image default user.
  * Optional qemu-guest-agent package + enable (soft reboot, guest OS info).
  * Explicit `users: [default]` is more reliable across Ubuntu cloud images than
  * top-level ssh_authorized_keys alone on some releases.
+ *
+ * Pass the user's key plus the platform console key so browser Terminal works.
  */
 export function buildSshUserData(
-  sshPublicKey: string,
+  sshPublicKey: string | string[],
   opts?: { installGuestAgent?: boolean },
 ): string {
-  const key = sshPublicKey.trim();
+  const keys = normalizeAuthorizedKeys(sshPublicKey);
+  if (keys.length === 0) {
+    throw new Error("At least one SSH public key is required for cloud-init");
+  }
   const lines = [
     "#cloud-config",
     "users:",
     "  - default",
     "ssh_authorized_keys:",
-    `  - ${key}`,
+    ...keys.map((k) => `  - ${k}`),
   ];
   if (opts?.installGuestAgent) {
     lines.push(
@@ -203,9 +233,12 @@ export function buildVirtualMachineManifest(
     },
   ];
 
-  const defaultUserData = buildSshUserData(input.sshPublicKey, {
-    installGuestAgent: input.installGuestAgent === true,
-  });
+  const defaultUserData = buildSshUserData(
+    [input.sshPublicKey, ...(opts?.extraAuthorizedKeys ?? [])],
+    {
+      installGuestAgent: input.installGuestAgent === true,
+    },
+  );
 
   // KubeVirt admission: inline userData / networkData max 2048 bytes each.
   const cloudInitNoCloud: Record<string, unknown> = {};
@@ -353,7 +386,8 @@ function yamlLiteralScriptBody(script: string): string {
  * - dnsmasq + kmc-router-agent for DHCP/DNS (+ floating IPs when external)
  */
 export function buildRouterUserData(input: {
-  sshPublicKey: string;
+  /** User key and optional platform console key(s). */
+  sshPublicKey: string | string[];
   /** Ordered private Multus MACs (same order as VPC interfaces). */
   privateMacs: string[];
   /** Public Multus MAC when external gateway is enabled. */
@@ -510,12 +544,17 @@ export function buildRouterUserData(input: {
   const envFileYaml = yamlLiteralScriptBody(envFile);
   const caB64Yaml = yamlLiteralScriptBody(caB64);
 
+  const authorizedKeys = normalizeAuthorizedKeys(input.sshPublicKey);
+  if (authorizedKeys.length === 0) {
+    throw new Error("buildRouterUserData requires at least one SSH public key");
+  }
+
   return [
     "#cloud-config",
     "users:",
     "  - default",
     "ssh_authorized_keys:",
-    `  - ${input.sshPublicKey.trim()}`,
+    ...authorizedKeys.map((k) => `  - ${k}`),
     "package_update: true",
     "packages:",
     "  - qemu-guest-agent",

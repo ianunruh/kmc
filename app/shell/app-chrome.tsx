@@ -183,7 +183,7 @@ export function AppChrome({
                   kmc
                 </Text>
                 <Text size="xs" c="dimmed" visibleFrom="sm">
-                  multi-cluster kubevirt
+                  kcloud management console
                 </Text>
               </Group>
             </UnstyledButton>

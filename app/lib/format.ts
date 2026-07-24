@@ -166,6 +166,13 @@ export function vmConsolePath(
   return `${vmPath(vm)}/console`;
 }
 
+/** Browser SSH terminal (platform key + KubeVirt port-forward). */
+export function vmTerminalPath(
+  vm: Pick<VmSummary, "cluster" | "namespace" | "name">,
+): string {
+  return `${vmPath(vm)}/terminal`;
+}
+
 export function dataVolumePath(
   dv: Pick<
     { cluster: string; namespace: string; name: string },

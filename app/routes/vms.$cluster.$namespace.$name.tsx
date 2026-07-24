@@ -59,6 +59,7 @@ import {
   sizeLabel,
   vmConsolePath,
   vmEditPath,
+  vmTerminalPath,
   vpcPath,
   vmsListPath,
 } from "~/lib/format";
@@ -387,17 +388,31 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
         <Group>
           <Button
             component={Link}
+            to={vmTerminalPath(vm)}
+            variant="default"
+            leftSection={<IconTerminal2 size={16} />}
+            disabled={!canOpenConsole(vm)}
+            title={
+              canOpenConsole(vm)
+                ? "Open SSH terminal (platform console key)"
+                : "Terminal requires a live VMI (Running)"
+            }
+          >
+            Terminal
+          </Button>
+          <Button
+            component={Link}
             to={vmConsolePath(vm)}
             variant="default"
             leftSection={<IconTerminal2 size={16} />}
             disabled={!canOpenConsole(vm)}
             title={
               canOpenConsole(vm)
-                ? "Open serial console"
+                ? "Open serial console (boot / debug)"
                 : "Serial console requires a live VMI (Running)"
             }
           >
-            Console
+            Serial
           </Button>
           <Button
             component={Link}

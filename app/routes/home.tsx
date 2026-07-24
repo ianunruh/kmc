@@ -22,7 +22,7 @@ import {
 export function meta(_args: Route.MetaArgs) {
   return [
     { title: "Virtual Machines · kmc" },
-    { name: "description", content: "Multi-cluster KubeVirt console" },
+    { name: "description", content: "kcloud management console" },
   ];
 }
 

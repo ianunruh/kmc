@@ -48,7 +48,7 @@ export default function LoginPage({ loaderData }: Route.ComponentProps) {
           kmc
         </Title>
         <Text size="sm" c="dimmed" mt={4}>
-          multi-cluster kubevirt console
+          kcloud management console
         </Text>
       </div>
 

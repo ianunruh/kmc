@@ -37,6 +37,7 @@ import {
   vmConsolePath,
   vmEditPath,
   vmPath,
+  vmTerminalPath,
   vmsListPath,
 } from "~/lib/format";
 import { useRefresh } from "~/lib/refresh";
@@ -245,6 +246,19 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                       <Menu.Dropdown>
                         <Menu.Item
                           component={Link}
+                          to={vmTerminalPath(vm)}
+                          leftSection={<IconTerminal2 size={14} />}
+                          disabled={!canOpenConsole(vm)}
+                          title={
+                            canOpenConsole(vm)
+                              ? "Open SSH terminal"
+                              : "Terminal requires a live VMI (Running)"
+                          }
+                        >
+                          Terminal
+                        </Menu.Item>
+                        <Menu.Item
+                          component={Link}
                           to={vmConsolePath(vm)}
                           leftSection={<IconTerminal2 size={14} />}
                           disabled={!canOpenConsole(vm)}
@@ -254,7 +268,7 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                               : "Serial console requires a live VMI (Running)"
                           }
                         >
-                          Console
+                          Serial
                         </Menu.Item>
                         <Menu.Item
                           component={Link}

@@ -27,6 +27,7 @@ import {
   parseMultusNetworkRef,
 } from "~/lib/ipam/pools.server";
 import { IPAM_ANNOTATION_IPV4 } from "~/lib/ipam/constants";
+import { getPlatformConsolePublicKey } from "~/vms/console-ssh-key.server";
 import {
   KMC_ANN_ROUTER,
   KMC_LABEL_RESOURCE,
@@ -867,7 +868,11 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
     }
   }
 
-  const body = buildVirtualMachineManifest(input, allocations);
+  // Platform console key so browser Terminal can SSH without the user's private key.
+  const platformPub = await getPlatformConsolePublicKey();
+  const body = buildVirtualMachineManifest(input, allocations, {
+    extraAuthorizedKeys: platformPub ? [platformPub] : [],
+  });
 
   try {
     const created = (await custom.createNamespacedCustomObject({

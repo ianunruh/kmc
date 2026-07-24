@@ -28,16 +28,32 @@ const UPSTREAM_CONNECT_MS = 20_000;
 const ATTACHED_FLAG = Symbol.for("kmc.serialConsoleWs");
 
 function rejectUpgrade(socket: Duplex, status: number, message: string): void {
+  if (socket.destroyed) return;
   const body = message;
-  socket.write(
-    `HTTP/1.1 ${status} ${statusText(status)}\r\n` +
-      "Connection: close\r\n" +
-      "Content-Type: text/plain; charset=utf-8\r\n" +
-      `Content-Length: ${Buffer.byteLength(body)}\r\n` +
-      "\r\n" +
-      body,
-  );
-  socket.destroy();
+  try {
+    socket.write(
+      `HTTP/1.1 ${status} ${statusText(status)}\r\n` +
+        "Connection: close\r\n" +
+        "Content-Type: text/plain; charset=utf-8\r\n" +
+        `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+        "\r\n" +
+        body,
+    );
+  } catch {
+    /* client already gone */
+  }
+  try {
+    socket.destroy();
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Raw upgrade sockets emit `error` on client disconnect — must not crash the process. */
+function guardUpgradeSocket(socket: Duplex, label: string): void {
+  socket.on("error", (err: Error) => {
+    console.warn(`[kmc:console] ${label} socket error: ${err.message}`);
+  });
 }
 
 function statusText(status: number): string {
@@ -180,7 +196,8 @@ async function openUpstream(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      upstream.off("error", onError);
+      // Keep a permanent `error` listener — removing it before terminate()/after
+      // resolve leaves a window where `ws` throws and exits the Node process.
       upstream.off("open", onOpen);
       upstream.off("unexpected-response", onUnexpected);
       fn();
@@ -208,6 +225,10 @@ async function openUpstream(
     }, UPSTREAM_CONNECT_MS);
 
     const onError = (err: Error) => {
+      if (settled) {
+        // Expected after terminate, or mid-session until pipeSockets takes over.
+        return;
+      }
       // `unexpected-response` is usually followed by a generic error — wait for the body.
       if (readingHandshakeBody) return;
       fail(
@@ -255,7 +276,8 @@ async function openUpstream(
       });
     };
 
-    upstream.once("error", onError);
+    // Permanent listener (not once) so terminate / post-open errors never crash Node.
+    upstream.on("error", onError);
     upstream.once("open", onOpen);
     upstream.once("unexpected-response", onUnexpected);
   });
@@ -333,6 +355,9 @@ export function attachSerialConsoleWs(httpServer: HttpServer): void {
   flagged[ATTACHED_FLAG] = true;
 
   const wss = new WebSocketServer({ noServer: true });
+  wss.on("error", (err) => {
+    console.error("[kmc:console] WebSocketServer error:", err);
+  });
 
   httpServer.on("upgrade", (req, socket, head) => {
     const rawUrl = req.url ?? "";
@@ -340,6 +365,9 @@ export function attachSerialConsoleWs(httpServer: HttpServer): void {
     const match = SERIAL_PATH_RE.exec(pathname);
     // Critical: leave non-console upgrades (Vite HMR) alone
     if (!match) return;
+
+    // Client abort / ECONNRESET during async auth+dial must not exit the process.
+    guardUpgradeSocket(socket, "upgrade");
 
     // Keep the TCP socket alive while we auth + dial apiserver.
     const netSocket = socket as Duplex & {
@@ -361,6 +389,8 @@ export function attachSerialConsoleWs(httpServer: HttpServer): void {
           return;
         }
 
+        if (socket.destroyed) return;
+
         // Open upstream first so browser "open" means guest console is live
         // (KubeVirt exclusive session is already held when the client connects).
         let upstream: WebSocket;
@@ -381,7 +411,11 @@ export function attachSerialConsoleWs(httpServer: HttpServer): void {
         }
 
         if (socket.destroyed) {
-          upstream.close();
+          try {
+            upstream.terminate();
+          } catch {
+            /* ignore */
+          }
           return;
         }
 
@@ -389,16 +423,40 @@ export function attachSerialConsoleWs(httpServer: HttpServer): void {
           `[kmc:console] open ${cluster}/${namespace}/${name} as ${auth.actor?.user ?? "kubeconfig"}`,
         );
 
-        wss.handleUpgrade(req, socket, head, (client) => {
-          wss.emit("connection", client, req);
-          pipeSockets(client, upstream);
-        });
+        try {
+          wss.handleUpgrade(req, socket, head, (client) => {
+            // Attach before any async gap so client errors never go unhandled.
+            client.on("error", (err) => {
+              console.warn(
+                `[kmc:console] client error ${cluster}/${namespace}/${name}: ${err.message}`,
+              );
+            });
+            wss.emit("connection", client, req);
+            pipeSockets(client, upstream);
+          });
+        } catch (err) {
+          console.error("[kmc:console] handleUpgrade failed:", err);
+          try {
+            upstream.terminate();
+          } catch {
+            /* ignore */
+          }
+          if (!socket.destroyed) {
+            rejectUpgrade(socket, 500, "WebSocket upgrade failed");
+          }
+        }
       } catch (err) {
         console.error("[kmc:console] upgrade error:", err);
         if (!socket.destroyed) {
           rejectUpgrade(socket, 500, "Internal error");
         }
       }
-    })();
+    })().catch((err) => {
+      // Belt-and-suspenders: never let an async upgrade rejection kill Vite/Node.
+      console.error("[kmc:console] unhandled upgrade rejection:", err);
+      if (!socket.destroyed) {
+        rejectUpgrade(socket, 500, "Internal error");
+      }
+    });
   });
 }

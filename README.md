@@ -160,10 +160,11 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 | `KMC_PUBLIC_URL`           | `http://localhost:5173` | Public origin (OAuth redirect)                                                |
 | `KMC_USERNAME_PREFIX`      | `oidc:`                 | Match apiserver username prefix                                               |
 | `KMC_GROUPS_PREFIX`        | `oidc:`                 | Match apiserver groups prefix                                                 |
+| `KMC_CONSOLE_SSH_USER`     | `ubuntu`                | Guest username for browser SSH terminal                                       |
 
 ## Features (MVP)
 
-- **Virtual machines** — list, create, detail, edit (labels always; size / preference / run strategy when stopped), stop/start/restart/pause/unpause/delete, **serial console** (full-page xterm via app-proxied WebSocket)
+- **Virtual machines** — list, create, detail, edit (labels always; size / preference / run strategy when stopped), stop/start/restart/pause/unpause/delete, **serial console** (boot/debug) and **SSH terminal** (browser shell via platform key + port-forward)
 - **IPAM** — optional per-cluster IPv4 pools for Multus NADs; auto-allocate + netplan cloud-init on create
 - **VPCs** — self-service Multus networks from a cluster VLAN pool (`vlanPools`); optional private CIDR for IPAM
 - **Routers** — shared DHCP/DNS appliance per namespace (OpenStack-style); external SNAT + floating IPs; multi-VPC attach later
@@ -328,3 +329,21 @@ pnpm check         # typecheck + lint + format:check
 - Dev: Vite plugin attaches the upgrade handler on the same port as HMR
 - Prod: `server.ts` (replaces `react-router-serve`)
 - Requires a live VMI and `get` on the console subresource
+- Passwordless images: useful mainly for cloud-init / boot logs (no login)
+
+### SSH terminal (browser shell)
+
+Interactive shell without guest passwords or pasting private keys into the browser:
+
+1. On first use, kmc creates Secret `kmc-system/kmc-console-ssh` on the **settings cluster** (Ed25519 keypair)
+2. VM / router create injects the **public** half into cloud-init `ssh_authorized_keys` next to the user’s key
+3. UI **Terminal** opens `/vms/…/terminal` → WS `/api/vms/…/ssh` → KubeVirt `portforward/22` → server-side SSH with the platform private key as `ubuntu` (override with `KMC_CONSOLE_SSH_USER`)
+
+**Requirements**
+
+- Live VMI with OpenSSH listening
+- Guest authorized_keys includes the platform key (VMs created through kmc after this feature)
+- Caller needs `update` on `virtualmachineinstances/portforward` (included in `kubevirt.io:edit`)
+- Platform SA needs Secrets in `kmc-system` (see `deploy/impersonator/rbac.yaml`)
+
+**Not for older VMs** until recreated or the platform public key is added manually to the guest.

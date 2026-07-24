@@ -18,6 +18,10 @@ export default [
     "vms/:cluster/:namespace/:name/console",
     "routes/vms.$cluster.$namespace.$name.console.tsx",
   ),
+  route(
+    "vms/:cluster/:namespace/:name/terminal",
+    "routes/vms.$cluster.$namespace.$name.terminal.tsx",
+  ),
   route("vms/:cluster/:namespace/:name", "routes/vms.$cluster.$namespace.$name.tsx"),
 
   route("datavolumes", "routes/datavolumes._index.tsx"),

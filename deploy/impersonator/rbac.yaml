@@ -34,8 +34,9 @@ subjects:
     name: kmc
     namespace: kmc-system
 ---
-# App-level user prefs (SSH public keys) live as ConfigMaps in kmc-system.
-# The platform SA writes these without impersonation; kmc enforces ownership.
+# App-level prefs in kmc-system (no user impersonation; ownership in app code):
+# - ConfigMaps: per-user SSH public keys
+# - Secrets: platform browser-console SSH keypair (kmc-console-ssh)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -44,6 +45,9 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["configmaps"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
     verbs: ["get", "list", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

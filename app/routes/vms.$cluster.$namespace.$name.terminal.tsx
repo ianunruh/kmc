@@ -2,28 +2,28 @@ import { Alert, Anchor, Badge, Button, Group, Stack, Text, Title } from "@mantin
 import { IconArrowLeft, IconPlugConnected, IconRefresh } from "@tabler/icons-react";
 import { useCallback, useEffect, useRef, useState, type ComponentType } from "react";
 import { Link } from "react-router";
-import type { Route } from "./+types/vms.$cluster.$namespace.$name.console";
-import { canOpenConsole, vmPath, vmTerminalPath } from "~/lib/format";
+import type { Route } from "./+types/vms.$cluster.$namespace.$name.terminal";
+import { canOpenConsole, vmConsolePath, vmPath } from "~/lib/format";
 import { StatusBadge } from "~/ui/status-badge";
 import { getVm } from "~/vms/vms.server";
 
 /** Client-only terminal props (mirrored to avoid SSR import of xterm). */
-type SerialConsoleStatus = "connecting" | "open" | "closed" | "error";
+type SshConsoleStatus = "connecting" | "open" | "closed" | "error";
 
-type SerialConsoleProps = {
+type SshConsoleProps = {
   cluster: string;
   namespace: string;
   name: string;
-  onStatus?: (status: SerialConsoleStatus, detail?: string) => void;
+  onStatus?: (status: SshConsoleStatus, detail?: string) => void;
 };
 
-type SerialConsoleModule = {
-  SerialConsole: ComponentType<SerialConsoleProps>;
-  reconnectSerialConsole: (root: HTMLElement | null) => void;
+type SshConsoleModule = {
+  SshConsole: ComponentType<SshConsoleProps>;
+  reconnectSshConsole: (root: HTMLElement | null) => void;
 };
 
 export function meta({ params }: Route.MetaArgs) {
-  return [{ title: `Console · ${params.name ?? "VM"} · kmc` }];
+  return [{ title: `Terminal · ${params.name ?? "VM"} · kmc` }];
 }
 
 export async function loader({ params }: Route.LoaderArgs) {
@@ -35,7 +35,7 @@ export async function loader({ params }: Route.LoaderArgs) {
   return { vm };
 }
 
-function statusColor(status: SerialConsoleStatus): string {
+function statusColor(status: SshConsoleStatus): string {
   switch (status) {
     case "open":
       return "teal";
@@ -49,16 +49,16 @@ function statusColor(status: SerialConsoleStatus): string {
   }
 }
 
-export default function VmSerialConsolePage({ loaderData }: Route.ComponentProps) {
+export default function VmSshTerminalPage({ loaderData }: Route.ComponentProps) {
   const { vm } = loaderData;
-  const [wsStatus, setWsStatus] = useState<SerialConsoleStatus>("connecting");
+  const [wsStatus, setWsStatus] = useState<SshConsoleStatus>("connecting");
   const [wsDetail, setWsDetail] = useState<string | undefined>();
-  const [clientMod, setClientMod] = useState<SerialConsoleModule | null>(null);
+  const [clientMod, setClientMod] = useState<SshConsoleModule | null>(null);
   const termRootRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
-    void import("~/vms/serial-console.client").then((mod) => {
+    void import("~/vms/ssh-console.client").then((mod) => {
       if (!cancelled) setClientMod(mod);
     });
     return () => {
@@ -66,19 +66,18 @@ export default function VmSerialConsolePage({ loaderData }: Route.ComponentProps
     };
   }, []);
 
-  const onStatus = useCallback((status: SerialConsoleStatus, detail?: string) => {
+  const onStatus = useCallback((status: SshConsoleStatus, detail?: string) => {
     setWsStatus(status);
     setWsDetail(detail);
   }, []);
 
   const live = canOpenConsole(vm);
-  const SerialConsole = clientMod?.SerialConsole;
+  const SshConsole = clientMod?.SshConsole;
 
   return (
     <Stack
       gap="sm"
       style={{
-        // Fill chrome main area
         minHeight: "calc(100vh - 52px - 48px)",
         height: "calc(100vh - 52px - 48px)",
       }}
@@ -93,7 +92,7 @@ export default function VmSerialConsolePage({ loaderData }: Route.ComponentProps
           </Anchor>
           <Group gap="sm" mt={6} align="center">
             <Title order={2} size="h3">
-              Serial console
+              Terminal
             </Title>
             <StatusBadge status={vm.status} />
             <Badge
@@ -107,21 +106,21 @@ export default function VmSerialConsolePage({ loaderData }: Route.ComponentProps
             </Badge>
           </Group>
           <Text size="xs" c="dimmed" mt={4}>
-            {vm.cluster} / {vm.namespace} · age {vm.age} · close tab or navigate away to
-            disconnect
+            {vm.cluster} / {vm.namespace} · SSH via port-forward (platform console key) ·
+            close tab to disconnect
           </Text>
         </div>
         <Group>
           <Button
             variant="default"
             leftSection={<IconRefresh size={16} />}
-            onClick={() => clientMod?.reconnectSerialConsole(termRootRef.current)}
+            onClick={() => clientMod?.reconnectSshConsole(termRootRef.current)}
             disabled={!clientMod}
           >
             Reconnect
           </Button>
-          <Button component={Link} to={vmTerminalPath(vm)} variant="default">
-            Terminal
+          <Button component={Link} to={vmConsolePath(vm)} variant="default">
+            Serial
           </Button>
           <Button component={Link} to={vmPath(vm)} variant="light">
             Back to VM
@@ -130,9 +129,10 @@ export default function VmSerialConsolePage({ loaderData }: Route.ComponentProps
       </Group>
 
       {!live && (
-        <Alert color="yellow" variant="light" title="VM may not accept console">
-          Status is <strong>{vm.status}</strong>. Serial console usually requires a live
-          VMI (Running). Start the VM, then reconnect.
+        <Alert color="yellow" variant="light" title="VM may not accept SSH">
+          Status is <strong>{vm.status}</strong>. Terminal requires a live VMI with
+          sshd and the platform console key in the guest{" "}
+          <code>authorized_keys</code> (injected at create for VMs launched from kmc).
         </Alert>
       )}
 
@@ -140,8 +140,8 @@ export default function VmSerialConsolePage({ loaderData }: Route.ComponentProps
         ref={termRootRef}
         style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
       >
-        {SerialConsole ? (
-          <SerialConsole
+        {SshConsole ? (
+          <SshConsole
             cluster={vm.cluster}
             namespace={vm.namespace}
             name={vm.name}
