@@ -28,6 +28,7 @@ import {
   IconRefresh,
   IconTerminal2,
   IconTrash,
+  IconWorld,
   IconWorldWww,
 } from "@tabler/icons-react";
 import { useState } from "react";
@@ -61,6 +62,9 @@ import {
   formatBytes,
   formatDateTime,
   instanceTypePath,
+  ingressHostUrl,
+  ingressPath,
+  ingressesListPath,
   sizeLabel,
   vmConsolePath,
   vmEditPath,
@@ -73,6 +77,7 @@ import { listResourceEvents } from "~/lib/k8s/events.server";
 import { getCustomObjectYaml } from "~/lib/k8s/yaml.server";
 import type {
   FloatingIpSummary,
+  IngressSummary,
   VmLifecycleIntent,
   VmSnapshotSummary,
   VmVolumeInfo,
@@ -93,6 +98,7 @@ import {
   deleteVmSnapshot,
   listVmSnapshots,
 } from "~/snapshots/snapshots.server";
+import { listIngressesForVm } from "~/ingresses/ingresses.server";
 import { disassociateFloatingIp, listFloatingIpsForVm } from "~/vpcs/vpcs.server";
 import { VmMetricsPanel } from "~/vms/vm-metrics-panel";
 import { useRefresh } from "~/lib/refresh";
@@ -147,6 +153,13 @@ export async function loader({ params }: Route.LoaderArgs) {
     floatingIps = [];
   }
 
+  let ingresses: IngressSummary[] = [];
+  try {
+    ingresses = await listIngressesForVm(cluster, namespace, name);
+  } catch {
+    ingresses = [];
+  }
+
   let snapshots: VmSnapshotSummary[] = [];
   try {
     snapshots = await listVmSnapshots(cluster, namespace, name);
@@ -163,6 +176,7 @@ export async function loader({ params }: Route.LoaderArgs) {
     yaml,
     prometheusConfigured: hasClusterPrometheus(cluster),
     floatingIps,
+    ingresses,
     snapshots,
     vpcPrefill: vpcPrefill
       ? {
@@ -369,6 +383,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
     yaml,
     prometheusConfigured,
     floatingIps,
+    ingresses,
     snapshots,
     vpcPrefill,
   } = loaderData;
@@ -1140,6 +1155,118 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
                       >
                         Disassociate
                       </Button>
+                    </Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
+        )}
+      </DetailCard>
+
+      <DetailCard title="Ingresses">
+        <Group justify="space-between" mb="sm">
+          <Text size="sm" c="dimmed">
+            HTTP(S) routes exposing this VM on the pod network.
+          </Text>
+          <Group gap="xs">
+            <Button
+              component={Link}
+              to={ingressesListPath({
+                cluster: vm.cluster,
+                namespace: vm.namespace,
+              })}
+              size="xs"
+              variant="subtle"
+              leftSection={<IconWorld size={14} />}
+            >
+              All ingresses
+            </Button>
+            <Button
+              component={Link}
+              to="/ingresses/create"
+              size="xs"
+              variant="light"
+              color="grape"
+              leftSection={<IconPlus size={14} />}
+            >
+              Create
+            </Button>
+          </Group>
+        </Group>
+        {ingresses.length === 0 ? (
+          <Text size="sm" c="dimmed">
+            No Ingresses bound to this VM.
+          </Text>
+        ) : (
+          <Table.ScrollContainer
+            className="kmc-table-scroll"
+            minWidth={480}
+            type="native"
+          >
+            <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Name</Table.Th>
+                  <Table.Th>Hosts</Table.Th>
+                  <Table.Th>Class</Table.Th>
+                  <Table.Th>Age</Table.Th>
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {ingresses.map((ing) => (
+                  <Table.Tr key={ing.name}>
+                    <Table.Td>
+                      <ResourceLink to={ingressPath(ing)}>{ing.name}</ResourceLink>
+                      {ing.address ? (
+                        <Text size="xs" c="dimmed">
+                          {ing.address}
+                        </Text>
+                      ) : null}
+                    </Table.Td>
+                    <Table.Td>
+                      {ing.hosts.length === 0 ? (
+                        <Text size="sm" c="dimmed">
+                          —
+                        </Text>
+                      ) : (
+                        <Group gap="xs" wrap="wrap">
+                          {ing.hosts.map((host) => {
+                            const tls = ing.tlsHosts.includes(host);
+                            return (
+                              <Anchor
+                                key={host}
+                                href={ingressHostUrl(host, ing.tlsHosts)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                size="sm"
+                              >
+                                {host}
+                                {tls ? (
+                                  <Text
+                                    component="span"
+                                    size="xs"
+                                    c="dimmed"
+                                    ml={4}
+                                  >
+                                    (TLS)
+                                  </Text>
+                                ) : null}
+                              </Anchor>
+                            );
+                          })}
+                        </Group>
+                      )}
+                    </Table.Td>
+                    <Table.Td>
+                      <Text size="sm" c="dimmed">
+                        {ing.className ?? "—"}
+                      </Text>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text size="sm" c="dimmed">
+                        {formatAge(ing.age)}
+                      </Text>
                     </Table.Td>
                   </Table.Tr>
                 ))}

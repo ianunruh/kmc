@@ -243,6 +243,16 @@ export function ingressPath(
   return `/ingresses/${encodeURIComponent(ing.cluster)}/${encodeURIComponent(ing.namespace)}/${encodeURIComponent(ing.name)}`;
 }
 
+/** Absolute http(s) URL for an Ingress host based on TLS coverage. */
+export function ingressHostUrl(
+  host: string,
+  tlsHosts: readonly string[] | undefined,
+): string {
+  const h = host.trim();
+  const scheme = tlsHosts?.includes(h) ? "https" : "http";
+  return `${scheme}://${h}`;
+}
+
 export function ingressesListPath(
   filters: {
     q?: string | null;

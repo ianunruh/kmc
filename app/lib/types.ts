@@ -522,6 +522,11 @@ export interface IngressSummary {
   namespace: string;
   name: string;
   hosts: string[];
+  /**
+   * Hosts covered by Ingress TLS (use https for these).
+   * When a TLS block has no hosts listed, every rule host is included.
+   */
+  tlsHosts: string[];
   className?: string;
   /** Target VM name (same namespace) when bound */
   vmName?: string;

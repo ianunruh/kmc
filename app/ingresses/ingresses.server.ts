@@ -87,6 +87,25 @@ function mapHosts(ing: KubeIngress): string[] {
   return Array.from(hosts);
 }
 
+/**
+ * Hosts that should use https. A TLS block with no hosts covers every rule host.
+ */
+function mapTlsHosts(ing: KubeIngress, allHosts: string[]): string[] {
+  const explicit = new Set<string>();
+  let coversAll = false;
+  for (const tls of ing.spec?.tls ?? []) {
+    const list = (tls.hosts ?? []).filter((h): h is string => Boolean(h));
+    if (list.length === 0) {
+      coversAll = true;
+    } else {
+      for (const h of list) explicit.add(h);
+    }
+  }
+  if (!coversAll && explicit.size === 0) return [];
+  if (coversAll) return allHosts;
+  return allHosts.filter((h) => explicit.has(h));
+}
+
 function mapAddress(ing: KubeIngress): string | undefined {
   const lb = ing.status?.loadBalancer?.ingress?.[0];
   if (!lb) return undefined;
@@ -119,11 +138,13 @@ function primaryServiceName(ing: KubeIngress): string | undefined {
 }
 
 function mapSummary(cluster: ClusterId, ing: KubeIngress): IngressSummary {
+  const hosts = mapHosts(ing);
   return {
     cluster,
     namespace: ing.metadata?.namespace ?? "default",
     name: ing.metadata?.name ?? "unknown",
-    hosts: mapHosts(ing),
+    hosts,
+    tlsHosts: mapTlsHosts(ing, hosts),
     className: ing.spec?.ingressClassName,
     vmName: ing.metadata?.labels?.[KMC_LABEL_VM],
     serviceName: primaryServiceName(ing),
@@ -254,6 +275,24 @@ export async function listIngresses(clusterFilter?: ClusterId): Promise<{
   });
 
   return { items, clusters };
+}
+
+/** kmc-managed Ingresses bound to a specific VM (same namespace). */
+export async function listIngressesForVm(
+  cluster: ClusterId,
+  namespace: string,
+  vmName: string,
+): Promise<IngressSummary[]> {
+  const { networking } = getClusterClients(cluster);
+  const res = await networking.listNamespacedIngress({
+    namespace,
+    labelSelector: `${KMC_INGRESS_LABEL_SELECTOR},${KMC_LABEL_VM}=${vmName}`,
+  });
+  const items = ((res.items ?? []) as KubeIngress[]).map((ing) =>
+    mapSummary(cluster, ing),
+  );
+  items.sort((a, b) => a.name.localeCompare(b.name));
+  return items;
 }
 
 export async function getIngress(
