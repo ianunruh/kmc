@@ -25,13 +25,21 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "7"
+AGENT_VERSION = "8"
 
 ENV_FILE = os.environ.get("KMC_ENV_FILE", "/etc/kmc/router-agent.env")
 STATE_DIR = Path(os.environ.get("KMC_STATE_DIR", "/var/lib/kmc"))
 AGENT_PATH = Path(os.environ.get("KMC_AGENT_PATH", "/usr/local/sbin/kmc-router-agent"))
 DNSMASQ_D = Path(os.environ.get("KMC_DNSMASQ_D", "/var/lib/kmc/dnsmasq.d"))
 DNSMASQ_MAIN = Path(os.environ.get("KMC_DNSMASQ_MAIN", "/etc/dnsmasq.d/kmc-router.conf"))
+DNSMASQ_LEASEFILE = Path(
+    os.environ.get("KMC_DNSMASQ_LEASEFILE", "/var/lib/kmc/dnsmasq.leases")
+)
+# Distro defaults — prune too so a path switch / old process can't re-block IPs.
+LEGACY_DNSMASQ_LEASEFILES = (
+    Path("/var/lib/misc/dnsmasq.leases"),
+    Path("/var/lib/dnsmasq/dnsmasq.leases"),
+)
 APPLIED_FILE = STATE_DIR / "applied-router-policy.json"
 LAST_RV_FILE = STATE_DIR / "last-resource-version"
 MANAGED_FLOATS_FILE = STATE_DIR / "managed-floats"
@@ -74,7 +82,8 @@ def apply_config_from_env() -> None:
     global KMC_NAMESPACE, KMC_POLICY_CM, KUBECONFIG, KMC_APISERVER, KMC_CA_FILE
     global KMC_POLICY_KEY, KMC_AGENT_KEY, KMC_HEARTBEAT_SECONDS
     global KMC_WATCH_TIMEOUT_SECONDS, KMC_RESYNC_SECONDS, KMC_RECONNECT_SECONDS
-    global STATE_DIR, AGENT_PATH, DNSMASQ_D, DNSMASQ_MAIN, APPLIED_FILE, LAST_RV_FILE
+    global STATE_DIR, AGENT_PATH, DNSMASQ_D, DNSMASQ_MAIN, DNSMASQ_LEASEFILE
+    global APPLIED_FILE, LAST_RV_FILE
 
     KMC_NAMESPACE = os.environ.get("KMC_NAMESPACE", "").strip()
     KMC_POLICY_CM = os.environ.get("KMC_POLICY_CM", "").strip()
@@ -91,6 +100,9 @@ def apply_config_from_env() -> None:
     AGENT_PATH = Path(os.environ.get("KMC_AGENT_PATH", "/usr/local/sbin/kmc-router-agent"))
     DNSMASQ_D = Path(os.environ.get("KMC_DNSMASQ_D", "/var/lib/kmc/dnsmasq.d"))
     DNSMASQ_MAIN = Path(os.environ.get("KMC_DNSMASQ_MAIN", "/etc/dnsmasq.d/kmc-router.conf"))
+    DNSMASQ_LEASEFILE = Path(
+        os.environ.get("KMC_DNSMASQ_LEASEFILE", "/var/lib/kmc/dnsmasq.leases")
+    )
     APPLIED_FILE = STATE_DIR / "applied-router-policy.json"
     LAST_RV_FILE = STATE_DIR / "last-resource-version"
 
@@ -277,6 +289,7 @@ def network_from_cidr(cidr: str) -> str:
 def ensure_dnsmasq_main() -> None:
     DNSMASQ_D.mkdir(parents=True, exist_ok=True)
     DNSMASQ_MAIN.parent.mkdir(parents=True, exist_ok=True)
+    DNSMASQ_LEASEFILE.parent.mkdir(parents=True, exist_ok=True)
     # IMPORTANT: conf-dir suffixes are SKIP lists (Debian uses them to ignore
     # .dpkg-*). Do NOT pass *.conf or every real config is ignored and DHCP
     # never binds port 67.
@@ -285,6 +298,9 @@ def ensure_dnsmasq_main() -> None:
             "# Managed by kmc-router-agent — do not edit",
             # conf-dir suffix args are SKIP globs (not include filters).
             "conf-dir=/var/lib/kmc/dnsmasq.d",
+            # Own the lease DB so we can prune MAC→IP bindings when IPAM reuses
+            # an address for a new VM (new MAC, same IP).
+            f"dhcp-leasefile={DNSMASQ_LEASEFILE}",
             "bind-interfaces",
             "except-interface=lo",
             "dhcp-authoritative",
@@ -355,19 +371,115 @@ def render_vpc_dnsmasq(
     return "\n".join(lines)
 
 
-def reload_dnsmasq() -> None:
+def desired_static_mac_ip(leases: list[dict[str, Any]]) -> set[tuple[str, str]]:
+    """Return {(mac_lower, ip)} from policy static leases."""
+    out: set[tuple[str, str]] = set()
+    for lease in leases:
+        mac = str(lease.get("mac", "")).strip().lower()
+        ip = str(lease.get("ip", "")).strip()
+        if mac and ip:
+            out.add((mac, ip))
+    return out
+
+
+def prune_dnsmasq_lease_file(path: Path, desired: set[tuple[str, str]]) -> int:
+    """Keep only lease lines whose (mac, ip) still match policy. Returns dropped count.
+
+    dnsmasq lease format: ``expiry mac ip hostname client-id``
+    (see dnsmasq(8)). Static-only DHCP means anything else is stale — especially
+    an IP still bound to a deleted VM's MAC after IPAM reuses the address.
+    """
+    if not path.is_file():
+        return 0
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as e:
+        log(f"could not read lease file {path}: {e}")
+        return 0
+    kept: list[str] = []
+    dropped = 0
+    for line in text.splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#"):
+            kept.append(line)
+            continue
+        parts = raw.split()
+        if len(parts) < 3:
+            kept.append(line)
+            continue
+        mac = parts[1].strip().lower()
+        ip = parts[2].strip()
+        if (mac, ip) in desired:
+            kept.append(line)
+        else:
+            dropped += 1
+    if dropped == 0:
+        return 0
+    new_text = "\n".join(kept)
+    if new_text and not new_text.endswith("\n"):
+        new_text += "\n"
+    try:
+        path.write_text(new_text, encoding="utf-8")
+    except OSError as e:
+        log(f"could not write lease file {path}: {e}")
+        return 0
+    return dropped
+
+
+def sync_dnsmasq_leases(leases: list[dict[str, Any]]) -> None:
+    """Drop runtime lease bindings that no longer match policy static hosts.
+
+    Without this, deleting a VM and recreating it reuses the IPAM address, but
+    dnsmasq still holds the old MAC→IP lease and logs::
+
+        not using configured address X because it is leased to <old-mac>
+        DHCPDISCOVER ... no address available
+    """
+    desired = desired_static_mac_ip(leases)
+    DNSMASQ_LEASEFILE.parent.mkdir(parents=True, exist_ok=True)
+    if not DNSMASQ_LEASEFILE.is_file():
+        try:
+            DNSMASQ_LEASEFILE.write_text("", encoding="utf-8")
+        except OSError as e:
+            log(f"could not create lease file {DNSMASQ_LEASEFILE}: {e}")
+
+    paths: list[Path] = [DNSMASQ_LEASEFILE]
+    for legacy in LEGACY_DNSMASQ_LEASEFILES:
+        try:
+            if legacy.resolve() == DNSMASQ_LEASEFILE.resolve():
+                continue
+        except OSError:
+            pass
+        paths.append(legacy)
+
+    for path in paths:
+        dropped = prune_dnsmasq_lease_file(path, desired)
+        if dropped:
+            log(f"pruned {dropped} stale dhcp lease(s) from {path}")
+
+
+def reload_dnsmasq(leases: list[dict[str, Any]] | None = None) -> None:
     # MUST restart (not reload/SIGHUP). dnsmasq SIGHUP only re-reads
     # dhcp-hostsfile / dhcp-hostsdir / hosts — it does NOT re-read conf-dir
     # (our per-VPC *.conf with dhcp-host + dhcp-range). A bare reload left new
     # static leases on disk while the running process still said
     # "no address available" for those MACs.
-    r = run(["systemctl", "restart", "dnsmasq"], check=False)
+    #
+    # Stop before pruning the lease file: on SIGTERM dnsmasq rewrites its lease
+    # DB from memory, which would restore the stale MAC→IP bindings we just
+    # removed (and re-break IP reuse after VM delete/recreate).
+    run(["systemctl", "stop", "dnsmasq"], check=False)
+    # Also kill a non-systemd instance if present
+    run(["pkill", "-x", "dnsmasq"], check=False)
+    if leases is not None:
+        sync_dnsmasq_leases(leases)
+    r = run(["systemctl", "start", "dnsmasq"], check=False)
     if r.returncode == 0:
         return
-    r = run(["systemctl", "start", "dnsmasq"], check=False)
+    r = run(["systemctl", "restart", "dnsmasq"], check=False)
     if r.returncode != 0:
         run(["pkill", "-HUP", "dnsmasq"], check=False)
-        log("dnsmasq restart/start failed; sent SIGHUP as last resort")
+        log("dnsmasq start/restart failed; sent SIGHUP as last resort")
 
 
 def iptables(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -669,7 +781,7 @@ def apply_policy(doc: dict[str, Any]) -> str:
                 iptables("-A", "FORWARD", "-i", a, "-o", b, "-j", "ACCEPT")
 
     apply_external_and_floats(doc, private_ifaces)
-    reload_dnsmasq()
+    reload_dnsmasq(leases_all if isinstance(leases_all, list) else [])
     return generation
 
 

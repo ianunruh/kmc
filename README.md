@@ -269,6 +269,7 @@ without re-allocating.
 
 - Bootstrap copy is written by cloud-init; runtime source of truth is ConfigMap `agent.py`
 - Watches the policy ConfigMap and applies DHCP/DNS, SNAT, and 1:1 DNAT/SNAT floating IPs
+- On each apply: rewrites static `dhcp-host` entries, **stops** dnsmasq, prunes the lease DB to MAC+IP pairs still in policy, then starts dnsmasq — so deleting a VM and recreating it can reuse the IPAM address with a new MAC (without this, dnsmasq keeps the old lease and logs `not using configured address … because it is leased to <old-mac>`)
 - Heartbeats via `kmc.ianunruh.com/agent-heartbeat-at` (~30s); kmc marks the agent **Stale** if the heartbeat is older than 90s
 - When kmc updates `agent.py`, the agent rewrites itself and re-execs
 
