@@ -373,3 +373,48 @@ export function validateDns1123Label(value: string): string | null {
   }
   return null;
 }
+
+/** Max VMs per multi-launch from the create form. */
+export const MAX_VM_LAUNCH_COUNT = 50;
+
+/**
+ * Expand a base VM name into one or more DNS-1123 names for multi-launch.
+ * count === 1 → [base] as-is; count > 1 → base-1 … base-N.
+ */
+export function expandVmLaunchNames(
+  baseName: string,
+  count: number,
+): { names: string[] } | { error: string } {
+  const base = baseName.trim();
+  if (!base) return { error: "Name is required" };
+  if (!Number.isInteger(count) || count < 1) {
+    return { error: "Count must be a positive integer" };
+  }
+  if (count > MAX_VM_LAUNCH_COUNT) {
+    return { error: `Count cannot exceed ${MAX_VM_LAUNCH_COUNT}` };
+  }
+
+  if (count === 1) {
+    const err = validateDns1123Label(base);
+    if (err) return { error: err === "Required" ? "Name is required" : err };
+    return { names: [base] };
+  }
+
+  const names: string[] = [];
+  for (let i = 1; i <= count; i++) {
+    const name = `${base}-${i}`;
+    const err = validateDns1123Label(name);
+    if (err) {
+      if (name.length > 63) {
+        return {
+          error: `Generated name “${name}” exceeds 63 characters — shorten the base name`,
+        };
+      }
+      return {
+        error: `Generated name “${name}” is not a valid DNS-1123 label — adjust the base name`,
+      };
+    }
+    names.push(name);
+  }
+  return { names };
+}

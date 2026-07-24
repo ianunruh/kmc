@@ -29,7 +29,13 @@ import type { Route } from "./+types/vms.create";
 import { notifyActionError } from "~/lib/action-feedback";
 import { getRequestSession } from "~/lib/auth/middleware.server";
 import { logServerError } from "~/lib/errors";
-import { vmPath } from "~/lib/format";
+import {
+  expandVmLaunchNames,
+  MAX_VM_LAUNCH_COUNT,
+  validateDns1123Label,
+  vmPath,
+  vmsListPath,
+} from "~/lib/format";
 import { getImagePreference } from "~/lib/k8s/catalog.server";
 import { listSshKeysOrEmpty } from "~/ssh-keys/ssh-keys.server";
 import { FormActions, FormSection } from "~/ui";
@@ -89,6 +95,8 @@ export async function action({ request }: Route.ActionArgs) {
   const cluster = String(form.get("cluster") ?? "").trim();
   const namespace = String(form.get("namespace") ?? "").trim();
   const name = String(form.get("name") ?? "").trim();
+  const countRaw = String(form.get("count") ?? "1").trim();
+  const count = Number(countRaw);
   const sizeMode = String(form.get("sizeMode") ?? "manual");
   const instanceType = String(form.get("instanceType") ?? "").trim() || undefined;
   const cpuCoresRaw = String(form.get("cpuCores") ?? "").trim();
@@ -117,10 +125,15 @@ export async function action({ request }: Route.ActionArgs) {
 
   if (!cluster) return { error: "Cluster is required" };
   if (!namespace) return { error: "Namespace is required" };
-  if (!name) return { error: "Name is required" };
-  if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name)) {
+
+  const expanded = expandVmLaunchNames(name, count);
+  if ("error" in expanded) return { error: expanded.error };
+  const { names } = expanded;
+
+  if (names.length > 1 && diskSource === "existingDataVolume") {
     return {
-      error: "Name must be a DNS-1123 label (lowercase alphanumeric and hyphens)",
+      error:
+        "Launching multiple VMs requires a new disk from image — an existing DataVolume can only back one VM",
     };
   }
 
@@ -139,10 +152,9 @@ export async function action({ request }: Route.ActionArgs) {
 
   if (!sshPublicKey) return { error: "SSH public key is required" };
 
-  const payload: CreateVmRequest = {
+  const basePayload: Omit<CreateVmRequest, "name"> = {
     cluster,
     namespace,
-    name,
     sshPublicKey,
     start,
     installGuestAgent,
@@ -151,10 +163,9 @@ export async function action({ request }: Route.ActionArgs) {
 
   if (diskSource === "existingDataVolume") {
     if (!existingDataVolume) return { error: "DataVolume is required" };
-    if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(existingDataVolume)) {
-      return { error: "DataVolume name must be a DNS-1123 label" };
-    }
-    payload.existingDataVolumeName = existingDataVolume;
+    const dvErr = validateDns1123Label(existingDataVolume);
+    if (dvErr) return { error: `DataVolume: ${dvErr}` };
+    basePayload.existingDataVolumeName = existingDataVolume;
   } else {
     if (!diskSize) return { error: "Disk size is required" };
     if (!imageValue) return { error: "Image is required" };
@@ -163,22 +174,22 @@ export async function action({ request }: Route.ActionArgs) {
       : ["vm-images", imageValue];
     // Preference comes from the golden image PVC label, not a form field.
     const preference = await getImagePreference(cluster, imageNamespace, imageName);
-    payload.diskSize = diskSize;
-    payload.storageClass = storageClass;
-    payload.image = { kind: "pvc", namespace: imageNamespace, name: imageName };
-    payload.preference = preference;
+    basePayload.diskSize = diskSize;
+    basePayload.storageClass = storageClass;
+    basePayload.image = { kind: "pvc", namespace: imageNamespace, name: imageName };
+    basePayload.preference = preference;
   }
 
   if (sizeMode === "instancetype" && instanceType) {
-    payload.instanceType = instanceType;
+    basePayload.instanceType = instanceType;
   } else {
     const cpuCores = Number(cpuCoresRaw || 1);
     if (!Number.isFinite(cpuCores) || cpuCores < 1) {
       return { error: "CPU cores must be a positive number" };
     }
     if (!memory) return { error: "Memory is required" };
-    payload.cpuCores = cpuCores;
-    payload.memory = memory;
+    basePayload.cpuCores = cpuCores;
+    basePayload.memory = memory;
   }
 
   if (multusNetworks.length > 0) {
@@ -191,31 +202,46 @@ export async function action({ request }: Route.ActionArgs) {
         error: `At most ${MAX_NETWORK_ATTACHMENTS} Multus network attachments are supported`,
       };
     }
-    payload.networks = multusNetworks.map((multusNetworkName) => ({
+    basePayload.networks = multusNetworks.map((multusNetworkName) => ({
       multusNetworkName,
     }));
     // Default dual-home; only send false when the user opts out.
-    payload.includePodNetwork = includePodNetwork;
+    basePayload.includePodNetwork = includePodNetwork;
   }
 
+  const created: string[] = [];
   try {
-    await createVm(payload);
+    for (const vmName of names) {
+      await createVm({ ...basePayload, name: vmName });
+      created.push(vmName);
+    }
+  } catch (err) {
+    const failedName = names[created.length] ?? name;
+    const detail = logServerError("vm.create", err, {
+      cluster,
+      namespace,
+      name: failedName,
+      count: names.length,
+      created,
+    });
+    if (created.length > 0) {
+      return {
+        error: `Created ${created.join(", ")} then failed on ${failedName}: ${detail}`,
+      };
+    }
+    return { error: detail };
+  }
+
+  if (names.length === 1) {
     return redirect(
       vmPath({
-        cluster: payload.cluster,
-        namespace: payload.namespace,
-        name: payload.name,
+        cluster,
+        namespace,
+        name: names[0]!,
       }),
     );
-  } catch (err) {
-    return {
-      error: logServerError("vm.create", err, {
-        cluster: payload.cluster,
-        namespace: payload.namespace,
-        name: payload.name,
-      }),
-    };
   }
+  return redirect(vmsListPath({ cluster, namespace }));
 }
 
 type CatalogFetcherData = ClusterCatalog;
@@ -252,6 +278,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       cluster: defaultCluster,
       namespace: prefill.namespace,
       name: "",
+      count: 1,
       sizeMode: "manual" as "manual" | "instancetype",
       instanceType: "",
       cpuCores: 2,
@@ -278,10 +305,16 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
     validate: {
       cluster: (v) => (!v ? "Required" : null),
       namespace: (v) => (!v ? "Required" : null),
-      name: (v) => {
-        if (!v) return "Required";
-        if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(v)) {
-          return "DNS-1123 label required";
+      name: (v, values) => {
+        const expanded = expandVmLaunchNames(v, values.count);
+        if ("error" in expanded) return expanded.error;
+        return null;
+      },
+      count: (v, values) => {
+        if (!Number.isInteger(v) || v < 1) return "At least 1";
+        if (v > MAX_VM_LAUNCH_COUNT) return `Max ${MAX_VM_LAUNCH_COUNT}`;
+        if (v > 1 && values.diskSource === "existingDataVolume") {
+          return "Count must be 1 when reusing an existing DataVolume";
         }
         return null;
       },
@@ -291,11 +324,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
         values.diskSource === "image" && !v ? "Required" : null,
       existingDataVolume: (v, values) => {
         if (values.diskSource !== "existingDataVolume") return null;
-        if (!v) return "Required";
-        if (!/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(v)) {
-          return "DNS-1123 label required";
-        }
-        return null;
+        return validateDns1123Label(v);
       },
       savedSshKeyId: (v, values) =>
         values.sshKeyMode === "saved" && !v ? "Select a key" : null,
@@ -309,6 +338,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       cluster: values.cluster,
       namespace: values.namespace,
       name: values.name,
+      count: String(values.count),
       sizeMode: values.sizeMode,
       instanceType: values.instanceType,
       cpuCores: String(values.cpuCores),
@@ -508,6 +538,12 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       .filter((n): n is NetworkInfo => n != null);
   }, [availableNetworks, form.values.networks]);
 
+  const launchNamePreview = useMemo(() => {
+    const expanded = expandVmLaunchNames(form.values.name, form.values.count);
+    if ("error" in expanded) return null;
+    return expanded.names;
+  }, [form.values.name, form.values.count]);
+
   const setNetworkAt = (index: number, value: string) => {
     const next = [...form.values.networks];
     next[index] = value;
@@ -546,9 +582,11 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       <div>
         <Title order={2} size="h3">
           Launch virtual machine
+          {form.values.count > 1 ? "s" : ""}
         </Title>
         <Text size="sm" c="dimmed">
-          Provision a KubeVirt VM from a golden image or an existing DataVolume
+          Provision one or more KubeVirt VMs from a golden image, or a single VM
+          from an existing DataVolume
         </Text>
       </div>
 
@@ -596,13 +634,55 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 }}
               />
             </SimpleGrid>
-            <TextInput
-              label="Name"
-              placeholder="my-vm"
-              required
-              autoFocus
-              {...form.getInputProps("name")}
-            />
+            <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
+              <TextInput
+                label={form.values.count > 1 ? "Base name" : "Name"}
+                placeholder="my-vm"
+                description={
+                  form.values.count > 1
+                    ? "Instances are named base-1, base-2, …"
+                    : undefined
+                }
+                required
+                autoFocus
+                {...form.getInputProps("name")}
+              />
+              <NumberInput
+                label="Count"
+                description={`1–${MAX_VM_LAUNCH_COUNT} identical VMs`}
+                min={1}
+                max={MAX_VM_LAUNCH_COUNT}
+                clampBehavior="strict"
+                allowDecimal={false}
+                required
+                value={form.values.count}
+                error={form.errors.count}
+                onChange={(v) => {
+                  const n = typeof v === "number" ? v : Number(v);
+                  form.setFieldValue(
+                    "count",
+                    Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1,
+                  );
+                  if (
+                    Number.isFinite(n) &&
+                    n > 1 &&
+                    form.values.diskSource === "existingDataVolume"
+                  ) {
+                    form.setFieldValue("diskSource", "image");
+                  }
+                }}
+              />
+            </SimpleGrid>
+            {launchNamePreview && launchNamePreview.length > 1 ? (
+              <Text size="xs" c="dimmed">
+                Will create{" "}
+                <Text span ff="monospace" c="gray.4">
+                  {launchNamePreview.length <= 8
+                    ? launchNamePreview.join(", ")
+                    : `${launchNamePreview.slice(0, 6).join(", ")} … ${launchNamePreview[launchNamePreview.length - 1]}`}
+                </Text>
+              </Text>
+            ) : null}
           </FormSection>
 
           <FormSection title="Size & disk">
@@ -642,17 +722,29 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
               <SegmentedControl
                 fullWidth
                 value={form.values.diskSource}
-                onChange={(v) =>
+                onChange={(v) => {
+                  if (v === "existingDataVolume" && form.values.count > 1) {
+                    form.setFieldValue("count", 1);
+                  }
                   form.setFieldValue(
                     "diskSource",
                     v === "existingDataVolume" ? "existingDataVolume" : "image",
-                  )
-                }
+                  );
+                }}
                 data={[
                   { label: "New disk from image", value: "image" },
-                  { label: "Existing DataVolume", value: "existingDataVolume" },
+                  {
+                    label: "Existing DataVolume",
+                    value: "existingDataVolume",
+                    disabled: form.values.count > 1,
+                  },
                 ]}
               />
+              {form.values.count > 1 ? (
+                <Text size="xs" c="dimmed" mt={6}>
+                  Multi-launch clones a new disk per VM from the golden image.
+                </Text>
+              ) : null}
             </div>
 
             {form.values.diskSource === "image" ? (
@@ -954,7 +1046,9 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 Cancel
               </Button>
               <Button type="submit" loading={submitting}>
-                Launch VM
+                {form.values.count > 1
+                  ? `Launch ${form.values.count} VMs`
+                  : "Launch VM"}
               </Button>
             </Group>
           </FormActions>
