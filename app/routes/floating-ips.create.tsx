@@ -180,7 +180,7 @@ export default function AssociateFloatingIpPage({
     <Stack gap="md" pb={80}>
       <PageHeader
         title="Associate floating IP"
-        description="Map a public Multus address through the VPC NAT gateway to a private VM (1:1 DNAT/SNAT)."
+        description="Map a public Multus address through a router external gateway to a private VM (1:1 DNAT/SNAT)."
       />
 
       {actionData && "error" in actionData && actionData.error && (
@@ -191,8 +191,9 @@ export default function AssociateFloatingIpPage({
 
       {blocked && (
         <Alert color="yellow" variant="light" title="No eligible VPCs">
-          Floating IPs require a VPC with private IPAM and a NAT gateway. Create a VPC,
-          enable CIDR, add a NAT gateway, then return here.
+          Floating IPs require a VPC with private IPAM and a shared router with an
+          external gateway. Create a VPC, attach a router, enable external, then return
+          here.
         </Alert>
       )}
 
@@ -214,7 +215,7 @@ export default function AssociateFloatingIpPage({
             />
             <Select
               label="VPC"
-              description="Must have a NAT gateway (policy ConfigMap)."
+              description="Must have a shared router with an external gateway."
               data={vpcOptions}
               searchable
               required
@@ -227,7 +228,7 @@ export default function AssociateFloatingIpPage({
             />
             {selected && (
               <Text size="xs" c="dimmed">
-                NAT gateway <Code>{selected.natGatewayName ?? "—"}</Code>
+                Router <Code>{selected.routerName ?? "—"}</Code>
                 {selected.publicNetwork ? ` · egress ${selected.publicNetwork}` : ""}
                 {selected.cidr ? ` · ${selected.cidr}` : ""} ·{" "}
                 <Link to={vpcPath(selected)}>open VPC</Link>
@@ -283,7 +284,7 @@ export default function AssociateFloatingIpPage({
             ) : (
               <TextInput
                 label="Public IPv4 (optional)"
-                description="Leave empty to allocate the next free address from the NAT gateway’s public Multus pool."
+                description="Leave empty to allocate the next free address from the router’s public Multus pool."
                 placeholder="auto"
                 disabled={blocked}
                 {...form.getInputProps("publicIpv4")}

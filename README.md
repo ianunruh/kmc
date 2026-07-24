@@ -166,7 +166,7 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 - **Virtual machines** — list, create, detail, edit (labels always; size / preference / run strategy when stopped), stop/start/restart/pause/unpause/delete, **serial console** (full-page xterm via app-proxied WebSocket)
 - **IPAM** — optional per-cluster IPv4 pools for Multus NADs; auto-allocate + netplan cloud-init on create
 - **VPCs** — self-service Multus networks from a cluster VLAN pool (`vlanPools`); optional private CIDR for IPAM
-- **Routers** — shared DHCP/DNS appliance per namespace (OpenStack-style); multi-VPC + external SNAT later
+- **Routers** — shared DHCP/DNS appliance per namespace (OpenStack-style); external SNAT + floating IPs; multi-VPC attach later
 - **SSH keys** — signed-in users save named public keys (ConfigMap on the settings cluster); select when creating a VM
 - **Ingresses** — create/list/detail/delete HTTP Ingresses bound to a VM (companion ClusterIP Service selects `kubevirt.io/vm`)
 
@@ -234,32 +234,11 @@ OpenStack-style **shared routers** provide per-VPC gateway, DHCP, and DNS withou
 3. Launch workload VMs on the VPC: kmc registers a static lease and configures the guest private NIC with **DHCP** (MAC-matched).
 4. Guests get address / default route / DNS from the router (`<vm>.<vpc>.vpc.local`).
 
-**Phase 2 (external gateway)**
+**External gateway + floating IPs**
 
 - Optional **public Multus** on create, or **Enable external gateway** on the router detail page (recreates the appliance VM with a public NIC)
 - SNAT (MASQUERADE) for guest egress; **floating IPs** live on the router policy and are applied by the same agent
-- Floating IP associate/list eligibility includes router+external VPCs (legacy NAT gateways still work)
-
-**Limits**
-
-- One VPC at create (multi-VPC attach later)
-- Mutual exclusion: a VPC cannot have both a shared router and a NAT gateway (gateway IP ownership)
-- Requires cluster `network.podCIDR` / `serviceCIDR` (and CA) like the NAT agent
-- Setting external later requires an SSH key (new cloud-init) and causes brief downtime
-
-**Policy sketch** (`policy.json` in the ConfigMap): `interfaces[]` (vpc, cidr, gateway, mac, domain, dhcp), `leases[]`, `external` (multusNetwork, primaryCidr, gateway, mac, snat), `floatingIPs[]`.
-
-### NAT gateway + floating IPs
-
-With private IPAM enabled, a VPC can run a **legacy NAT gateway** VM (prefer shared router for new lab setups once Phase 2 external gateway ships):
-
-| NIC              | Role                                                     |
-| ---------------- | -------------------------------------------------------- |
-| Multus private   | VPC gateway address; no default route                    |
-| Multus public    | Default route + SNAT (`MASQUERADE`); holds floating IPs  |
-| Pod (masquerade) | Reach apiserver; in-guest agent watches policy ConfigMap |
-
-**Cluster config** (required for new NAT gateways):
+- Requires cluster `network.podCIDR` / `serviceCIDR` (and CA) so the agent can reach the apiserver over the pod NIC
 
 ```yaml
 network:
@@ -268,40 +247,46 @@ network:
   # dnsIP: 10.20.0.10   # optional
 ```
 
-On create, kmc also provisions:
+On create (or when enabling external), kmc provisions:
 
-- ConfigMap `kmc-nat-<vpc>` with:
-  - `policy.json` — desired floating IP maps
-  - `agent.py` — stdlib Python agent source (self-update target)
+- ConfigMap `kmc-router-<name>` with `policy.json` + `agent.py` (self-update target)
 - ServiceAccount + Role/RoleBinding (get/list/watch/patch that ConfigMap)
 - Long-lived SA token embedded in cloud-init for the agent
 
-The policy ConfigMap is **not** owned by the NAT gateway VM: floating IP
-associations survive deleting and recreating the gateway instance. IPAM keeps
-those public addresses reserved via the policy document. Recreating a NAT
-gateway reuses the existing policy, updates primary NIC metadata, and re-stamps
-floating IPs onto the new VM. The control plane (ConfigMap + SA/RBAC) is removed
-when the VPC is deleted (after all attached VMs are gone).
+The policy ConfigMap is **not** owned by the router VM: floating IP associations
+and leases survive deleting and recreating the appliance. IPAM keeps public
+addresses reserved via the policy document. Recreating a router reuses the
+existing policy, updates NIC metadata, and re-stamps floating IPs onto the new
+VM. The control plane is removed when the router is deleted.
 
 **Disassociate vs release:** Disassociating a floating IP unmaps it from the
-private target but **keeps** the public address held for the VPC (secondary IP
-stays on the NAT gateway; IPAM still reserves it). **Release** removes the
-policy entry so the address returns to the public pool. Held addresses can be
-re-associated later without re-allocating.
+private target but **keeps** the public address held (secondary IP stays on the
+router; IPAM still reserves it). **Release** removes the policy entry so the
+address returns to the public pool. Held addresses can be re-associated later
+without re-allocating.
 
-**In-guest agent** (`app/vpcs/kmc-nat-agent.py`, Python 3 stdlib only):
+**In-guest agent** (`app/vpcs/kmc-router-agent.py`, Python 3 stdlib only):
 
 - Bootstrap copy is written by cloud-init; runtime source of truth is ConfigMap `agent.py`
-- Watches the policy ConfigMap (apiserver watch) and applies 1:1 DNAT/SNAT + secondary public addresses
+- Watches the policy ConfigMap and applies DHCP/DNS, SNAT, and 1:1 DNAT/SNAT floating IPs
 - Heartbeats via `kmc.ianunruh.com/agent-heartbeat-at` (~30s); kmc marks the agent **Stale** if the heartbeat is older than 90s
-- When kmc updates `agent.py` (VPC detail load, floating IP changes, or control-plane ensure), the agent rewrites itself and re-execs
+- When kmc updates `agent.py`, the agent rewrites itself and re-execs
 
 **UI**
 
-- **Floating IPs** nav — list/filter all associations; disassociate
-- **Associate floating IP** (`/floating-ips/create`) — pick VPC + target VM (or private IP); optional fixed public address
-- **VPC detail** — floating IP table, agent status/heartbeat, associate / disassociate
+- **Routers** — create / detail; enable external gateway; leases and floating IPs
+- **Floating IPs** nav — list/filter all associations; disassociate / release
+- **Associate floating IP** (`/floating-ips/create`) — pick VPC (must have router + external) + target VM (or private IP)
+- **VPC detail** — router pointer, floating IP table, associate / disassociate
 - **VM detail** — floating IPs targeting this guest, associate (prefilled VPC) / disassociate
+
+**Limits**
+
+- One VPC at create (multi-VPC attach later)
+- A VPC can attach to only one router (gateway IP ownership)
+- Setting external later requires an SSH key (new cloud-init) and causes brief downtime
+
+**Policy sketch** (`policy.json` in the ConfigMap): `interfaces[]` (vpc, cidr, gateway, mac, domain, dhcp), `leases[]`, `external` (multusNetwork, primaryCidr, gateway, mac, snat), `floatingIPs[]`.
 
 ### User SSH keys
 

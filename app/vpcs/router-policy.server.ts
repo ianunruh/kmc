@@ -24,7 +24,7 @@ import {
   KMC_LABEL_ROLE,
   KMC_LABEL_ROUTER,
   KMC_MANAGED_BY,
-  KMC_NAT_AGENT_STALE_AFTER_MS,
+  KMC_AGENT_STALE_AFTER_MS,
   KMC_RESOURCE_ROUTER_POLICY,
   KMC_ROLE_ROUTER,
   KMC_ROUTER_AGENT_SCRIPT_KEY,
@@ -221,7 +221,7 @@ function deriveAgentStatus(
     const hb = annotations[KMC_ANN_AGENT_HEARTBEAT_AT]?.trim();
     if (hb) {
       const t = Date.parse(hb);
-      if (!Number.isNaN(t) && nowMs - t > KMC_NAT_AGENT_STALE_AFTER_MS) {
+      if (!Number.isNaN(t) && nowMs - t > KMC_AGENT_STALE_AFTER_MS) {
         status = "Stale";
       }
     } else if (status === "Ready") {
@@ -1305,7 +1305,7 @@ export async function listFloatingIpsFromRouterPolicies(
           private: privateAddr,
           targetVm: privateAddr ? f.targetVm : undefined,
           state: privateAddr ? "associated" : "held",
-          natGatewayVm: routerName,
+          routerName,
           policyConfigMap: cm.metadata?.name,
           agentStatus: agent.agentStatus,
           agentHeartbeatAt: agent.agentHeartbeatAt,
@@ -1316,4 +1316,30 @@ export async function listFloatingIpsFromRouterPolicies(
     console.error(`listFloatingIpsFromRouterPolicies(${cluster}):`, formatError(err));
   }
   return items;
+}
+
+/**
+ * Floating IPs that target a specific VM (by name or private IPAM address).
+ */
+export async function listFloatingIpsForVm(
+  cluster: ClusterId,
+  namespace: string,
+  vmName: string,
+  privateAddresses: string[] = [],
+): Promise<FloatingIpSummary[]> {
+  const all = await listFloatingIpsFromRouterPolicies(cluster);
+  const privSet = new Set(
+    privateAddresses
+      .map((a) => addressFromIpv4Annotation(a) ?? a.trim())
+      .filter(Boolean),
+  );
+  return all.filter((f) => {
+    if (f.namespace !== namespace) return false;
+    if (f.state !== "associated") return false;
+    if (f.targetVm && f.targetVm === vmName) return true;
+    const priv = f.private
+      ? (addressFromIpv4Annotation(f.private) ?? f.private)
+      : "";
+    return priv ? privSet.has(priv) : false;
+  });
 }

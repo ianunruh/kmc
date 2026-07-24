@@ -235,9 +235,7 @@ export default function CreateRouterPage({
   const defaultInstanceType = preferredInstanceTypeName(catalog?.instanceTypes ?? []);
 
   /** VPCs with private IPAM that can accept a new router interface. */
-  const freeVpcs = attachable.filter(
-    (v) => v.cidr && !v.attachedRouter && !v.hasNatGateway,
-  );
+  const freeVpcs = attachable.filter((v) => v.cidr && !v.attachedRouter);
   /** All CIDR VPCs for the select — blocked ones stay visible with a reason. */
   const vpcSelectData = attachable
     .filter((v) => v.cidr)
@@ -250,13 +248,6 @@ export default function CreateRouterPage({
           disabled: true,
         };
       }
-      if (v.hasNatGateway) {
-        return {
-          value: v.name,
-          label: `${base} (has NAT gateway — delete it first)`,
-          disabled: true,
-        };
-      }
       return { value: v.name, label: base, disabled: false };
     });
 
@@ -264,13 +255,11 @@ export default function CreateRouterPage({
     ? attachable.find((v) => v.name === preVpc)
     : undefined;
   const preVpcBlockedReason = preVpcBlocked
-    ? preVpcBlocked.hasNatGateway
-      ? `VPC "${preVpc}" has a NAT gateway that owns the gateway IP. Delete that NAT gateway VM (and clear the nat-gateway annotation if needed) before attaching a shared router.`
-      : preVpcBlocked.attachedRouter
-        ? `VPC "${preVpc}" is already attached to router ${preVpcBlocked.attachedRouter}.`
-        : !preVpcBlocked.cidr
-          ? `VPC "${preVpc}" has no private CIDR — enable IPAM first.`
-          : null
+    ? preVpcBlocked.attachedRouter
+      ? `VPC "${preVpc}" is already attached to router ${preVpcBlocked.attachedRouter}.`
+      : !preVpcBlocked.cidr
+        ? `VPC "${preVpc}" has no private CIDR — enable IPAM first.`
+        : null
     : preVpc
       ? `VPC "${preVpc}" was not found in this namespace (or is not a kmc VPC).`
       : null;
@@ -393,7 +382,7 @@ export default function CreateRouterPage({
       {preNamespace && freeVpcs.length === 0 && (
         <Alert color="yellow" variant="light" title="No attachable VPCs">
           Namespace <Code>{preNamespace}</Code> has no free VPC with private IPAM — each
-          already has a router or a NAT gateway (gateway IP can only have one owner).
+          already has a router (gateway IP can only have one owner).
         </Alert>
       )}
 
@@ -426,7 +415,7 @@ export default function CreateRouterPage({
             />
             <Select
               label="VPC to attach"
-              description="Only VPCs without a router or NAT gateway can attach (shared gateway IP)."
+              description="Only VPCs without a router can attach (shared gateway IP)."
               data={vpcSelectData}
               required
               searchable

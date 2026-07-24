@@ -748,7 +748,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
       <DetailCard title="Floating IPs">
         <Group justify="space-between" mb="sm">
           <Text size="sm" c="dimmed">
-            Public addresses mapped through a VPC NAT gateway to this VM.
+            Public addresses mapped through a router external gateway to this VM.
           </Text>
           <Group gap="xs">
             <Button
@@ -786,7 +786,7 @@ export default function VmDetailPage({ loaderData }: Route.ComponentProps) {
           <Text size="sm" c="dimmed">
             {vpcPrefill
               ? "No floating IPs associated with this VM."
-              : "Attach this VM to a VPC with a NAT gateway to use floating IPs."}
+              : "Attach this VM to a VPC whose shared router has an external gateway to use floating IPs."}
           </Text>
         ) : (
           <Table.ScrollContainer

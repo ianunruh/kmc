@@ -26,7 +26,8 @@ import type {
   TopologyNetworkNode,
   TopologyVmNode,
 } from "~/lib/types";
-import { listFloatingIpsFromPolicies } from "~/vpcs/nat-policy.server";
+import { listFloatingIpsFromRouterPolicies } from "~/vpcs/router-policy.server";
+
 import { listClusters } from "~/vms/vms.server";
 
 type KubeNad = {
@@ -260,7 +261,7 @@ async function loadClusterTopology(
 
   // Floating IPs: stamp target VMs + edges from the public Multus pool → target.
   try {
-    const floats = await listFloatingIpsFromPolicies(cluster);
+    const floats = await listFloatingIpsFromRouterPolicies(cluster);
     const pools = listIpPools(cluster);
     for (const f of floats) {
       if (f.state !== "associated") continue;

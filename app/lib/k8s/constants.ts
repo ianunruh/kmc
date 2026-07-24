@@ -54,8 +54,6 @@ export const KMC_ANN_GATEWAY = `${KMC_LABEL_NAMESPACE}/gateway`;
 export const KMC_ANN_DNS = `${KMC_LABEL_NAMESPACE}/dns`;
 export const KMC_ANN_DESCRIPTION = `${KMC_LABEL_NAMESPACE}/description`;
 export const KMC_ANN_OWNER = `${KMC_LABEL_NAMESPACE}/owner`;
-/** VM name (same namespace) of the dual-homed NAT gateway for this VPC. */
-export const KMC_ANN_NAT_GATEWAY = `${KMC_LABEL_NAMESPACE}/nat-gateway`;
 
 /**
  * Shared router name (same namespace) attached to this VPC.
@@ -63,18 +61,14 @@ export const KMC_ANN_NAT_GATEWAY = `${KMC_LABEL_NAMESPACE}/nat-gateway`;
  */
 export const KMC_ANN_ROUTER = `${KMC_LABEL_NAMESPACE}/router`;
 
-/** VM role labels (e.g. NAT gateway for a VPC). */
+/** VM role labels (e.g. shared router for a VPC). */
 export const KMC_LABEL_ROLE = `${KMC_LABEL_NAMESPACE}/role`;
-export const KMC_ROLE_NAT_GATEWAY = "nat-gateway";
-/** Shared router appliance (DHCP/DNS; optional external NAT later). */
+/** Shared router appliance (DHCP/DNS + optional external SNAT / floating IPs). */
 export const KMC_ROLE_ROUTER = "router";
 /** VPC NAD name (same namespace as the VM) this role serves. */
 export const KMC_LABEL_VPC = `${KMC_LABEL_NAMESPACE}/vpc`;
 /** Router name label on policy CM / router VM. */
 export const KMC_LABEL_ROUTER = `${KMC_LABEL_NAMESPACE}/router`;
-
-/** Value of kmc.ianunruh.com/resource for NAT gateway policy ConfigMaps. */
-export const KMC_RESOURCE_NAT_POLICY = "nat-policy";
 
 /** Value of kmc.ianunruh.com/resource for shared router policy ConfigMaps. */
 export const KMC_RESOURCE_ROUTER_POLICY = "router-policy";
@@ -82,23 +76,11 @@ export const KMC_RESOURCE_ROUTER_POLICY = "router-policy";
 /** List selector for kmc-managed VPC NADs. */
 export const KMC_VPC_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_VPC}`;
 
-/** List selector for NAT gateway policy ConfigMaps (floating IPs, etc.). */
-export const KMC_NAT_POLICY_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_NAT_POLICY}`;
-
 /** List selector for shared router policy ConfigMaps. */
 export const KMC_ROUTER_POLICY_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_ROUTER_POLICY}`;
 
-/** Policy ConfigMap data key (JSON NatGatewayPolicy). */
-export const KMC_NAT_POLICY_DATA_KEY = "policy.json";
-
 /** Router policy ConfigMap data key (JSON RouterPolicy). */
 export const KMC_ROUTER_POLICY_DATA_KEY = "policy.json";
-
-/**
- * Policy ConfigMap data key for the in-guest agent source (Python).
- * Agents self-update when this key changes.
- */
-export const KMC_NAT_AGENT_SCRIPT_KEY = "agent.py";
 
 /** Router policy ConfigMap data key for the in-guest agent source. */
 export const KMC_ROUTER_AGENT_SCRIPT_KEY = "agent.py";
@@ -123,10 +105,10 @@ export const KMC_ANN_AGENT_VERSION = `${KMC_LABEL_NAMESPACE}/agent-version`;
  * If the agent heartbeat is older than this, surface status as Stale.
  * Default agent heartbeat interval is 30s; 90s ≈ 3 missed beats.
  */
-export const KMC_NAT_AGENT_STALE_AFTER_MS = 90_000;
+export const KMC_AGENT_STALE_AFTER_MS = 90_000;
 
 /**
- * Comma-separated floating public IPv4s held by a NAT gateway (IPAM scan).
+ * Comma-separated floating public IPv4s held by a router external NIC (IPAM scan).
  * May include /prefix; used so secondary floats are not double-allocated.
  */
 export const KMC_ANN_FLOATING_IPV4 = `${KMC_LABEL_NAMESPACE}/floating-ipv4`;

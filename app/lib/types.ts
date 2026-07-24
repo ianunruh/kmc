@@ -43,7 +43,7 @@ export interface VmSummary {
   instanceType?: string;
   /** Static IP from kmc.ianunruh.com/ipv4 (may include /prefix). */
   allocatedIpv4?: string;
-  /** Public floating IPs associated with this VM (from NAT policy ConfigMaps). */
+  /** Public floating IPs associated with this VM (from router policy ConfigMaps). */
   floatingIpv4?: string[];
   age: string;
   nodeName?: string;
@@ -477,17 +477,20 @@ export interface VpcAttachedVm {
    * (may include /prefix). Multi-attach VMs pick the address in the VPC CIDR.
    */
   allocatedIpv4?: string;
-  /** True when this VM is the kmc-managed NAT gateway for the VPC. */
-  isNatGateway?: boolean;
   /** True when this VM is the shared router for the VPC. */
   isRouter?: boolean;
 }
 
 /**
- * Agent status reported on the NAT policy ConfigMap.
+ * Agent status reported on the router policy ConfigMap.
  * `Stale` is derived server-side when Ready/Pending but heartbeat is too old.
  */
-export type NatAgentStatus = "Ready" | "Error" | "Unknown" | "Pending" | "Stale";
+export type RouterAgentStatus =
+  | "Ready"
+  | "Error"
+  | "Unknown"
+  | "Pending"
+  | "Stale";
 
 /**
  * Floating IP lifecycle:
@@ -496,7 +499,7 @@ export type NatAgentStatus = "Ready" | "Error" | "Unknown" | "Pending" | "Stale"
  */
 export type FloatingIpState = "associated" | "held";
 
-/** 1:1 floating public IP mapped through the NAT gateway (or held unmapped). */
+/** 1:1 floating public IP mapped through a router external gateway (or held unmapped). */
 export interface FloatingIpAssociation {
   id: string;
   /** Public / float address (no prefix). */
@@ -510,32 +513,6 @@ export interface FloatingIpAssociation {
   state: FloatingIpState;
 }
 
-/** Dual-homed (or triple-homed) Ubuntu NAT gateway for a VPC. */
-export interface NatGatewayInfo {
-  cluster: ClusterId;
-  namespace: string;
-  name: string;
-  /** Private (VPC) address, may include /prefix. */
-  privateIpv4?: string;
-  /** Public / egress Multus address, may include /prefix. */
-  publicIpv4?: string;
-  /** Multus NAD used for egress. */
-  publicNetwork?: string;
-  /** Policy ConfigMap name (floating IPs), if managed. */
-  policyConfigMap?: string;
-  /** In-guest agent status from policy CM annotations (may be Stale). */
-  agentStatus?: NatAgentStatus;
-  agentObservedGeneration?: string;
-  agentLastError?: string;
-  agentAppliedAt?: string;
-  /** Last agent liveness heartbeat (ISO-8601). */
-  agentHeartbeatAt?: string;
-  /** Short hash of the running agent script. */
-  agentVersion?: string;
-  /** Floating IP associations from the policy ConfigMap. */
-  floatingIps?: FloatingIpAssociation[];
-}
-
 export interface VpcDetail extends VpcSummary {
   uid?: string;
   labels: Record<string, string>;
@@ -543,21 +520,15 @@ export interface VpcDetail extends VpcSummary {
   attachedVms: VpcAttachedVm[];
   attachedCount: number;
   ipPool?: NetworkIpPoolInfo;
-  /** Present when a kmc-managed NAT gateway VM exists for this VPC. */
-  natGateway?: NatGatewayInfo;
   /**
    * Shared router attached to this VPC (OpenStack-style; may serve other VPCs too).
    */
   router?: RouterSummary;
   /**
-   * Floating IP associations from the NAT policy ConfigMap.
-   * Present even when the NAT gateway VM is missing (policy survives GW delete).
+   * Floating IP associations from the router policy ConfigMap for this VPC.
    */
   floatingIps: FloatingIpAssociation[];
 }
-
-/** Agent status for router / NAT policy ConfigMaps. */
-export type RouterAgentStatus = NatAgentStatus;
 
 /** DHCP lease published to the router agent (static dhcp-host). */
 export interface RouterLease {
@@ -655,33 +626,7 @@ export interface SetRouterExternalGatewayRequest {
   sshPublicKey: string;
 }
 
-/**
- * Launch a NAT gateway VM for a VPC (private Multus + public Multus + pod network).
- * Private IP is pinned to the VPC gateway address; public IP from the chosen pool.
- * Pod NIC is used by the in-guest agent to watch the policy ConfigMap.
- */
-export interface CreateNatGatewayRequest {
-  cluster: ClusterId;
-  namespace: string;
-  vpcName: string;
-  name: string;
-  /** Multus NAD for north-south egress (must have a static ipPools entry). */
-  publicMultusNetwork: string;
-  sshPublicKey: string;
-  instanceType?: string;
-  cpuCores?: number;
-  memory?: string;
-  diskSize: string;
-  storageClass?: string;
-  image: {
-    kind: "pvc";
-    namespace: string;
-    name: string;
-  };
-  start?: boolean;
-}
-
-/** Associate a floating public IP to a private VPC address via the NAT gateway. */
+/** Associate a floating public IP to a private VPC address via a router external gateway. */
 export interface AssociateFloatingIpRequest {
   cluster: ClusterId;
   namespace: string;
@@ -723,26 +668,26 @@ export interface FloatingIpSummary {
   private?: string;
   targetVm?: string;
   state: FloatingIpState;
-  /** NAT gateway VM name when known from the policy CM labels / VPC. */
-  natGatewayVm?: string;
-  agentStatus?: NatAgentStatus;
+  /** Shared router that owns this floating IP (policy + appliance). */
+  routerName?: string;
+  agentStatus?: RouterAgentStatus;
   agentHeartbeatAt?: string;
   policyConfigMap?: string;
 }
 
-/** VPC that can accept floating IP associations (has NAT gateway + policy). */
+/** VPC that can accept floating IP associations (router with external gateway). */
 export interface FloatingIpEligibleVpc {
   cluster: ClusterId;
   namespace: string;
   name: string;
   cidr?: string;
-  natGatewayName?: string;
+  routerName?: string;
   publicNetwork?: string;
-  agentStatus?: NatAgentStatus;
+  agentStatus?: RouterAgentStatus;
   floatingCount: number;
   /** Held public addresses available to re-associate without allocating. */
   heldPublicIps: string[];
-  /** Non–NAT-gateway attached VMs with private addresses. */
+  /** Non-router attached VMs with private addresses. */
   targetVms: Array<{
     name: string;
     allocatedIpv4?: string;
@@ -800,7 +745,7 @@ export interface TopologyVmNode {
   name: string;
   status: string;
   ready: boolean;
-  /** Public floating IPs associated with this VM (from NAT policy). */
+  /** Public floating IPs associated with this VM (from router policy). */
   floatingIpv4?: string[];
 }
 
@@ -812,7 +757,7 @@ export interface TopologyEdge {
   interfaceName?: string;
   /**
    * `attachment` (default): Multus/pod NIC on the VM.
-   * `floating`: 1:1 public→private DNAT via a VPC NAT gateway.
+   * `floating`: 1:1 public→private DNAT via a router external gateway.
    */
   role?: "attachment" | "floating";
   /** Optional display label (e.g. floating public address). */

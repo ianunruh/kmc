@@ -10,7 +10,6 @@ import {
   KMC_ANN_CIDR,
   KMC_ANN_DNS,
   KMC_ANN_GATEWAY,
-  KMC_ANN_NAT_GATEWAY,
   KMC_ANN_ROUTER,
   KMC_LABEL_RESOURCE,
   KMC_LABEL_ROLE,
@@ -83,7 +82,6 @@ type VpcAttachInfo = {
   gateway?: string;
   dns?: string[];
   routerAnn?: string;
-  natGatewayAnn?: string;
 };
 
 async function loadVpcAttachInfo(
@@ -124,7 +122,6 @@ async function loadVpcAttachInfo(
     gateway: ann[KMC_ANN_GATEWAY]?.trim() || undefined,
     dns,
     routerAnn: ann[KMC_ANN_ROUTER]?.trim() || undefined,
-    natGatewayAnn: ann[KMC_ANN_NAT_GATEWAY]?.trim() || undefined,
   };
 }
 
@@ -344,18 +341,13 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
     );
   }
 
-  // Validate VPCs and mutual exclusion with NAT gateway / other router
+  // Validate VPCs and mutual exclusion with other routers
   const vpcDetails: VpcAttachInfo[] = [];
   for (const vpcName of vpcNames) {
     const vpc = await loadVpcAttachInfo(input.cluster, input.namespace, vpcName);
     if (vpc.routerAnn) {
       throw new Error(
         `VPC ${vpcName} is already attached to router ${vpc.routerAnn}`,
-      );
-    }
-    if (vpc.natGatewayAnn) {
-      throw new Error(
-        `VPC ${vpcName} has a NAT gateway (${vpc.natGatewayAnn}) that may own the gateway IP. Delete the NAT gateway first, then create a router.`,
       );
     }
     vpcDetails.push(vpc);
@@ -1182,7 +1174,6 @@ export async function listRouterAttachableVpcs(
     cidr?: string;
     gateway?: string;
     attachedRouter?: string;
-    hasNatGateway: boolean;
   }>
 > {
   const { custom } = getClusterClients(cluster);
@@ -1199,7 +1190,6 @@ export async function listRouterAttachableVpcs(
     cidr?: string;
     gateway?: string;
     attachedRouter?: string;
-    hasNatGateway: boolean;
   }> = [];
 
   for (const nad of res.items ?? []) {
@@ -1215,7 +1205,6 @@ export async function listRouterAttachableVpcs(
       cidr: ann[KMC_ANN_CIDR],
       gateway: ann[KMC_ANN_GATEWAY],
       attachedRouter: ann[KMC_ANN_ROUTER]?.trim() || undefined,
-      hasNatGateway: Boolean(ann[KMC_ANN_NAT_GATEWAY]?.trim()),
     });
   }
   out.sort((a, b) => a.name.localeCompare(b.name));

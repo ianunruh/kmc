@@ -5,7 +5,6 @@ import {
   ipamAnnotations,
   type AllocatedIp,
 } from "~/lib/ipam/pools.server";
-import { getNatAgentScript } from "~/vpcs/nat-agent-script";
 import { getRouterAgentScript } from "~/vpcs/router-agent-script";
 
 /** Multus NAD names from the create request (order preserved). */
@@ -33,7 +32,7 @@ export const POD_NETWORK_NAME = "pod";
 export type BuildNetworkSpecOpts = {
   /**
    * When true and Multus attachments are present, also attach the pod network
-   * (masquerade) as interface/network name `pod`. Used by NAT gateways so the
+   * (masquerade) as interface/network name `pod`. Used by shared routers so the
    * in-guest agent can reach the apiserver.
    */
   includePodNetwork?: boolean;
@@ -41,7 +40,7 @@ export type BuildNetworkSpecOpts = {
 
 /**
  * Build domain interfaces + template networks for Multus multi-attach, pod-only,
- * or Multus + pod (NAT gateway).
+ * or Multus + pod (shared router).
  * When allocations include a MAC for a Multus interface name, stamp it on the iface.
  */
 export function buildNetworkSpec(
@@ -140,7 +139,7 @@ export type BuildVmManifestOpts = {
    */
   userDataSecretName?: string;
   /**
-   * Attach the pod network in addition to Multus (NAT gateways).
+   * Attach the pod network in addition to Multus (shared routers).
    * Multus interface names stay net0/net1/…; pod is always named `pod`.
    */
   includePodNetwork?: boolean;
@@ -344,240 +343,6 @@ function yamlLiteralScriptBody(script: string): string {
     .split("\n")
     .map((line) => `      ${line}`)
     .join("\n");
-}
-
-/**
- * cloud-init user-data for a triple-homed Ubuntu NAT gateway:
- * - Multus private + public (MAC-matched)
- * - Pod NIC: DHCP, cluster routes only (no default)
- * - ip_forward + MASQUERADE on public; no forward via pod
- * - kmc-nat-agent watches policy ConfigMap for floating IPs
- */
-export function buildNatGatewayUserData(input: {
-  sshPublicKey: string;
-  privateMac: string;
-  publicMac: string;
-  /** Cluster pod CIDRs routed via the pod NIC DHCP gateway */
-  podCIDRs: string[];
-  /** Cluster service CIDRs routed via the pod NIC DHCP gateway */
-  serviceCIDRs: string[];
-  /** Optional cluster DNS for /etc/resolv or netplan later */
-  dnsIP?: string;
-  namespace: string;
-  policyConfigMap: string;
-  apiServer: string;
-  /** Base64-encoded PEM cluster CA */
-  caData: string;
-  /** SA token for the agent */
-  agentToken: string;
-}): string {
-  const privateMac = input.privateMac.trim().toLowerCase();
-  const publicMac = input.publicMac.trim().toLowerCase();
-  const podCidrsShell = input.podCIDRs.map((c) => c.trim()).filter(Boolean);
-  const svcCidrsShell = input.serviceCIDRs.map((c) => c.trim()).filter(Boolean);
-  const clusterCidrs = [...podCidrsShell, ...svcCidrsShell];
-
-  const setupScript = [
-    "#!/bin/bash",
-    "set -euo pipefail",
-    `PRIVATE_MAC="${privateMac}"`,
-    `PUBLIC_MAC="${publicMac}"`,
-    `CLUSTER_CIDRS="${clusterCidrs.join(" ")}"`,
-    "if_by_mac() {",
-    '  local want="$1"',
-    "  local path iface mac",
-    "  for path in /sys/class/net/*; do",
-    '    iface=$(basename "$path")',
-    '    [[ "$iface" == "lo" ]] && continue',
-    '    [[ -f "$path/address" ]] || continue',
-    '    mac=$(tr "[:upper:]" "[:lower:]" < "$path/address")',
-    '    if [[ "$mac" == "$want" ]]; then',
-    '      echo "$iface"',
-    "      return 0",
-    "    fi",
-    "  done",
-    "  return 1",
-    "}",
-    'PRIVATE_IF=$(if_by_mac "$PRIVATE_MAC") || { echo "kmc-nat: private NIC not found for $PRIVATE_MAC" >&2; exit 1; }',
-    'PUBLIC_IF=$(if_by_mac "$PUBLIC_MAC") || { echo "kmc-nat: public NIC not found for $PUBLIC_MAC" >&2; exit 1; }',
-    "# Pod NIC: remaining non-lo iface that is not private/public",
-    'POD_IF=""',
-    "for path in /sys/class/net/*; do",
-    '  iface=$(basename "$path")',
-    '  [[ "$iface" == "lo" ]] && continue',
-    '  [[ "$iface" == "$PRIVATE_IF" || "$iface" == "$PUBLIC_IF" ]] && continue',
-    '  POD_IF="$iface"',
-    "  break",
-    "done",
-    'if [[ -z "$POD_IF" ]]; then',
-    '  echo "kmc-nat: pod NIC not found (expected third interface)" >&2',
-    "  exit 1",
-    "fi",
-    "sysctl -w net.ipv4.ip_forward=1 >/dev/null",
-    "# Avoid strict reverse-path filter dropping multi-homed replies",
-    "sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null || true",
-    'sysctl -w "net.ipv4.conf.${PRIVATE_IF}.rp_filter=2" >/dev/null || true',
-    'sysctl -w "net.ipv4.conf.${PUBLIC_IF}.rp_filter=2" >/dev/null || true',
-    'sysctl -w "net.ipv4.conf.${POD_IF}.rp_filter=2" >/dev/null || true',
-    "# Wait for pod DHCP address",
-    "for i in $(seq 1 60); do",
-    '  if ip -4 -o addr show dev "$POD_IF" | grep -q "inet "; then break; fi',
-    "  # kick dhclient if present",
-    '  command -v dhclient >/dev/null 2>&1 && dhclient -1 "$POD_IF" 2>/dev/null || true',
-    "  sleep 2",
-    "done",
-    "# Drop any default route via the pod NIC so public Multus keeps north-south",
-    "while read -r line; do",
-    '  eval "$line" 2>/dev/null || true',
-    "done < <(ip -4 route show default 2>/dev/null | while read -r _ _ via _ dev ifrest; do",
-    '  if [[ "$dev" == "dev" && "$ifrest" == "$POD_IF"* ]] || [[ "$via" == "dev" && "$dev" == "$POD_IF" ]]; then',
-    '    echo "ip route del default dev $POD_IF"',
-    "  fi",
-    "done)",
-    'ip route del default dev "$POD_IF" 2>/dev/null || true',
-    "# DHCP router on pod iface (KubeVirt masquerade gateway)",
-    "POD_GW=$(ip -4 route show dev \"$POD_IF\" 2>/dev/null | awk '/^default/ {print $3; exit}')",
-    'if [[ -z "${POD_GW:-}" ]]; then',
-    "  # Common KubeVirt masquerade gateway",
-    "  POD_GW=10.0.2.1",
-    "fi",
-    "for cidr in $CLUSTER_CIDRS; do",
-    '  ip route replace "$cidr" via "$POD_GW" dev "$POD_IF" || true',
-    "done",
-    'iptables -t nat -C POSTROUTING -o "$PUBLIC_IF" -j MASQUERADE 2>/dev/null || \\',
-    '  iptables -t nat -A POSTROUTING -o "$PUBLIC_IF" -j MASQUERADE',
-    'iptables -C FORWARD -i "$PRIVATE_IF" -o "$PUBLIC_IF" -j ACCEPT 2>/dev/null || \\',
-    '  iptables -A FORWARD -i "$PRIVATE_IF" -o "$PUBLIC_IF" -j ACCEPT',
-    'iptables -C FORWARD -i "$PUBLIC_IF" -o "$PRIVATE_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \\',
-    '  iptables -A FORWARD -i "$PUBLIC_IF" -o "$PRIVATE_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT',
-    "# Never forward traffic involving the pod NIC (control plane only)",
-    'iptables -C FORWARD -i "$POD_IF" -j DROP 2>/dev/null || \\',
-    '  iptables -I FORWARD 1 -i "$POD_IF" -j DROP',
-    'iptables -C FORWARD -o "$POD_IF" -j DROP 2>/dev/null || \\',
-    '  iptables -I FORWARD 1 -o "$POD_IF" -j DROP',
-  ].join("\n");
-
-  // Decode-friendly: write CA as base64 file then decode in runcmd if needed
-  const caB64 = input.caData.replace(/\s+/g, "");
-  // If caData is PEM already base64 of whole PEM from clusters.yaml
-  const kubeconfig = [
-    "apiVersion: v1",
-    "kind: Config",
-    "clusters:",
-    "- cluster:",
-    `    certificate-authority: /etc/kmc/ca.crt`,
-    `    server: ${input.apiServer.replace(/\/$/, "")}`,
-    "  name: cluster",
-    "contexts:",
-    "- context:",
-    "    cluster: cluster",
-    `    namespace: ${input.namespace}`,
-    "    user: agent",
-    "  name: agent",
-    "current-context: agent",
-    "users:",
-    "- name: agent",
-    "  user:",
-    `    token: ${input.agentToken.trim()}`,
-  ].join("\n");
-
-  const envFile = [
-    `KMC_NAMESPACE=${input.namespace}`,
-    `KMC_POLICY_CM=${input.policyConfigMap}`,
-    `KMC_PRIVATE_MAC=${privateMac}`,
-    `KMC_PUBLIC_MAC=${publicMac}`,
-    `KMC_APISERVER=${input.apiServer.replace(/\/$/, "")}`,
-    "KUBECONFIG=/etc/kmc/kubeconfig",
-    "KMC_CA_FILE=/etc/kmc/ca.crt",
-    "KMC_AGENT_PATH=/usr/local/sbin/kmc-nat-agent",
-    "KMC_POLICY_KEY=policy.json",
-    "KMC_AGENT_KEY=agent.py",
-    "KMC_HEARTBEAT_SECONDS=30",
-    "KMC_RESYNC_SECONDS=300",
-  ].join("\n");
-
-  const agentScriptYaml = yamlLiteralScriptBody(getNatAgentScript());
-  const setupScriptYaml = yamlLiteralScriptBody(setupScript);
-  const kubeconfigYaml = yamlLiteralScriptBody(kubeconfig);
-  const envFileYaml = yamlLiteralScriptBody(envFile);
-
-  // CA: write base64 one-line, decode in runcmd
-  const caB64Yaml = yamlLiteralScriptBody(caB64);
-
-  return [
-    "#cloud-config",
-    "users:",
-    "  - default",
-    "ssh_authorized_keys:",
-    `  - ${input.sshPublicKey.trim()}`,
-    "packages:",
-    "  - qemu-guest-agent",
-    "  - python3",
-    "  - iptables",
-    "  - iputils-arping",
-    "write_files:",
-    "  - path: /etc/sysctl.d/99-kmc-nat.conf",
-    "    content: |",
-    "      net.ipv4.ip_forward=1",
-    "      net.ipv4.conf.all.rp_filter=2",
-    "  - path: /etc/kmc/ca.crt.b64",
-    "    permissions: '0600'",
-    "    content: |",
-    caB64Yaml,
-    "  - path: /etc/kmc/kubeconfig",
-    "    permissions: '0600'",
-    "    content: |",
-    kubeconfigYaml,
-    "  - path: /etc/kmc/nat-agent.env",
-    "    permissions: '0600'",
-    "    content: |",
-    envFileYaml,
-    "  - path: /usr/local/sbin/kmc-nat-setup.sh",
-    "    permissions: '0755'",
-    "    content: |",
-    setupScriptYaml,
-    // Bootstrap copy; running agents self-update from ConfigMap data.agent.py.
-    "  - path: /usr/local/sbin/kmc-nat-agent",
-    "    permissions: '0755'",
-    "    content: |",
-    agentScriptYaml,
-    "  - path: /etc/systemd/system/kmc-nat.service",
-    "    content: |",
-    "      [Unit]",
-    "      Description=kmc VPC NAT gateway (ip_forward + MASQUERADE + pod routes)",
-    "      After=network-online.target",
-    "      Wants=network-online.target",
-    "      [Service]",
-    "      Type=oneshot",
-    "      ExecStart=/usr/local/sbin/kmc-nat-setup.sh",
-    "      RemainAfterExit=yes",
-    "      [Install]",
-    "      WantedBy=multi-user.target",
-    "  - path: /etc/systemd/system/kmc-nat-agent.service",
-    "    content: |",
-    "      [Unit]",
-    "      Description=kmc NAT gateway policy agent (floating IPs)",
-    "      After=kmc-nat.service network-online.target",
-    "      Requires=kmc-nat.service",
-    "      Wants=network-online.target",
-    "      [Service]",
-    "      Type=simple",
-    "      EnvironmentFile=-/etc/kmc/nat-agent.env",
-    "      ExecStart=/usr/bin/python3 /usr/local/sbin/kmc-nat-agent run",
-    "      Restart=on-failure",
-    "      RestartSec=5",
-    "      [Install]",
-    "      WantedBy=multi-user.target",
-    "runcmd:",
-    "  - mkdir -p /etc/kmc /var/lib/kmc",
-    "  - base64 -d /etc/kmc/ca.crt.b64 > /etc/kmc/ca.crt",
-    "  - chmod 600 /etc/kmc/ca.crt /etc/kmc/kubeconfig /etc/kmc/nat-agent.env",
-    "  - systemctl enable --now qemu-guest-agent",
-    "  - sysctl --system",
-    "  - systemctl daemon-reload",
-    "  - systemctl enable --now kmc-nat.service",
-    "  - systemctl enable --now kmc-nat-agent.service",
-  ].join("\n");
 }
 
 /**

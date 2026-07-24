@@ -210,7 +210,7 @@ export default function RouterDetailPage({ loaderData }: Route.ComponentProps) {
 
       <Alert color="gray" variant="light">
         Shared router: DHCP + DNS on attached VPCs. With an external gateway, SNAT egress
-        and floating IPs are handled by this appliance (no separate NAT gateway VM).
+        and floating IPs are handled by this appliance.
       </Alert>
 
       <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">

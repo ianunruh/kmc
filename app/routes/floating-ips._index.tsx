@@ -156,7 +156,7 @@ export default function FloatingIpsPage({ loaderData }: Route.ComponentProps) {
         f.namespace,
         f.cluster,
         f.targetVm,
-        f.natGatewayVm,
+        f.routerName,
         f.state,
       ]);
     });
@@ -421,7 +421,7 @@ export default function FloatingIpsPage({ loaderData }: Route.ComponentProps) {
                   This also drops the mapping to <Code>{releaseTarget.private}</Code>.
                 </>
               ) : null}{" "}
-              The address can be allocated again after the NAT agent reconciles.
+              The address can be allocated again after the router agent reconciles.
             </>
           ) : (
             ""

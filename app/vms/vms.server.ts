@@ -38,7 +38,8 @@ import {
 } from "~/lib/k8s/constants";
 import { addressFromIpv4Annotation } from "~/lib/ipam/cidr";
 import { parseIpv4AnnotationList } from "~/lib/ipam/pools.server";
-import { listFloatingIpsFromPolicies } from "~/vpcs/nat-policy.server";
+import { listFloatingIpsFromRouterPolicies } from "~/vpcs/router-policy.server";
+
 import {
   removeRouterLeasesForVm,
   upsertRouterLease,
@@ -726,7 +727,7 @@ export async function listVms(clusterFilter?: ClusterId): Promise<{
             plural: "virtualmachines",
           }) as Promise<{ items?: KubeVm[] }>,
           loadInstanceTypeSizes(id),
-          listFloatingIpsFromPolicies(id).catch(() => []),
+          listFloatingIpsFromRouterPolicies(id).catch(() => []),
         ]);
 
         // Map floating public IPs → VMs by targetVm name or private IPAM address.

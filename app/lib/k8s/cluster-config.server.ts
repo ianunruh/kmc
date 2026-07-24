@@ -70,8 +70,8 @@ export type VlanPoolConfig = {
 };
 
 /**
- * Cluster underlay CIDRs used by NAT gateway guests (pod NIC routing).
- * Required to launch NAT gateways with a pod network + in-guest agent.
+ * Cluster underlay CIDRs used by shared router guests (pod NIC routing).
+ * Required to launch routers with a pod network + in-guest agent.
  */
 export type ClusterNetworkConfig = {
   /** Pod network CIDR(s), e.g. 10.19.0.0/16 — routes via the guest pod NIC */
@@ -93,7 +93,7 @@ export type ClusterIdentity = {
   tokenEnv?: string;
   /** Base URL for Prometheus HTTP API (e.g. https://prometheus.example.com). */
   prometheusUrl?: string;
-  /** Optional underlay CIDRs for NAT gateway pod NIC + agent. */
+  /** Optional underlay CIDRs for shared router pod NIC + agent. */
   network?: ClusterNetworkConfig;
   /** Optional IPv4 pools for Multus bridge networks. */
   ipPools?: IpPoolConfig[];

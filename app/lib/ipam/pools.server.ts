@@ -8,8 +8,6 @@ import {
   KMC_ANN_FLOATING_IPV4,
   KMC_ANN_GATEWAY,
   KMC_LABEL_RESOURCE,
-  KMC_NAT_POLICY_DATA_KEY,
-  KMC_NAT_POLICY_LABEL_SELECTOR,
   KMC_RESOURCE_VPC,
   KMC_ROUTER_POLICY_DATA_KEY,
   KMC_ROUTER_POLICY_LABEL_SELECTOR,
@@ -338,7 +336,7 @@ export function parseIpv4AnnotationList(value: string): string[] {
  * Collect IPs considered in-use for a pool:
  * - kmc.ianunruh.com/ipv4 annotations on any VM (stopped VMs still hold the address;
  *   multi-attach stores comma-separated addresses)
- * - kmc.ianunruh.com/floating-ipv4 on NAT gateway VMs (secondary public floats)
+ * - kmc.ianunruh.com/floating-ipv4 on router VMs (secondary public floats)
  * - live VMI interface IPs that fall inside the pool CIDR
  */
 export function collectUsedIpv4(
@@ -423,20 +421,9 @@ export async function collectFloatingIpv4FromPolicies(
   const used = new Set<string>();
   const { core } = getClusterClients(cluster);
   try {
-    const [natRes, routerRes] = await Promise.all([
-      core.listConfigMapForAllNamespaces({
-        labelSelector: KMC_NAT_POLICY_LABEL_SELECTOR,
-      }),
-      core.listConfigMapForAllNamespaces({
-        labelSelector: KMC_ROUTER_POLICY_LABEL_SELECTOR,
-      }),
-    ]);
-    collectFloatsFromPolicyCms(
-      natRes.items ?? [],
-      KMC_NAT_POLICY_DATA_KEY,
-      parsed,
-      used,
-    );
+    const routerRes = await core.listConfigMapForAllNamespaces({
+      labelSelector: KMC_ROUTER_POLICY_LABEL_SELECTOR,
+    });
     collectFloatsFromPolicyCms(
       routerRes.items ?? [],
       KMC_ROUTER_POLICY_DATA_KEY,
@@ -517,7 +504,7 @@ export type AllocateIpv4Opts = {
   extraUsed?: string[];
   /**
    * Pin a specific host address (must be in the pool range and free).
-   * Used for NAT gateway private IPs (VPC gateway address).
+   * Used for router private IPs (VPC gateway address).
    */
   preferredAddress?: string;
   /**
@@ -527,7 +514,7 @@ export type AllocateIpv4Opts = {
   claimGateway?: boolean;
   /**
    * Override the gateway written into the allocation (netplan default route).
-   * Pass `null` to force no default route on this NIC (NAT gateway private side).
+   * Pass `null` to force no default route on this NIC (router private side).
    * Omit to use the pool gateway as usual.
    */
   gatewayOverride?: string | null;
@@ -577,7 +564,7 @@ export async function allocateIpv4ForMultus(
           `Preferred address ${preferred} is outside the allocation window for pool "${pool.id}"`,
         );
       }
-      // NAT gateway VMs may claim the reserved gateway / exclude list entry.
+      // Router VMs may claim the reserved gateway / exclude list entry.
       if (opts?.claimGateway) {
         exclude.delete(preferred);
       }
