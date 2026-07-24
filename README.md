@@ -166,7 +166,8 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 
 ## Features (MVP)
 
-- **Virtual machines** — list, create, detail, edit (labels always; size / preference / run strategy when stopped), stop/start/restart/pause/unpause/delete, **serial console** (boot/debug) and **SSH terminal** (browser shell via platform key + port-forward)
+- **Virtual machines** — list, create, detail, edit (labels always; size / preference / run strategy when stopped), stop/start/restart/pause/unpause/delete, **snapshots / in-place restore** (KubeVirt `VirtualMachineSnapshot` / `VirtualMachineRestore` on the VM detail page), **serial console** (boot/debug) and **SSH terminal** (browser shell via platform key + port-forward)
+  - Cluster prereqs: CSI external-snapshotter + VolumeSnapshotClass for the VM storage driver; KubeVirt feature gate `Snapshot` enabled; API `snapshot.kubevirt.io/v1beta1`
 - **IPAM** — optional per-cluster IPv4 pools for Multus NADs; auto-allocate + netplan cloud-init on create
 - **VPCs** — self-service Multus networks from a cluster VLAN pool (`vlanPools`); optional private CIDR for IPAM
 - **Routers** — shared DHCP/DNS appliance per namespace (OpenStack-style); external SNAT + floating IPs; multi-VPC attach later

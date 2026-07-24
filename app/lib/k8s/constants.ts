@@ -133,3 +133,6 @@ export const REUSABLE_DV_PHASES = ["Succeeded"] as const;
  * Used when the VM has no dataVolumeTemplates (standalone root DataVolume).
  */
 export const KMC_ANN_DISK_SIZE = `${KMC_LABEL_NAMESPACE}/disk-size`;
+
+/** Value of kmc.ianunruh.com/resource for VirtualMachineSnapshot objects. */
+export const KMC_RESOURCE_VM_SNAPSHOT = "vm-snapshot";

@@ -337,6 +337,44 @@ export interface ClusterCatalog {
 export type VmLifecycleIntent =
   "stop" | "start" | "restart" | "softreboot" | "pause" | "unpause" | "delete";
 
+// --- VM snapshots / restores (snapshot.kubevirt.io/v1beta1) ---
+
+/** KubeVirt VirtualMachineSnapshot projected for list/detail UI. */
+export interface VmSnapshotSummary {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  /** Source VirtualMachine name from spec.source.name */
+  vmName: string;
+  phase: string;
+  readyToUse: boolean;
+  /** Online, GuestAgent, NoGuestAgent, QuiesceFailed, … */
+  indications: string[];
+  age: string;
+  error?: string;
+  /** VirtualMachineSnapshotContent name when bound */
+  contentName?: string;
+}
+
+export interface CreateVmSnapshotRequest {
+  cluster: ClusterId;
+  namespace: string;
+  vmName: string;
+  /** Optional; default `{vm}-{yyyyMMdd-HHmmss}` sanitized to DNS label. */
+  name?: string;
+  /** Optional failure deadline duration string (e.g. `5m`). */
+  failureDeadline?: string;
+}
+
+export interface CreateVmRestoreRequest {
+  cluster: ClusterId;
+  namespace: string;
+  vmName: string;
+  snapshotName: string;
+  /** Optional; default `restore-{vm}-{yyyyMMdd-HHmmss}`. */
+  name?: string;
+}
+
 // --- DataVolumes (cdi.kubevirt.io) ---
 
 export interface DataVolumeSummary {

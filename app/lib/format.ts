@@ -182,6 +182,13 @@ export function dataVolumePath(
   return `/datavolumes/${encodeURIComponent(dv.cluster)}/${encodeURIComponent(dv.namespace)}/${encodeURIComponent(dv.name)}`;
 }
 
+/** Snapshot is restorable when Ready and readyToUse. */
+export function canRestoreVmSnapshot(
+  snap: Pick<{ phase: string; readyToUse: boolean }, "phase" | "readyToUse">,
+): boolean {
+  return snap.readyToUse === true && snap.phase !== "Failed";
+}
+
 export function instanceTypePath(
   it: Pick<{ cluster: string; name: string }, "cluster" | "name">,
 ): string {

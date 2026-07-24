@@ -3,10 +3,12 @@ import { Badge } from "@mantine/core";
 const STATUS_COLORS: Record<string, string> = {
   Running: "teal",
   Ready: "teal",
+  Succeeded: "teal",
   Starting: "yellow",
   Provisioning: "yellow",
   WaitingForVolumeBinding: "yellow",
   Pending: "yellow",
+  InProgress: "yellow",
   Migrating: "cyan",
   Paused: "grape",
   Stopping: "orange",
@@ -14,6 +16,7 @@ const STATUS_COLORS: Record<string, string> = {
   Stale: "orange",
   Stopped: "gray",
   Error: "red",
+  Failed: "red",
   CrashLoopBackOff: "red",
   Unknown: "gray",
 };
