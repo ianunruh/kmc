@@ -137,9 +137,151 @@ function isNotFound(err: unknown): boolean {
 }
 
 function isAlreadyExists(err: unknown): boolean {
-  if (apiStatusCode(err) === 409) return true;
   const message = formatError(err).toLowerCase();
-  return message.includes("already exists") || message.includes("alreadyexists");
+  if (message.includes("already exists") || message.includes("alreadyexists")) {
+    return true;
+  }
+  // Create races report 409 AlreadyExists; optimistic-lock Conflicts also use 409.
+  if (apiStatusCode(err) === 409) {
+    return !isOptimisticLockConflict(err);
+  }
+  return false;
+}
+
+/**
+ * ConfigMap replace lost a race with another writer (router agent heartbeat,
+ * concurrent lease/FIP updates during multi-VM launch).
+ */
+function isOptimisticLockConflict(err: unknown): boolean {
+  const message = formatError(err).toLowerCase();
+  if (
+    message.includes("the object has been modified") ||
+    message.includes("please apply your changes to the latest version")
+  ) {
+    return true;
+  }
+  if (apiStatusCode(err) === 409) {
+    if (message.includes("already exists") || message.includes("alreadyexists")) {
+      return false;
+    }
+    return message.includes("conflict") || message.includes("modified");
+  }
+  return false;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const POLICY_MUTATE_MAX_ATTEMPTS = 12;
+
+/**
+ * Read → mutate → replace a router policy ConfigMap, retrying on optimistic
+ * lock conflicts so multi-VM launch and agent heartbeats can coexist.
+ *
+ * Uses a single GET for both the policy document and resourceVersion so a
+ * concurrent writer always surfaces as 409 (then we re-read and re-merge)
+ * instead of a silent overwrite.
+ *
+ * `mutate` may return `false` to skip the write (no-op). Throws if the policy
+ * CM is missing.
+ */
+async function mutateRouterPolicyDoc(
+  cluster: ClusterId,
+  namespace: string,
+  routerName: string,
+  mutate: (doc: RouterPolicyDoc) => void | boolean,
+  opts?: { bumpGeneration?: boolean; maxAttempts?: number },
+): Promise<RouterPolicyDoc> {
+  const maxAttempts = opts?.maxAttempts ?? POLICY_MUTATE_MAX_ATTEMPTS;
+  const bumpGeneration = opts?.bumpGeneration ?? true;
+  const name = routerPolicyConfigMapName(routerName);
+  const { core } = getClusterClients(cluster);
+  let lastErr: unknown;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      let existing: Awaited<ReturnType<typeof core.readNamespacedConfigMap>>;
+      try {
+        existing = await core.readNamespacedConfigMap({ name, namespace });
+      } catch (err) {
+        if (isNotFound(err)) {
+          throw new Error(
+            `Router policy not found for ${namespace}/${routerName}`,
+          );
+        }
+        throw err;
+      }
+
+      const doc = parseRouterPolicyDoc(
+        existing.data?.[KMC_ROUTER_POLICY_DATA_KEY],
+      );
+      if (!doc) {
+        throw new Error(
+          `Router policy not found for ${namespace}/${routerName}`,
+        );
+      }
+
+      const result = mutate(doc);
+      if (result === false) return doc;
+
+      const next: RouterPolicyDoc = {
+        ...doc,
+        metadata: {
+          name: routerName,
+          namespace,
+          generation: bumpGeneration
+            ? (doc.metadata?.generation || 0) + 1
+            : doc.metadata?.generation || 1,
+        },
+      };
+      const { ownerReferences: _drop, ...metaRest } = existing.metadata ?? {};
+      void _drop;
+      await core.replaceNamespacedConfigMap({
+        name,
+        namespace,
+        body: {
+          ...existing,
+          metadata: {
+            ...metaRest,
+            name,
+            namespace,
+            // Keep resourceVersion from this read for optimistic concurrency.
+            resourceVersion: existing.metadata?.resourceVersion,
+            labels: {
+              ...(existing.metadata?.labels ?? {}),
+              [MANAGED_BY_LABEL]: KMC_MANAGED_BY,
+              [KMC_LABEL_RESOURCE]: KMC_RESOURCE_ROUTER_POLICY,
+              [KMC_LABEL_ROUTER]: routerName,
+              [KMC_LABEL_ROLE]: KMC_ROLE_ROUTER,
+            },
+            ownerReferences: [],
+          },
+          data: {
+            ...(existing.data ?? {}),
+            [KMC_ROUTER_POLICY_DATA_KEY]: JSON.stringify(next, null, 2),
+            [KMC_ROUTER_AGENT_SCRIPT_KEY]: normalizeAgentScript(
+              existing.data?.[KMC_ROUTER_AGENT_SCRIPT_KEY],
+            ),
+          },
+        },
+      });
+      return next;
+    } catch (err) {
+      lastErr = err;
+      if (!isOptimisticLockConflict(err) || attempt === maxAttempts - 1) {
+        if (err instanceof Error) throw err;
+        throw new Error(formatError(err), { cause: err });
+      }
+      // Brief jittered backoff; conflicts are usually resolved on the next try.
+      const delay = 20 + Math.floor(Math.random() * 40) + attempt * 30;
+      await sleep(delay);
+    }
+  }
+
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error(formatError(lastErr), { cause: lastErr });
 }
 
 export function routerPolicyConfigMapName(routerName: string): string {
@@ -733,31 +875,27 @@ export async function upsertRouterLease(
   routerName: string,
   lease: RouterLease,
 ): Promise<void> {
-  const cm = await getRouterPolicyConfigMap(cluster, namespace, routerName);
-  if (!cm?.doc) {
-    throw new Error(`Router policy not found for ${namespace}/${routerName}`);
-  }
-  const doc = cm.doc;
   const mac = lease.mac.trim().toLowerCase();
   const ip = lease.ip.trim();
   const vpc = lease.vpc.trim();
-  const filtered = doc.leases.filter(
-    (L) =>
-      !(
-        L.vpc === vpc &&
-        (L.mac.toLowerCase() === mac || L.ip === ip || (lease.vm && L.vm === lease.vm))
-      ),
-  );
-  filtered.push({
-    vpc,
-    mac,
-    ip,
-    hostname: lease.hostname.trim() || lease.vm || "host",
-    ...(lease.vm ? { vm: lease.vm } : {}),
-  });
-  doc.leases = filtered;
-  await replaceRouterPolicyDoc(cluster, namespace, routerName, doc, {
-    bumpGeneration: true,
+  await mutateRouterPolicyDoc(cluster, namespace, routerName, (doc) => {
+    const filtered = doc.leases.filter(
+      (L) =>
+        !(
+          L.vpc === vpc &&
+          (L.mac.toLowerCase() === mac ||
+            L.ip === ip ||
+            (lease.vm && L.vm === lease.vm))
+        ),
+    );
+    filtered.push({
+      vpc,
+      mac,
+      ip,
+      hostname: lease.hostname.trim() || lease.vm || "host",
+      ...(lease.vm ? { vm: lease.vm } : {}),
+    });
+    doc.leases = filtered;
   });
 }
 
@@ -767,8 +905,10 @@ export async function removeRouterLeasesForVm(
   vmName: string,
 ): Promise<void> {
   const { core } = getClusterClients(cluster);
-  let items: Array<{ metadata?: { name?: string }; data?: Record<string, string> }> =
-    [];
+  let items: Array<{
+    metadata?: { name?: string; labels?: Record<string, string> };
+    data?: Record<string, string>;
+  }> = [];
   try {
     const res = await core.listNamespacedConfigMap({
       namespace,
@@ -781,27 +921,22 @@ export async function removeRouterLeasesForVm(
   }
 
   for (const cm of items) {
+    const labels = cm.metadata?.labels;
+    const nameFromLabel = labels?.[KMC_LABEL_ROUTER]?.trim();
     const routerName =
-      cm.metadata?.name?.replace(/^kmc-router-/, "") ??
-      cm.metadata?.name ??
+      nameFromLabel ||
+      cm.metadata?.name?.replace(/^kmc-router-/, "") ||
+      cm.metadata?.name ||
       "";
-    const doc = parseRouterPolicyDoc(cm.data?.[KMC_ROUTER_POLICY_DATA_KEY]);
-    if (!doc || !routerName) continue;
-    const before = doc.leases.length;
-    doc.leases = doc.leases.filter((L) => L.vm !== vmName);
-    if (doc.leases.length === before) continue;
+    if (!routerName) continue;
+    const preview = parseRouterPolicyDoc(cm.data?.[KMC_ROUTER_POLICY_DATA_KEY]);
+    if (!preview?.leases.some((L) => L.vm === vmName)) continue;
     try {
-      // Prefer label for exact router name
-      const labels = (cm as { metadata?: { labels?: Record<string, string> } })
-        .metadata?.labels;
-      const nameFromLabel = labels?.[KMC_LABEL_ROUTER]?.trim();
-      await replaceRouterPolicyDoc(
-        cluster,
-        namespace,
-        nameFromLabel || routerName,
-        doc,
-        { bumpGeneration: true },
-      );
+      await mutateRouterPolicyDoc(cluster, namespace, routerName, (doc) => {
+        const before = doc.leases.length;
+        doc.leases = doc.leases.filter((L) => L.vm !== vmName);
+        if (doc.leases.length === before) return false;
+      });
     } catch (err) {
       console.error(
         `removeRouterLeasesForVm ${namespace}/${cm.metadata?.name}:`,
