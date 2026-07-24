@@ -22,7 +22,13 @@ export default [
     "vms/:cluster/:namespace/:name/terminal",
     "routes/vms.$cluster.$namespace.$name.terminal.tsx",
   ),
-  route("vms/:cluster/:namespace/:name", "routes/vms.$cluster.$namespace.$name.tsx"),
+  route("vms/:cluster/:namespace/:name", "routes/vms.$cluster.$namespace.$name.tsx", [
+    index("routes/vms.$cluster.$namespace.$name._index.tsx"),
+    route("networking", "routes/vms.$cluster.$namespace.$name.networking.tsx"),
+    route("storage", "routes/vms.$cluster.$namespace.$name.storage.tsx"),
+    route("events", "routes/vms.$cluster.$namespace.$name.events.tsx"),
+    route("yaml", "routes/vms.$cluster.$namespace.$name.yaml.tsx"),
+  ]),
 
   route("datavolumes", "routes/datavolumes._index.tsx"),
   route("datavolumes/create", "routes/datavolumes.create.tsx"),
