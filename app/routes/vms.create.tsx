@@ -83,6 +83,8 @@ export async function loader({ request }: Route.LoaderArgs) {
         url.searchParams.get("diskSource") === "existingDataVolume"
           ? ("existingDataVolume" as const)
           : ("image" as const),
+      /** Golden image as `namespace/name` or bare name (image NS). */
+      image: url.searchParams.get("image")?.trim() || "",
       existingDataVolume:
         url.searchParams.get("existingDataVolume")?.trim() ||
         url.searchParams.get("existingDataVolumeName")?.trim() ||
@@ -148,7 +150,8 @@ export async function action({ request }: Route.ActionArgs) {
     const { keys, error: listErr } = await listSshKeysOrEmpty(session.user);
     if (listErr) return { error: `Could not load SSH keys: ${listErr}` };
     const match = keys.find((k) => k.id === savedSshKeyId);
-    if (!match) return { error: "Selected SSH key was not found — pick another or paste" };
+    if (!match)
+      return { error: "Selected SSH key was not found — pick another or paste" };
     sshPublicKey = match.publicKey;
   }
 
@@ -336,7 +339,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       diskSource: prefill.diskSource as CreateVmDiskSourceMode,
       diskSize: "100Gi",
       storageClass: "",
-      image: "",
+      image: prefill.image,
       existingDataVolume: prefill.existingDataVolume,
       /** Multus NAD names in attachment order; empty = pod network only */
       networks: [] as string[],
@@ -377,10 +380,8 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
         }
         return null;
       },
-      diskSize: (v, values) =>
-        values.diskSource === "image" && !v ? "Required" : null,
-      image: (v, values) =>
-        values.diskSource === "image" && !v ? "Required" : null,
+      diskSize: (v, values) => (values.diskSource === "image" && !v ? "Required" : null),
+      image: (v, values) => (values.diskSource === "image" && !v ? "Required" : null),
       existingDataVolume: (v, values) => {
         if (values.diskSource !== "existingDataVolume") return null;
         return validateDns1123Label(v);
@@ -436,11 +437,16 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
     const dv =
       searchParams.get("existingDataVolume") ??
       searchParams.get("existingDataVolumeName");
+    const image = searchParams.get("image")?.trim();
     if (ds === "existingDataVolume") {
       form.setFieldValue("diskSource", "existingDataVolume");
     }
     if (dv?.trim()) {
       form.setFieldValue("existingDataVolume", dv.trim());
+    }
+    if (image) {
+      form.setFieldValue("diskSource", "image");
+      form.setFieldValue("image", image);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
@@ -500,11 +506,29 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
     if (!form.values.storageClass && catalog.defaultStorageClass) {
       form.setFieldValue("storageClass", catalog.defaultStorageClass);
     }
-    if (!form.values.image && catalog.images[0]) {
-      form.setFieldValue(
-        "image",
-        `${catalog.images[0].namespace}/${catalog.images[0].name}`,
-      );
+    if (catalog.images.length > 0) {
+      const current = form.values.image?.trim();
+      const prefillImage = prefill.image?.trim();
+      const candidate = current || prefillImage;
+      if (candidate) {
+        const match = catalog.images.find((img) => {
+          const full = `${img.namespace}/${img.name}`;
+          return full === candidate || img.name === candidate;
+        });
+        if (match) {
+          const full = `${match.namespace}/${match.name}`;
+          if (form.values.image !== full) {
+            form.setFieldValue("image", full);
+          }
+        } else if (!current && prefillImage) {
+          form.setFieldValue("image", prefillImage);
+        }
+      } else {
+        form.setFieldValue(
+          "image",
+          `${catalog.images[0]!.namespace}/${catalog.images[0]!.name}`,
+        );
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [catalog]);
@@ -629,10 +653,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
     if (form.values.networks.length >= MAX_NETWORK_ATTACHMENTS) return;
     const used = new Set(form.values.networks);
     const next = availableNetworks.find((n) => !used.has(n.name));
-    form.setFieldValue("networks", [
-      ...form.values.networks,
-      next?.name ?? "",
-    ]);
+    form.setFieldValue("networks", [...form.values.networks, next?.name ?? ""]);
   };
 
   const optionsForSlot = (index: number) => {
@@ -653,8 +674,8 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
           {form.values.count > 1 ? "s" : ""}
         </Title>
         <Text size="sm" c="dimmed">
-          Provision one or more KubeVirt VMs from a golden image, or a single VM
-          from an existing DataVolume
+          Provision one or more KubeVirt VMs from a golden image, or a single VM from an
+          existing DataVolume
         </Text>
       </div>
 
@@ -875,12 +896,12 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 />
                 <Alert color="yellow" variant="light" title="Existing OS disk">
                   Reusing a disk that already has an OS may skip cloud-init on first boot;
-                  new SSH keys from this form may not apply until cloud-init is reset inside
-                  the guest.
+                  new SSH keys from this form may not apply until cloud-init is reset
+                  inside the guest.
                 </Alert>
                 <Alert color="gray" variant="light" title="After a retain-delete">
-                  If you just deleted the previous VM, wait until its VMI/pod is gone before
-                  launching, or start may fail while the disk is still attached.
+                  If you just deleted the previous VM, wait until its VMI/pod is gone
+                  before launching, or start may fail while the disk is still attached.
                 </Alert>
               </>
             )}
@@ -1002,10 +1023,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 ]}
                 value={form.values.sshKeyMode}
                 onChange={(v) =>
-                  form.setFieldValue(
-                    "sshKeyMode",
-                    v === "paste" ? "paste" : "saved",
-                  )
+                  form.setFieldValue("sshKeyMode", v === "paste" ? "paste" : "saved")
                 }
               />
             ) : null}
@@ -1056,17 +1074,15 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                   Networks
                 </Text>
                 <Text size="xs" c="dimmed">
-                  Multus attachments in order (first Multus is primary for the
-                  default route when IPAM applies). Leave empty for pod network
-                  only (masquerade NAT via virt-launcher — works with Ingress).
-                  With Multus, a pod NIC is added first by default so Terminal
-                  port-forward works.
+                  Multus attachments in order (first Multus is primary for the default
+                  route when IPAM applies). Leave empty for pod network only (masquerade
+                  NAT via virt-launcher — works with Ingress). With Multus, a pod NIC is
+                  added first by default so Terminal port-forward works.
                 </Text>
               </div>
               {form.values.networks.length === 0 ? (
                 <Text size="sm" c="dimmed">
-                  No Multus attachments — VM will use the pod network
-                  (masquerade).
+                  No Multus attachments — VM will use the pod network (masquerade).
                 </Text>
               ) : (
                 form.values.networks.map((name, index) => (
@@ -1088,8 +1104,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                       data={optionsForSlot(index)}
                       searchable
                       disabled={
-                        !form.values.namespace ||
-                        networksFetcher.state === "loading"
+                        !form.values.namespace || networksFetcher.state === "loading"
                       }
                       nothingFoundMessage="No Multus NADs in this namespace"
                       value={name || null}
@@ -1114,10 +1129,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                   description="Adds a masquerade pod NIC as the first interface so browser Terminal (SSH port-forward) and Ingress-style access work. Multus stays the default route. Turn off for Multus-only guests."
                   checked={form.values.includePodNetwork}
                   onChange={(e) =>
-                    form.setFieldValue(
-                      "includePodNetwork",
-                      e.currentTarget.checked,
-                    )
+                    form.setFieldValue("includePodNetwork", e.currentTarget.checked)
                   }
                 />
               ) : null}
@@ -1178,14 +1190,14 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                     ) : null,
                   )}
                   <Text size="xs" c="dimmed">
-                    Static addresses are injected via cloud-init netplan and
-                    released when the VM is deleted.
+                    Static addresses are injected via cloud-init netplan and released when
+                    the VM is deleted.
                   </Text>
                 </Stack>
               ) : form.values.networks.some(Boolean) ? (
                 <Text size="xs" c="dimmed">
-                  No IP pool configured for the selected Multus network(s) —
-                  guest networking is left unconfigured by kmc.
+                  No IP pool configured for the selected Multus network(s) — guest
+                  networking is left unconfigured by kmc.
                 </Text>
               ) : null}
             </Stack>
@@ -1210,14 +1222,17 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
               mr={{ base: 0, sm: "auto" }}
               w={{ base: "100%", sm: "auto" }}
             />
-            <Group gap="sm" justify="flex-end" w={{ base: "100%", sm: "auto" }} wrap="nowrap">
+            <Group
+              gap="sm"
+              justify="flex-end"
+              w={{ base: "100%", sm: "auto" }}
+              wrap="nowrap"
+            >
               <Button component={Link} to="/" variant="default">
                 Cancel
               </Button>
               <Button type="submit" loading={submitting}>
-                {form.values.count > 1
-                  ? `Launch ${form.values.count} VMs`
-                  : "Launch VM"}
+                {form.values.count > 1 ? `Launch ${form.values.count} VMs` : "Launch VM"}
               </Button>
             </Group>
           </FormActions>

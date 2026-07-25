@@ -203,7 +203,7 @@ export default function DataVolumesPage({ loaderData }: Route.ComponentProps) {
     <Stack gap="md">
       <PageHeader
         title="Data Volumes"
-        description={`${filtered.length} shown · ${items.length} total`}
+        description={`${filtered.length} shown · ${items.length} total · golden images are under Images`}
         actions={
           <Button
             component={Link}

@@ -42,6 +42,15 @@ export default [
     ],
   ),
 
+  route("images", "routes/images._index.tsx"),
+  route("images/create", "routes/images.create.tsx"),
+  route("images/:cluster/:name/edit", "routes/images.$cluster.$name.edit.tsx"),
+  route("images/:cluster/:name", "routes/images.$cluster.$name.tsx", [
+    index("routes/images.$cluster.$name._index.tsx"),
+    route("events", "routes/images.$cluster.$name.events.tsx"),
+    route("yaml", "routes/images.$cluster.$name.yaml.tsx"),
+  ]),
+
   route("ingresses", "routes/ingresses._index.tsx"),
   route("ingresses/create", "routes/ingresses.create.tsx"),
   route(

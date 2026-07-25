@@ -10,6 +10,7 @@ import {
   REUSABLE_DV_PHASES,
 } from "~/lib/k8s/constants";
 import { getClusterClients, getConfiguredContexts } from "~/lib/k8s/clients.server";
+import { getImageNamespace } from "~/lib/k8s/image-catalog.server";
 import { listClusters } from "~/vms/vms.server";
 
 interface KubeDataVolume {
@@ -144,6 +145,8 @@ export async function listDataVolumes(clusterFilter?: ClusterId): Promise<{
   const clusters = await listClusters();
   const byId = new Map(clusters.map((c) => [c.id, c]));
   const items: DataVolumeSummary[] = [];
+  // Golden images live under Images; exclude that namespace from this list.
+  const imageNs = getImageNamespace();
 
   await Promise.all(
     contexts.map(async (id) => {
@@ -157,6 +160,8 @@ export async function listDataVolumes(clusterFilter?: ClusterId): Promise<{
           plural: "datavolumes",
         })) as { items?: KubeDataVolume[] };
         for (const dv of res.items ?? []) {
+          const ns = dv.metadata?.namespace ?? "";
+          if (ns === imageNs) continue;
           items.push(mapSummary(id, dv));
         }
       } catch (err) {

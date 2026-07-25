@@ -279,9 +279,7 @@ export interface DetachVmDiskResult {
 export function createVmDiskSource(
   input: Pick<CreateVmRequest, "diskSource">,
 ): CreateVmDiskSourceMode {
-  return input.diskSource === "existingDataVolume"
-    ? "existingDataVolume"
-    : "image";
+  return input.diskSource === "existingDataVolume" ? "existingDataVolume" : "image";
 }
 
 /**
@@ -374,6 +372,53 @@ export interface ImageInfo {
   capacity?: string;
   storageClass?: string;
   /** VirtualMachineClusterPreference from kmc.ianunruh.com/cluster-preference */
+  preference?: string;
+}
+
+// --- Golden images (DataVolume + PVC in the image namespace) ---
+
+export interface ImageSummary {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  /** DV phase when present; otherwise PVC phase (e.g. Bound). */
+  phase: string;
+  progress?: string;
+  /** Requested size from DV/PVC spec. */
+  size?: string;
+  /** Bound capacity from PVC status when available. */
+  capacity?: string;
+  storageClass?: string;
+  volumeMode?: string;
+  /** VirtualMachineClusterPreference from kmc.ianunruh.com/cluster-preference */
+  preference?: string;
+  sourceKind?: string;
+  sourceDetail?: string;
+  age: string;
+  message?: string;
+  /** True when a Bound PVC exists and can be used as a clone source. */
+  ready: boolean;
+  hasDataVolume: boolean;
+  hasPvc: boolean;
+}
+
+export interface ImageDetail extends ImageSummary {
+  uid?: string;
+  accessModes?: string[];
+  claimName?: string;
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
+  conditions: VmCondition[];
+}
+
+export interface CreateImageRequest {
+  cluster: ClusterId;
+  name: string;
+  url: string;
+  size: string;
+  storageClass?: string;
+  volumeMode?: "Block" | "Filesystem";
+  /** Optional VirtualMachineClusterPreference name for Launch VM. */
   preference?: string;
 }
 
@@ -689,12 +734,7 @@ export interface VpcAttachedVm {
  * Agent status reported on the router policy ConfigMap.
  * `Stale` is derived server-side when Ready/Pending but heartbeat is too old.
  */
-export type RouterAgentStatus =
-  | "Ready"
-  | "Error"
-  | "Unknown"
-  | "Pending"
-  | "Stale";
+export type RouterAgentStatus = "Ready" | "Error" | "Unknown" | "Pending" | "Stale";
 
 /**
  * Floating IP lifecycle:

@@ -145,3 +145,9 @@ export const KMC_ANN_DISK_SIZE = `${KMC_LABEL_NAMESPACE}/disk-size`;
 
 /** Value of kmc.ianunruh.com/resource for VirtualMachineSnapshot objects. */
 export const KMC_RESOURCE_VM_SNAPSHOT = "vm-snapshot";
+
+/**
+ * Value of kmc.ianunruh.com/resource for golden images imported via kmc
+ * (DataVolumes in the image namespace). Virtctl-uploaded images may omit this.
+ */
+export const KMC_RESOURCE_IMAGE = "image";

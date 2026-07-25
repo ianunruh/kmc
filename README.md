@@ -154,7 +154,7 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 | `KMC_CLUSTERS_CONFIG`      | `config/clusters.yaml`  | Cluster identity registry                                                     |
 | `KMC_SETTINGS_CLUSTER`     | first cluster in YAML   | Cluster for app-level prefs (SSH keys ConfigMaps in `kmc-system`)             |
 | `KMC_CONTEXTS`             | `prod-sjc1,homelab`     | Fallback cluster list when YAML missing (kubeconfig mode)                     |
-| `KMC_IMAGE_NAMESPACE`      | `vm-images`             | Namespace scanned for golden image PVCs                                       |
+| `KMC_IMAGE_NAMESPACE`      | `vm-images`             | Namespace for golden images (list/import + Launch VM PVC scan)                |
 | `KMC_SESSION_SECRET`       | —                       | ≥32 chars; HMAC key for signed session cookies (survives restarts)            |
 | `KMC_GITHUB_CLIENT_ID`     | —                       | GitHub OAuth App client id                                                    |
 | `KMC_GITHUB_CLIENT_SECRET` | —                       | GitHub OAuth App client secret                                                |
@@ -176,6 +176,7 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 - **Ingresses** — create/list/detail/delete HTTP Ingresses bound to a VM (companion ClusterIP Service selects `kubevirt.io/vm`)
 
 - **Data volumes** — list, create (blank / PVC clone / HTTP), detail, delete
+- **Images** — golden disks in `vm-images` (`KMC_IMAGE_NAMESPACE`): list, HTTP import (CDI DataVolume), set `cluster-preference` label, delete, Launch VM deep-link. Local file path remains `virtctl image-upload` (see below)
 - **Cluster instance types** — list, create, detail, edit, delete
 - **Events + YAML** on detail pages
 - **URL-driven list filters** — shareable views
@@ -226,11 +227,11 @@ Static Multus networks and `ipPools` entries continue to work unchanged.
 
 OpenStack-style **shared routers** provide per-VPC gateway, DHCP, and DNS without changing the cluster CNI (Calico stays primary).
 
-| Piece | Role |
-| ----- | ---- |
-| Router VM | Multus leg(s) on attached VPC(s) + pod NIC for the agent |
+| Piece                                | Role                                                                |
+| ------------------------------------ | ------------------------------------------------------------------- |
+| Router VM                            | Multus leg(s) on attached VPC(s) + pod NIC for the agent            |
 | Policy ConfigMap `kmc-router-<name>` | Interfaces, static DHCP leases, agent script (survives VM recreate) |
-| In-guest agent | Watches policy → dnsmasq static `dhcp-host` + DNS |
+| In-guest agent                       | Watches policy → dnsmasq static `dhcp-host` + DNS                   |
 
 **Flow**
 
@@ -299,6 +300,38 @@ without re-allocating.
 - Setting external later requires an SSH key (new cloud-init) and causes brief downtime
 
 **Policy sketch** (`policy.json` in the ConfigMap): `interfaces[]` (vpc, cidr, gateway, mac, domain, dhcp), `leases[]`, `external` (multusNetwork, primaryCidr, gateway, mac, snat), `floatingIPs[]`.
+
+### Golden images
+
+Launch VM and routers clone from Bound PVCs in `vm-images` (or `KMC_IMAGE_NAMESPACE`). The **Images** nav lists those DataVolumes/PVCs, supports **HTTP import** via CDI, and edits the `kmc.ianunruh.com/cluster-preference` label (applied automatically at VM create).
+
+**Import from URL (console)**
+
+1. **Images → Import Image**
+2. Cluster, name, HTTP(S) URL the **cluster** can reach, size (≥ image virtual size), storage class, volume mode (default Block), optional preference
+3. kmc creates a DataVolume with `source.http`; watch phase/progress on the detail page
+
+**Import from local file (virtctl)** — e.g. after curling an Ubuntu cloudimg:
+
+```bash
+virtctl --context=homelab image-upload dv ubuntu-server-resolute-amd64-20260722 \
+  --namespace vm-images \
+  --size=10Gi \
+  --image-path=./resolute-server-cloudimg-amd64.img \
+  --storage-class=ceph-block-ssd \
+  --volume-mode=block \
+  --access-mode=ReadWriteOnce \
+  --uploadproxy-url=https://… \
+  --insecure \
+  --wait-secs=600
+```
+
+Then label preference (console detail page, or):
+
+```bash
+kubectl --context=homelab -n vm-images label pvc ubuntu-server-resolute-amd64-20260722 \
+  kmc.ianunruh.com/cluster-preference=ubuntu --overwrite
+```
 
 ### User SSH keys
 

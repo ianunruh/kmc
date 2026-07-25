@@ -1,7 +1,6 @@
 import type {
   ClusterCatalog,
   ClusterId,
-  ImageInfo,
   InstanceTypeInfo,
   NamespaceInfo,
   NetworkInfo,
@@ -22,9 +21,8 @@ import {
   VM_ALLOWED_LABEL,
   VM_ALLOWED_LABEL_SELECTOR,
 } from "./constants";
+import { getImageNamespace, listReadyImages } from "./image-catalog.server";
 import { nadNameFromMultusRef } from "./static-nads.server";
-
-const IMAGE_NAMESPACE = process.env.KMC_IMAGE_NAMESPACE ?? "vm-images";
 
 /**
  * Ensures the target namespace is labeled for VM creation.
@@ -63,7 +61,7 @@ export async function getClusterCatalog(cluster: ClusterId): Promise<ClusterCata
       listInstanceTypes(custom),
       listPreferences(custom),
       listStorageClasses(storage),
-      listImages(core),
+      listReadyImages(cluster),
     ]);
 
   const defaultStorageClass =
@@ -111,8 +109,7 @@ export async function listNetworks(
           name: item.metadata?.name ?? "",
           namespace: item.metadata?.namespace ?? namespace,
           kind: isVpc ? ("vpc" as const) : ("multus" as const),
-          vlan:
-            vlan != null && Number.isInteger(vlan) && vlan > 0 ? vlan : undefined,
+          vlan: vlan != null && Number.isInteger(vlan) && vlan > 0 ? vlan : undefined,
         };
       })
       .filter((n) => n.name);
@@ -226,8 +223,7 @@ async function listInstanceTypes(
             item.spec?.cpu?.guest != null
               ? String(item.spec.cpu.guest)
               : labels["instancetype.kubevirt.io/cpu"],
-          memory:
-            item.spec?.memory?.guest ?? labels["instancetype.kubevirt.io/memory"],
+          memory: item.spec?.memory?.guest ?? labels["instancetype.kubevirt.io/memory"],
           class: labels["instancetype.kubevirt.io/class"] || undefined,
           size: labels["instancetype.kubevirt.io/size"] || undefined,
           vendor: labels["instancetype.kubevirt.io/vendor"] || undefined,
@@ -280,47 +276,34 @@ async function listStorageClasses(
     });
 }
 
-async function listImages(
-  core: ReturnType<typeof getClusterClients>["core"],
-): Promise<ImageInfo[]> {
-  try {
-    const res = await core.listNamespacedPersistentVolumeClaim({
-      namespace: IMAGE_NAMESPACE,
-    });
-    return (res.items ?? [])
-      .filter((pvc) => pvc.status?.phase === "Bound")
-      .map((pvc) => {
-        const preference = pvc.metadata?.labels?.[IMAGE_PREFERENCE_LABEL]?.trim();
-        return {
-          name: pvc.metadata?.name ?? "",
-          namespace: pvc.metadata?.namespace ?? IMAGE_NAMESPACE,
-          capacity:
-            pvc.status?.capacity?.storage ?? pvc.spec?.resources?.requests?.storage,
-          storageClass: pvc.spec?.storageClassName ?? undefined,
-          preference: preference || undefined,
-        };
-      })
-      .filter((i) => i.name)
-      .sort((a, b) => a.name.localeCompare(b.name));
-  } catch {
-    return [];
-  }
-}
-
 /**
- * Reads the cluster-preference label from a golden image PVC.
- * Used at VM create time so preference is never taken from a free-form form field.
+ * Reads the cluster-preference label from a golden image PVC (preferred) or
+ * owning DataVolume. Used at VM create so preference is never taken from a
+ * free-form form field.
  */
 export async function getImagePreference(
   cluster: ClusterId,
   namespace: string,
   name: string,
 ): Promise<string | undefined> {
-  const { core } = getClusterClients(cluster);
+  const { core, custom } = getClusterClients(cluster);
   try {
     const pvc = await core.readNamespacedPersistentVolumeClaim({ name, namespace });
-    const preference = pvc.metadata?.labels?.[IMAGE_PREFERENCE_LABEL]?.trim();
-    return preference || undefined;
+    const fromPvc = pvc.metadata?.labels?.[IMAGE_PREFERENCE_LABEL]?.trim();
+    if (fromPvc) return fromPvc;
+  } catch {
+    // fall through to DV
+  }
+  try {
+    const dv = (await custom.getNamespacedCustomObject({
+      group: "cdi.kubevirt.io",
+      version: "v1beta1",
+      namespace: namespace || getImageNamespace(),
+      plural: "datavolumes",
+      name,
+    })) as { metadata?: { labels?: Record<string, string> } };
+    const fromDv = dv.metadata?.labels?.[IMAGE_PREFERENCE_LABEL]?.trim();
+    return fromDv || undefined;
   } catch {
     return undefined;
   }

@@ -18,6 +18,7 @@ import {
   IconKey,
   IconLogout,
   IconNetwork,
+  IconPhoto,
   IconPlus,
   IconRoute,
   IconRouter,
@@ -61,6 +62,12 @@ const NAV_SECTIONS: NavSection[] = [
         label: "Data Volumes",
         icon: IconDatabase,
         match: (path: string) => path.startsWith("/datavolumes"),
+      },
+      {
+        to: "/images",
+        label: "Images",
+        icon: IconPhoto,
+        match: (path: string) => path.startsWith("/images"),
       },
       {
         to: "/ssh-keys",
@@ -247,15 +254,7 @@ export function AppChrome({
       <AppShell.Navbar p="sm">
         {NAV_SECTIONS.map((section) => (
           <Box key={section.label} mb="sm">
-            <Text
-              size="xs"
-              fw={600}
-              c="dimmed"
-              tt="uppercase"
-              lts={0.5}
-              px="sm"
-              mb={4}
-            >
+            <Text size="xs" fw={600} c="dimmed" tt="uppercase" lts={0.5} px="sm" mb={4}>
               {section.label}
             </Text>
             {section.items.map((item) => (

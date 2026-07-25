@@ -244,6 +244,42 @@ export function dataVolumesListPath(
   return withSearch("/datavolumes", filters);
 }
 
+export function imagePath(
+  img: Pick<{ cluster: string; name: string }, "cluster" | "name">,
+): string {
+  return `/images/${encodeURIComponent(img.cluster)}/${encodeURIComponent(img.name)}`;
+}
+
+export function imageEditPath(
+  img: Pick<{ cluster: string; name: string }, "cluster" | "name">,
+): string {
+  return `${imagePath(img)}/edit`;
+}
+
+export function imagesListPath(
+  filters: {
+    q?: string | null;
+    cluster?: string | null;
+    phase?: string | null;
+  } = {},
+): string {
+  return withSearch("/images", filters);
+}
+
+/** Launch VM prefilled with a golden image (`namespace/name` or bare name). */
+export function vmCreateFromImagePath(img: {
+  cluster: string;
+  name: string;
+  namespace?: string;
+}): string {
+  const ns = img.namespace?.trim();
+  const image = ns ? `${ns}/${img.name}` : img.name;
+  return withSearch("/vms/create", {
+    cluster: img.cluster,
+    image,
+  });
+}
+
 export function instanceTypesListPath(
   filters: {
     q?: string | null;
