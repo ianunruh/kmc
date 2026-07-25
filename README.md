@@ -244,6 +244,8 @@ OpenStack-style **shared routers** provide per-VPC gateway, DHCP, and DNS withou
 4. Guests get address / default route / DNS from the router (`<vm>.<vpc>.vpc.local`).
 5. **Attach more VPCs** later from router detail (Multus hotplug — no appliance recreate). **Detach** with lease/FIP safety rails (force optional).
 
+**Cross-VPC DNS (multi-homed guests):** DHCP advertises both the VPC zone and the parent `vpc.local` as domain-search so systemd-resolved routes all `*.vpc.local` queries to the router (not only the local VPC name). That matters when the guest also has a pod/cluster NIC with CoreDNS as a default-route resolver — without the parent zone, `dig other.other-net.vpc.local` returns empty while `dig @<gateway> …` works.
+
 **External gateway + floating IPs + port forwards**
 
 - Optional **public Multus** on create, or **Enable external gateway** on the router detail page (recreates the appliance VM with a public NIC)

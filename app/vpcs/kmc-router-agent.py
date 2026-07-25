@@ -27,7 +27,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "10"
+AGENT_VERSION = "11"
 
 ENV_FILE = os.environ.get("KMC_ENV_FILE", "/etc/kmc/router-agent.env")
 STATE_DIR = Path(os.environ.get("KMC_STATE_DIR", "/var/lib/kmc"))
@@ -375,6 +375,14 @@ def ensure_dnsmasq_main() -> None:
         DNSMASQ_MAIN.write_text(content, encoding="utf-8")
 
 
+def parent_dns_zone(domain: str) -> str:
+    """Parent zone for cross-VPC DNS routing (green-net.vpc.local → vpc.local)."""
+    d = domain.strip().strip(".")
+    if not d or "." not in d:
+        return ""
+    return d.split(".", 1)[1]
+
+
 def render_vpc_dnsmasq(
     *,
     vpc: str,
@@ -410,7 +418,16 @@ def render_vpc_dnsmasq(
     except Exception:  # noqa: BLE001
         pass
     if domain:
-        lines.append(f"dhcp-option=tag:{tag},option:domain-search,{domain}")
+        # Advertise the VPC zone + its parent (e.g. green-net.vpc.local,vpc.local).
+        # Multi-homed guests (pod NIC + VPC NIC) use systemd-resolved, which only
+        # sends queries to a link's DNS server when the name matches that link's
+        # DNS Domain. Without the parent zone, dig cyan-1.cyan-net.vpc.local falls
+        # through to cluster DNS (NXDOMAIN) even though dig @gateway works.
+        search = domain
+        parent = parent_dns_zone(domain)
+        if parent and parent != domain:
+            search = f"{domain},{parent}"
+        lines.append(f"dhcp-option=tag:{tag},option:domain-search,{search}")
         lines.append(f"domain={domain},{iface}")
     lines.append("")
     for lease in leases:

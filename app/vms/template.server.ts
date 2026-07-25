@@ -246,10 +246,11 @@ export function buildSshUserData(
     "  - default",
     "ssh_authorized_keys:",
     ...keys.map((k) => `  - ${k}`),
+    "packages:",
+    "  - traceroute",
   ];
   if (opts?.installGuestAgent) {
     lines.push(
-      "packages:",
       "  - qemu-guest-agent",
       "runcmd:",
       "  - systemctl enable --now qemu-guest-agent",
@@ -609,6 +610,7 @@ export function buildRouterUserData(input: {
     "  - iptables",
     "  - dnsmasq",
     "  - iputils-arping",
+    "  - traceroute",
     "write_files:",
     "  - path: /etc/sysctl.d/99-kmc-router.conf",
     "    content: |",
