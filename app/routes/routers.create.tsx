@@ -2,6 +2,7 @@ import {
   Alert,
   Button,
   Code,
+  MultiSelect,
   NumberInput,
   Select,
   SimpleGrid,
@@ -12,7 +13,14 @@ import {
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
 import { useEffect, useMemo } from "react";
-import { Link, redirect, useNavigation, useSearchParams, useSubmit } from "react-router";
+import {
+  Link,
+  redirect,
+  useFetcher,
+  useNavigation,
+  useSearchParams,
+  useSubmit,
+} from "react-router";
 import type { Route } from "./+types/routers.create";
 import { FormActions, FormSection, PageHeader } from "~/ui";
 import { notifyActionError } from "~/lib/action-feedback";
@@ -27,11 +35,11 @@ import { getClusterCatalog } from "~/lib/k8s/catalog.server";
 import { getConfiguredContexts } from "~/lib/k8s/clients.server";
 import { listSshKeysOrEmpty } from "~/ssh-keys/ssh-keys.server";
 import { listClusters } from "~/vms/vms.server";
-import {
-  createRouter,
-  listRouterAttachableVpcs,
-} from "~/vpcs/routers.server";
+import { createRouter, listRouterAttachableVpcs } from "~/vpcs/routers.server";
 import { listPublicEgressNetworks } from "~/vpcs/vpcs.server";
+
+type AttachableVpc = Awaited<ReturnType<typeof listRouterAttachableVpcs>>[number];
+type AttachableFetcherData = { attachable: AttachableVpc[] };
 
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Create router · kmc" }];
@@ -72,9 +80,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     }
   }
 
-  const publicNetworks = defaultCluster
-    ? listPublicEgressNetworks(defaultCluster)
-    : [];
+  const publicNetworks = defaultCluster ? listPublicEgressNetworks(defaultCluster) : [];
 
   return {
     clusters,
@@ -103,7 +109,15 @@ export async function action({ request }: Route.ActionArgs) {
   const cluster = String(form.get("cluster") ?? "").trim();
   const namespace = String(form.get("namespace") ?? "").trim();
   const name = String(form.get("name") ?? "").trim();
-  const vpcName = String(form.get("vpcName") ?? "").trim();
+  const vpcNames = form
+    .getAll("vpcName")
+    .map((v) => String(v).trim())
+    .filter(Boolean);
+  // Back-compat: single field if client only sent one
+  if (vpcNames.length === 0) {
+    const one = String(form.get("vpcName") ?? "").trim();
+    if (one) vpcNames.push(one);
+  }
   const externalMultusNetwork =
     String(form.get("externalMultusNetwork") ?? "").trim() || undefined;
   const sizeMode = String(form.get("sizeMode") ?? "manual");
@@ -120,7 +134,7 @@ export async function action({ request }: Route.ActionArgs) {
   if (!cluster || !namespace || !name) {
     return { error: "Cluster, namespace, and name are required" };
   }
-  if (!vpcName) return { error: "Select a VPC to attach" };
+  if (vpcNames.length === 0) return { error: "Select at least one VPC to attach" };
   if (!imageValue) return { error: "Image is required" };
 
   if (sshKeyMode === "saved") {
@@ -152,7 +166,7 @@ export async function action({ request }: Route.ActionArgs) {
       cluster,
       namespace,
       name,
-      vpcNames: [vpcName],
+      vpcNames,
       externalMultusNetwork,
       sshPublicKey,
       diskSize,
@@ -179,7 +193,12 @@ export async function action({ request }: Route.ActionArgs) {
     return redirect(routerPath({ cluster, namespace, name }));
   } catch (err) {
     return {
-      error: logServerError("router.create", err, { cluster, namespace, name, vpcName }),
+      error: logServerError("router.create", err, {
+        cluster,
+        namespace,
+        name,
+        vpcNames,
+      }),
     };
   }
 }
@@ -207,6 +226,7 @@ export default function CreateRouterPage({
   const submit = useSubmit();
   const [searchParams] = useSearchParams();
   const submitting = navigation.state === "submitting";
+  const attachableFetcher = useFetcher<AttachableFetcherData>();
 
   useEffect(() => {
     if (actionData && "error" in actionData && actionData.error) {
@@ -234,59 +254,24 @@ export default function CreateRouterPage({
     "";
   const defaultInstanceType = preferredInstanceTypeName(catalog?.instanceTypes ?? []);
 
-  /** VPCs with private IPAM that can accept a new router interface. */
-  const freeVpcs = attachable.filter((v) => v.cidr && !v.attachedRouter);
-  /** All CIDR VPCs for the select — blocked ones stay visible with a reason. */
-  const vpcSelectData = attachable
-    .filter((v) => v.cidr)
-    .map((v) => {
-      const base = `${v.name} · ${v.cidr}${v.gateway ? ` gw ${v.gateway}` : ""}`;
-      if (v.attachedRouter) {
-        return {
-          value: v.name,
-          label: `${base} (router: ${v.attachedRouter})`,
-          disabled: true,
-        };
-      }
-      return { value: v.name, label: base, disabled: false };
-    });
-
-  const preVpcBlocked = preVpc
-    ? attachable.find((v) => v.name === preVpc)
-    : undefined;
-  const preVpcBlockedReason = preVpcBlocked
-    ? preVpcBlocked.attachedRouter
-      ? `VPC "${preVpc}" is already attached to router ${preVpcBlocked.attachedRouter}.`
-      : !preVpcBlocked.cidr
-        ? `VPC "${preVpc}" has no private CIDR — enable IPAM first.`
-        : null
-    : preVpc
-      ? `VPC "${preVpc}" was not found in this namespace (or is not a kmc VPC).`
-      : null;
-
   const form = useForm({
     initialValues: {
       cluster: defaultCluster,
       namespace: preNamespace || searchParams.get("namespace") || "",
       name: preVpc ? `${preVpc}-router`.slice(0, 63) : "edge",
-      vpcName:
-        preVpc && freeVpcs.some((v) => v.name === preVpc)
-          ? preVpc
-          : freeVpcs[0]?.name ?? "",
+      vpcNames: [] as string[],
       externalMultusNetwork: publicNetworks[0]?.multusNetwork ?? "",
       enableExternal: Boolean(publicNetworks[0]),
       image: defaultImage,
-      sizeMode: (hasInstanceTypes && defaultInstanceType
-        ? "instancetype"
-        : "manual") as "instancetype" | "manual",
+      sizeMode: (hasInstanceTypes && defaultInstanceType ? "instancetype" : "manual") as
+        "instancetype" | "manual",
       instanceType: defaultInstanceType ?? "",
       cpuCores: 1,
       memory: "1Gi",
       diskSize: "10Gi",
       storageClass: catalog?.defaultStorageClass ?? "",
       sshKeyMode: (signedIn && sshKeys.length > 0 ? "saved" : "paste") as
-        | "saved"
-        | "paste",
+        "saved" | "paste",
       savedSshKeyId: sshKeys[0]?.id ?? "",
       sshPublicKey: "",
     },
@@ -299,7 +284,7 @@ export default function CreateRouterPage({
           : !/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(v.trim())
             ? "DNS-1123 label"
             : null,
-      vpcName: (v) => (!v ? "Required" : null),
+      vpcNames: (v) => (!v || v.length === 0 ? "Select at least one VPC" : null),
       image: (v) => (!v ? "Required" : null),
       instanceType: (v, values) =>
         values.sizeMode === "instancetype" && !v.trim() ? "Required" : null,
@@ -310,6 +295,73 @@ export default function CreateRouterPage({
     },
   });
 
+  // Reload attachable VPCs whenever cluster/namespace change (loader only has
+  // them when ?namespace= was present on first paint).
+  useEffect(() => {
+    const cluster = form.values.cluster?.trim();
+    const namespace = form.values.namespace?.trim();
+    if (!cluster || !namespace) return;
+    attachableFetcher.load(
+      `/api/router-attachable/${encodeURIComponent(cluster)}?namespace=${encodeURIComponent(namespace)}`,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-fetch on placement change
+  }, [form.values.cluster, form.values.namespace]);
+
+  const liveAttachable: AttachableVpc[] =
+    attachableFetcher.data?.attachable ?? attachable;
+
+  /** VPCs with private IPAM that can accept a new router interface. */
+  const freeVpcs = liveAttachable.filter((v) => v.cidr && !v.attachedRouter);
+  /** All known VPCs — blocked ones stay visible with a reason. */
+  const vpcSelectData = liveAttachable.map((v) => {
+    if (!v.cidr) {
+      return {
+        value: v.name,
+        label: `${v.name} (no private CIDR)`,
+        disabled: true,
+      };
+    }
+    const base = `${v.name} · ${v.cidr}${v.gateway ? ` gw ${v.gateway}` : ""}`;
+    if (v.attachedRouter) {
+      return {
+        value: v.name,
+        label: `${base} (router: ${v.attachedRouter})`,
+        disabled: true,
+      };
+    }
+    return { value: v.name, label: base, disabled: false };
+  });
+
+  // Prefill / prune selection when free list changes
+  useEffect(() => {
+    const freeNames = new Set(freeVpcs.map((v) => v.name));
+    const current = form.values.vpcNames.filter((n) => freeNames.has(n));
+    if (current.length !== form.values.vpcNames.length) {
+      form.setFieldValue("vpcNames", current);
+      return;
+    }
+    if (current.length === 0 && freeVpcs.length > 0) {
+      const pick = preVpc && freeNames.has(preVpc) ? preVpc : freeVpcs[0]!.name;
+      form.setFieldValue("vpcNames", [pick]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- freeVpcs identity via names
+  }, [freeVpcs.map((v) => v.name).join(","), preVpc]);
+
+  const preVpcBlocked = preVpc
+    ? liveAttachable.find((v) => v.name === preVpc)
+    : undefined;
+  const preVpcBlockedReason = preVpcBlocked
+    ? preVpcBlocked.attachedRouter
+      ? `VPC "${preVpc}" is already attached to router ${preVpcBlocked.attachedRouter}.`
+      : !preVpcBlocked.cidr
+        ? `VPC "${preVpc}" has no private CIDR — enable IPAM first.`
+        : null
+    : preVpc && form.values.namespace
+      ? attachableFetcher.state !== "idle"
+        ? null
+        : `VPC "${preVpc}" was not found in this namespace (or is not a kmc VPC).`
+      : null;
+
   const nsOptions = useMemo(() => {
     const fromCatalog = catalog?.namespaces ?? [];
     const set = new Set(fromCatalog.map((n) => n.name));
@@ -318,13 +370,19 @@ export default function CreateRouterPage({
   }, [catalog, preNamespace]);
 
   const blocked = Boolean(catalogError) || !catalog;
+  const attachableLoading =
+    Boolean(form.values.cluster && form.values.namespace) &&
+    attachableFetcher.state !== "idle" &&
+    !attachableFetcher.data;
 
   const onSubmit = form.onSubmit((values) => {
     const fd = new FormData();
     fd.set("cluster", values.cluster);
     fd.set("namespace", values.namespace.trim());
     fd.set("name", values.name.trim());
-    fd.set("vpcName", values.vpcName);
+    for (const vpc of values.vpcNames) {
+      fd.append("vpcName", vpc);
+    }
     if (values.enableExternal && values.externalMultusNetwork) {
       fd.set("externalMultusNetwork", values.externalMultusNetwork);
     }
@@ -351,7 +409,7 @@ export default function CreateRouterPage({
     <Stack gap="md" pb={80}>
       <PageHeader
         title="Create router"
-        description="Shared OpenStack-style router: claims the VPC gateway IP and runs DHCP/DNS for guests. External SNAT/FIPs come in a later phase."
+        description="Shared OpenStack-style router: claims each VPC’s gateway IP and runs DHCP/DNS for guests. Optional external Multus enables SNAT and floating IPs. Attach more VPCs later via Multus hotplug (no recreate)."
       />
 
       {actionData && "error" in actionData && actionData.error && (
@@ -379,12 +437,21 @@ export default function CreateRouterPage({
         </Alert>
       )}
 
-      {preNamespace && freeVpcs.length === 0 && (
-        <Alert color="yellow" variant="light" title="No attachable VPCs">
-          Namespace <Code>{preNamespace}</Code> has no free VPC with private IPAM — each
-          already has a router (gateway IP can only have one owner).
+      {form.values.namespace && !attachableLoading && liveAttachable.length === 0 && (
+        <Alert color="yellow" variant="light" title="No VPCs in namespace">
+          Namespace <Code>{form.values.namespace}</Code> has no kmc VPCs. Create a VPC
+          with private IPAM first.
         </Alert>
       )}
+      {form.values.namespace &&
+        !attachableLoading &&
+        liveAttachable.length > 0 &&
+        freeVpcs.length === 0 && (
+          <Alert color="yellow" variant="light" title="No attachable VPCs">
+            Namespace <Code>{form.values.namespace}</Code> has no free VPC with private
+            IPAM — each is already on a router or missing a CIDR.
+          </Alert>
+        )}
 
       <form onSubmit={onSubmit}>
         <Stack gap="md">
@@ -413,14 +480,26 @@ export default function CreateRouterPage({
               disabled={blocked}
               {...form.getInputProps("name")}
             />
-            <Select
-              label="VPC to attach"
-              description="Only VPCs without a router can attach (shared gateway IP)."
+            <MultiSelect
+              label="VPCs to attach"
+              description="Only free VPCs with private IPAM. Router claims each gateway IP. You can attach more later from the router detail page."
               data={vpcSelectData}
               required
               searchable
-              disabled={blocked || freeVpcs.length === 0}
-              {...form.getInputProps("vpcName")}
+              disabled={
+                blocked ||
+                !form.values.namespace ||
+                attachableLoading ||
+                freeVpcs.length === 0
+              }
+              nothingFoundMessage={
+                attachableLoading
+                  ? "Loading VPCs…"
+                  : !form.values.namespace
+                    ? "Select a namespace first"
+                    : "No free VPCs with private IPAM"
+              }
+              {...form.getInputProps("vpcNames")}
             />
             {publicNetworks.length > 0 && (
               <>
@@ -438,9 +517,7 @@ export default function CreateRouterPage({
                   searchable
                   disabled={blocked}
                   value={
-                    form.values.enableExternal
-                      ? form.values.externalMultusNetwork
-                      : ""
+                    form.values.enableExternal ? form.values.externalMultusNetwork : ""
                   }
                   onChange={(v) => {
                     if (v) {
@@ -528,9 +605,7 @@ export default function CreateRouterPage({
                 }))}
                 clearable
                 value={
-                  form.values.sshKeyMode === "saved"
-                    ? form.values.savedSshKeyId
-                    : null
+                  form.values.sshKeyMode === "saved" ? form.values.savedSshKeyId : null
                 }
                 onChange={(v) => {
                   if (v) {
@@ -548,7 +623,9 @@ export default function CreateRouterPage({
                 {sshKeysError}
               </Text>
             )}
-            {(form.values.sshKeyMode === "paste" || !signedIn || sshKeys.length === 0) && (
+            {(form.values.sshKeyMode === "paste" ||
+              !signedIn ||
+              sshKeys.length === 0) && (
               <Textarea
                 label="SSH public key"
                 minRows={3}

@@ -1,7 +1,9 @@
 import { formatError } from "~/lib/errors";
 import type {
+  AttachRouterVpcRequest,
   ClusterId,
   CreateRouterRequest,
+  DetachRouterVpcRequest,
   RouterDetail,
   RouterSummary,
   VmSummary,
@@ -28,6 +30,7 @@ import { DNS1123_LABEL } from "~/lib/format";
 import {
   allocateIpv4ForMultus,
   findIpPoolForMultus,
+  generateLocalMacAddress,
   type AllocatedIp,
 } from "~/lib/ipam/pools.server";
 import {
@@ -35,8 +38,12 @@ import {
   buildRouterUserData,
   buildVirtualMachineManifest,
   cloudInitUserDataSecretName,
+  POD_NETWORK_NAME,
 } from "~/vms/template.server";
-import { ensureRootDataVolumeFromImage } from "~/vms/vms.server";
+import {
+  ensureRootDataVolumeFromImage,
+  restartVm,
+} from "~/vms/vms.server";
 import { getPlatformConsolePublicKey } from "~/vms/console-ssh-key.server";
 import {
   containsIpv4,
@@ -57,10 +64,13 @@ import {
   interfacesFromDoc,
   leasesFromDoc,
   listRouterPolicyConfigMaps,
+  mutateRouterPolicyDoc,
   replaceRouterPolicyDoc,
   routerPolicyConfigMapName,
   summaryFromRouterPolicy,
   syncRouterAgentScript,
+  syncRouterFloatingAnnotation,
+  syncRouterVmIpamAnnotationsFromPolicy,
   type RouterPolicyDoc,
 } from "~/vpcs/router-policy.server";
 
@@ -139,6 +149,12 @@ type KubeVm = {
   status?: {
     printableStatus?: string;
     ready?: boolean;
+    conditions?: Array<{
+      type?: string;
+      status?: string;
+      reason?: string;
+      message?: string;
+    }>;
   };
 };
 
@@ -235,6 +251,8 @@ export async function getRouter(
   let vmStatus: string | undefined;
   let vmReady: boolean | undefined;
   let vmMissing = false;
+  let vmRestartRequired = false;
+  let vmRestartRequiredMessage: string | undefined;
   try {
     const { custom } = getClusterClients(cluster);
     const vm = (await custom.getNamespacedCustomObject({
@@ -246,6 +264,14 @@ export async function getRouter(
     })) as KubeVm;
     vmStatus = vm.status?.printableStatus;
     vmReady = vm.status?.ready === true;
+    const restartCond = (vm.status?.conditions ?? []).find(
+      (c) => c.type === "RestartRequired" && c.status === "True",
+    );
+    if (restartCond) {
+      vmRestartRequired = true;
+      const msg = restartCond.message?.trim() || restartCond.reason?.trim();
+      vmRestartRequiredMessage = msg || undefined;
+    }
   } catch (err) {
     /* Policy survives appliance delete — surface missing VM for recreate UI */
     if (isNotFound(err)) {
@@ -279,6 +305,8 @@ export async function getRouter(
     vmStatus,
     vmReady,
     vmMissing,
+    vmRestartRequired,
+    vmRestartRequiredMessage,
   };
 }
 
@@ -320,9 +348,7 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
   }
 
   const vpcNames = [
-    ...new Set(
-      (input.vpcNames ?? []).map((n) => n.trim()).filter(Boolean),
-    ),
+    ...new Set((input.vpcNames ?? []).map((n) => n.trim()).filter(Boolean)),
   ];
   if (vpcNames.length === 0) {
     throw new Error("At least one VPC is required");
@@ -353,9 +379,7 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
   for (const vpcName of vpcNames) {
     const vpc = await loadVpcAttachInfo(input.cluster, input.namespace, vpcName);
     if (vpc.routerAnn) {
-      throw new Error(
-        `VPC ${vpcName} is already attached to router ${vpc.routerAnn}`,
-      );
+      throw new Error(`VPC ${vpcName} is already attached to router ${vpc.routerAnn}`);
     }
     vpcDetails.push(vpc);
   }
@@ -382,21 +406,15 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
   const interfaceSpecs: RouterPolicyDoc["interfaces"] = [];
 
   for (const vpc of vpcDetails) {
-    const privateGateway =
-      vpc.gateway?.trim() || defaultGatewayAddress(vpc.cidr);
+    const privateGateway = vpc.gateway?.trim() || defaultGatewayAddress(vpc.cidr);
     validateGatewayInCidr(vpc.cidr, privateGateway);
 
-    const alloc = await allocateIpv4ForMultus(
-      input.cluster,
-      vpc.name,
-      input.namespace,
-      {
-        preferredAddress: privateGateway,
-        claimGateway: true,
-        gatewayOverride: null,
-        extraUsed,
-      },
-    );
+    const alloc = await allocateIpv4ForMultus(input.cluster, vpc.name, input.namespace, {
+      preferredAddress: privateGateway,
+      claimGateway: true,
+      gatewayOverride: null,
+      extraUsed,
+    });
     if (!alloc) {
       throw new Error(
         `Could not allocate gateway IP on VPC ${input.namespace}/${vpc.name}`,
@@ -502,10 +520,13 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
   };
 
   const platformPub = await getPlatformConsolePublicKey();
+  const knownMultusMacs = [
+    ...interfaceSpecs.map((i) => i.mac),
+    ...(publicBound?.macAddress ? [publicBound.macAddress] : []),
+  ];
   const userData = buildRouterUserData({
     sshPublicKey: [input.sshPublicKey, ...(platformPub ? [platformPub] : [])],
-    privateMacs: interfaceSpecs.map((i) => i.mac),
-    publicMac: publicBound?.macAddress,
+    knownMultusMacs,
     podCIDRs: controlPlane.podCIDRs,
     serviceCIDRs: controlPlane.serviceCIDRs,
     dnsIP: controlPlane.network.dnsIP,
@@ -522,10 +543,17 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
     [KMC_LABEL_ROUTER]: routerName,
   };
 
+  const clusterCidrs = [...controlPlane.podCIDRs, ...controlPlane.serviceCIDRs].filter(
+    Boolean,
+  );
   const body = buildVirtualMachineManifest(createVmInput, bound, {
     labels: roleLabels,
     userDataSecretName: secretName,
     includePodNetwork: true,
+    clusterCidrs,
+    // Agent owns private Multus L3; netplan is pod + optional external only.
+    routerAgentOwnsPrivateL3: true,
+    routerExternalAllocation: publicBound ?? null,
   });
 
   const { custom, core } = getClusterClients(input.cluster);
@@ -544,10 +572,9 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
       labels: roleLabels,
     });
   } catch (err) {
-    throw new Error(
-      `Failed to create router root DataVolume: ${formatError(err)}`,
-      { cause: err },
-    );
+    throw new Error(`Failed to create router root DataVolume: ${formatError(err)}`, {
+      cause: err,
+    });
   }
 
   try {
@@ -625,17 +652,12 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
     // Stamp each VPC with router + gateway + DNS pointing at router
     for (const iface of interfaceSpecs) {
       try {
-        await patchVpcRouterMetadata(
-          input.cluster,
-          input.namespace,
-          iface.vpc,
-          {
-            gateway: iface.gateway,
-            routerName,
-            dns: [iface.gateway],
-            cidr: iface.cidr,
-          },
-        );
+        await patchVpcRouterMetadata(input.cluster, input.namespace, iface.vpc, {
+          gateway: iface.gateway,
+          routerName,
+          dns: [iface.gateway],
+          cidr: iface.cidr,
+        });
       } catch (metaErr) {
         console.error(
           `Failed to update VPC ${iface.vpc} router metadata:`,
@@ -933,9 +955,7 @@ export type RecreateRouterVmRequest = {
  * Recreate the router appliance VM from policy (preserves leases/FIPs/interfaces).
  * Use when the VM was deleted out-of-band or after enabling external gateway.
  */
-export async function recreateRouterVm(
-  input: RecreateRouterVmRequest,
-): Promise<void> {
+export async function recreateRouterVm(input: RecreateRouterVmRequest): Promise<void> {
   return recreateRouterVmFromPolicy(input);
 }
 
@@ -944,9 +964,7 @@ export async function recreateRouterVm(
  * Snapshots size/image from the existing VM when present; otherwise requires
  * image + size fields on the request.
  */
-async function recreateRouterVmFromPolicy(
-  input: RecreateRouterVmRequest,
-): Promise<void> {
+async function recreateRouterVmFromPolicy(input: RecreateRouterVmRequest): Promise<void> {
   const { cluster, namespace, routerName, sshPublicKey } = input;
   if (!sshPublicKey?.trim()) throw new Error("sshPublicKey is required");
   const policy = await getRouterPolicyConfigMap(cluster, namespace, routerName);
@@ -977,7 +995,10 @@ async function recreateRouterVmFromPolicy(
         instancetype?: { name?: string };
         dataVolumeTemplates?: Array<{
           spec?: {
-            pvc?: { storageClassName?: string; resources?: { requests?: { storage?: string } } };
+            pvc?: {
+              storageClassName?: string;
+              resources?: { requests?: { storage?: string } };
+            };
             storage?: {
               storageClassName?: string;
               resources?: { requests?: { storage?: string } };
@@ -1017,8 +1038,8 @@ async function recreateRouterVmFromPolicy(
     // Standalone root DV (post-template): read size/class from the DV if present
     if (!dvt) {
       const rootDvName =
-        vm.spec?.template?.spec?.volumes?.find((v) => v.dataVolume?.name)
-          ?.dataVolume?.name || routerName;
+        vm.spec?.template?.spec?.volumes?.find((v) => v.dataVolume?.name)?.dataVolume
+          ?.name || routerName;
       try {
         const dv = (await custom.getNamespacedCustomObject({
           group: "cdi.kubevirt.io",
@@ -1035,8 +1056,7 @@ async function recreateRouterVmFromPolicy(
             source?: { pvc?: { namespace?: string; name?: string } };
           };
         };
-        diskSize =
-          dv.spec?.storage?.resources?.requests?.storage?.trim() || diskSize;
+        diskSize = dv.spec?.storage?.resources?.requests?.storage?.trim() || diskSize;
         storageClass = dv.spec?.storage?.storageClassName || storageClass;
         if (dv.spec?.source?.pvc?.name) {
           image = {
@@ -1051,8 +1071,7 @@ async function recreateRouterVmFromPolicy(
     }
     if (!instanceType) {
       cpuCores = vm.spec?.template?.spec?.domain?.cpu?.cores ?? 1;
-      memory =
-        vm.spec?.template?.spec?.domain?.resources?.requests?.memory || "1Gi";
+      memory = vm.spec?.template?.spec?.domain?.resources?.requests?.memory || "1Gi";
     }
   } catch (err) {
     if (!isNotFound(err)) {
@@ -1145,9 +1164,7 @@ async function recreateRouterVmFromPolicy(
   const externalPool = doc.external?.multusNetwork
     ? findIpPoolForMultus(cluster, doc.external.multusNetwork)
     : undefined;
-  const externalDns = (externalPool?.dns ?? [])
-    .map((d) => d.trim())
-    .filter(Boolean);
+  const externalDns = (externalPool?.dns ?? []).map((d) => d.trim()).filter(Boolean);
 
   const allocations: AllocatedIp[] = doc.interfaces.map((iface) => {
     const gwAddr = iface.gateway.split("/")[0]!;
@@ -1197,11 +1214,9 @@ async function recreateRouterVmFromPolicy(
     doc,
   });
 
-  const preference = await getImagePreference(
-    cluster,
-    image.namespace,
-    image.name,
-  ).catch(() => undefined);
+  const preference = await getImagePreference(cluster, image.namespace, image.name).catch(
+    () => undefined,
+  );
 
   const createVmInput = {
     cluster,
@@ -1220,10 +1235,13 @@ async function recreateRouterVmFromPolicy(
   };
 
   const platformPub = await getPlatformConsolePublicKey();
+  const knownMultusMacs = [
+    ...doc.interfaces.map((i) => i.mac),
+    ...(doc.external?.mac ? [doc.external.mac] : []),
+  ];
   const userData = buildRouterUserData({
     sshPublicKey: [sshPublicKey, ...(platformPub ? [platformPub] : [])],
-    privateMacs: doc.interfaces.map((i) => i.mac),
-    publicMac: doc.external?.mac,
+    knownMultusMacs,
     podCIDRs: controlPlane.podCIDRs,
     serviceCIDRs: controlPlane.serviceCIDRs,
     dnsIP: controlPlane.network.dnsIP,
@@ -1239,10 +1257,20 @@ async function recreateRouterVmFromPolicy(
     [KMC_LABEL_ROLE]: KMC_ROLE_ROUTER,
     [KMC_LABEL_ROUTER]: routerName,
   };
+  const clusterCidrs = [...controlPlane.podCIDRs, ...controlPlane.serviceCIDRs].filter(
+    Boolean,
+  );
+  const externalAlloc =
+    doc.external?.primaryCidr && doc.external.mac
+      ? (bound[doc.interfaces.length] ?? null)
+      : null;
   const body = buildVirtualMachineManifest(createVmInput, bound, {
     labels: roleLabels,
     userDataSecretName: secretName,
     includePodNetwork: true,
+    clusterCidrs,
+    routerAgentOwnsPrivateL3: true,
+    routerExternalAllocation: externalAlloc,
   });
 
   await ensureRootDataVolumeFromImage({
@@ -1352,6 +1380,779 @@ async function recreateRouterVmFromPolicy(
       }
     }
   }
+}
+
+type KubeVmNetworks = {
+  metadata?: {
+    name?: string;
+    namespace?: string;
+    resourceVersion?: string;
+    annotations?: Record<string, string>;
+    labels?: Record<string, string>;
+  };
+  spec?: {
+    template?: {
+      spec?: {
+        domain?: {
+          devices?: {
+            interfaces?: Array<Record<string, unknown>>;
+          };
+        };
+        networks?: Array<{
+          name?: string;
+          pod?: object;
+          multus?: { networkName?: string };
+        }>;
+      };
+    };
+  };
+  [k: string]: unknown;
+};
+
+/** Next free Multus interface name on a dual-home router (pod is reserved). */
+function nextRouterMultusInterfaceName(usedNames: Set<string>): string {
+  // Prefer net0, net1, … so hotplug never renames create-time `default`.
+  for (let i = 0; i < 16; i++) {
+    const candidate = `net${i}`;
+    if (!usedNames.has(candidate) && candidate !== POD_NETWORK_NAME) {
+      return candidate;
+    }
+  }
+  if (!usedNames.has("default")) {
+    return "default";
+  }
+  throw new Error("No free Multus interface name on router VM");
+}
+
+async function readRouterVm(
+  cluster: ClusterId,
+  namespace: string,
+  routerName: string,
+): Promise<KubeVmNetworks> {
+  const { custom } = getClusterClients(cluster);
+  try {
+    return (await custom.getNamespacedCustomObject({
+      group: "kubevirt.io",
+      version: "v1",
+      namespace,
+      plural: "virtualmachines",
+      name: routerName,
+    })) as KubeVmNetworks;
+  } catch (err) {
+    if (isNotFound(err)) {
+      throw new Error(
+        `Router VM ${namespace}/${routerName} is missing — recreate the appliance before attaching VPCs`,
+      );
+    }
+    throw new Error(formatError(err), { cause: err });
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+type KubeVmStatus = {
+  status?: {
+    conditions?: Array<{
+      type?: string;
+      status?: string;
+      reason?: string;
+      message?: string;
+    }>;
+  };
+};
+
+type KubeVmiStatus = {
+  status?: {
+    interfaces?: Array<{
+      name?: string;
+      interfaceName?: string;
+      ipAddress?: string;
+    }>;
+  };
+  spec?: {
+    networks?: Array<{
+      name?: string;
+      multus?: { networkName?: string };
+    }>;
+  };
+};
+
+function multusNetworkMatches(
+  networkName: string | undefined,
+  namespace: string,
+  vpcName: string,
+): boolean {
+  const nn = networkName?.trim() ?? "";
+  return (
+    nn === vpcName ||
+    nn === `${namespace}/${vpcName}` ||
+    nn.endsWith(`/${vpcName}`)
+  );
+}
+
+/**
+ * True when the VMI already has a live guest interface for this Multus VPC.
+ */
+async function routerVmiHasLiveMultus(
+  cluster: ClusterId,
+  namespace: string,
+  routerName: string,
+  vpcName: string,
+): Promise<boolean> {
+  const { custom } = getClusterClients(cluster);
+  try {
+    const vmi = (await custom.getNamespacedCustomObject({
+      group: "kubevirt.io",
+      version: "v1",
+      namespace,
+      plural: "virtualmachineinstances",
+      name: routerName,
+    })) as KubeVmiStatus;
+    const nets = vmi.spec?.networks ?? [];
+    const liveNames = new Set(
+      (vmi.status?.interfaces ?? [])
+        .map((i) => i.name)
+        .filter((n): n is string => Boolean(n)),
+    );
+    // Prefer matching by Multus networkName → interface name on status
+    for (const n of nets) {
+      if (!multusNetworkMatches(n.multus?.networkName, namespace, vpcName)) {
+        continue;
+      }
+      if (n.name && liveNames.has(n.name)) return true;
+    }
+    // Fallback: any status iface named like the VPC
+    return liveNames.has(vpcName);
+  } catch {
+    return false;
+  }
+}
+
+async function vmHasRestartRequired(
+  cluster: ClusterId,
+  namespace: string,
+  routerName: string,
+): Promise<boolean> {
+  const { custom } = getClusterClients(cluster);
+  try {
+    const vm = (await custom.getNamespacedCustomObject({
+      group: "kubevirt.io",
+      version: "v1",
+      namespace,
+      plural: "virtualmachines",
+      name: routerName,
+    })) as KubeVmStatus;
+    return (vm.status?.conditions ?? []).some(
+      (c) => c.type === "RestartRequired" && c.status === "True",
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * After Multus attach/detach, wait briefly for the live NIC state. If KubeVirt
+ * only staged the change (RestartRequired — common when the root PVC is RWO and
+ * LiveUpdate migration cannot run), hard-restart the appliance so the NIC
+ * lands. Policy/disks/leases are preserved (not a recreate).
+ */
+async function ensureRouterMultusApplied(input: {
+  cluster: ClusterId;
+  namespace: string;
+  routerName: string;
+  /** VPC we expect to be present (attach) or absent (detach). */
+  vpcName: string;
+  expectPresent: boolean;
+}): Promise<{ restarted: boolean }> {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const live = await routerVmiHasLiveMultus(
+      input.cluster,
+      input.namespace,
+      input.routerName,
+      input.vpcName,
+    );
+    const applied = input.expectPresent ? live : !live;
+    const restartRequired = await vmHasRestartRequired(
+      input.cluster,
+      input.namespace,
+      input.routerName,
+    );
+    // Fully applied and no pending restart — done (true live hotplug).
+    if (applied && !restartRequired) {
+      return { restarted: false };
+    }
+    await sleep(1500);
+  }
+
+  const live = await routerVmiHasLiveMultus(
+    input.cluster,
+    input.namespace,
+    input.routerName,
+    input.vpcName,
+  );
+  const applied = input.expectPresent ? live : !live;
+  const restartRequired = await vmHasRestartRequired(
+    input.cluster,
+    input.namespace,
+    input.routerName,
+  );
+  if (applied && !restartRequired) {
+    return { restarted: false };
+  }
+
+  await restartVm(input.cluster, input.namespace, input.routerName);
+  return { restarted: true };
+}
+
+/**
+ * Hotplug a Multus NIC onto the running router VM (no recreate).
+ * Requires cluster Multus dynamic networks / KubeVirt NIC hotplug support.
+ */
+async function hotplugRouterMultusNic(input: {
+  cluster: ClusterId;
+  namespace: string;
+  routerName: string;
+  vpcName: string;
+  macAddress: string;
+}): Promise<void> {
+  const { custom } = getClusterClients(input.cluster);
+  const vm = await readRouterVm(input.cluster, input.namespace, input.routerName);
+  const templateSpec = vm.spec?.template?.spec;
+  if (!templateSpec) {
+    throw new Error("Router VM has no template spec");
+  }
+  const networks = [...(templateSpec.networks ?? [])];
+  const interfaces = [
+    ...((templateSpec.domain?.devices?.interfaces as Array<Record<string, unknown>>) ??
+      []),
+  ];
+
+  const already = networks.some(
+    (n) =>
+      n.multus?.networkName === input.vpcName ||
+      n.multus?.networkName === `${input.namespace}/${input.vpcName}`,
+  );
+  if (already) {
+    return;
+  }
+
+  const usedNames = new Set([
+    ...networks.map((n) => n.name).filter(Boolean),
+    ...interfaces.map((i) => String(i.name ?? "")).filter(Boolean),
+  ] as string[]);
+  const ifaceName = nextRouterMultusInterfaceName(usedNames);
+  const mac = input.macAddress.trim().toLowerCase();
+
+  networks.push({
+    name: ifaceName,
+    multus: { networkName: input.vpcName },
+  });
+  interfaces.push({
+    name: ifaceName,
+    bridge: {},
+    macAddress: mac,
+  });
+
+  const nextVm: KubeVmNetworks = {
+    ...vm,
+    spec: {
+      ...vm.spec,
+      template: {
+        ...vm.spec?.template,
+        spec: {
+          ...templateSpec,
+          networks,
+          domain: {
+            ...templateSpec.domain,
+            devices: {
+              ...templateSpec.domain?.devices,
+              interfaces,
+            },
+          },
+        },
+      },
+    },
+  };
+
+  await custom.replaceNamespacedCustomObject({
+    group: "kubevirt.io",
+    version: "v1",
+    namespace: input.namespace,
+    plural: "virtualmachines",
+    name: input.routerName,
+    body: nextVm,
+  });
+}
+
+/**
+ * Hot-unplug a Multus NIC from the router VM by marking the interface absent.
+ */
+async function hotunplugRouterMultusNic(input: {
+  cluster: ClusterId;
+  namespace: string;
+  routerName: string;
+  vpcName: string;
+}): Promise<void> {
+  const { custom } = getClusterClients(input.cluster);
+  let vm: KubeVmNetworks;
+  try {
+    vm = await readRouterVm(input.cluster, input.namespace, input.routerName);
+  } catch {
+    // VM already gone — policy detach is enough
+    return;
+  }
+  const templateSpec = vm.spec?.template?.spec;
+  if (!templateSpec) return;
+
+  const networks = [...(templateSpec.networks ?? [])];
+  const interfaces = [
+    ...((templateSpec.domain?.devices?.interfaces as Array<Record<string, unknown>>) ??
+      []),
+  ];
+
+  const matchNet = (n: { multus?: { networkName?: string } }) => {
+    const nn = n.multus?.networkName?.trim() ?? "";
+    return (
+      nn === input.vpcName ||
+      nn === `${input.namespace}/${input.vpcName}` ||
+      nn.endsWith(`/${input.vpcName}`)
+    );
+  };
+
+  const targetNetworks = networks.filter(matchNet);
+  if (targetNetworks.length === 0) return;
+
+  const targetNames = new Set(
+    targetNetworks.map((n) => n.name).filter(Boolean) as string[],
+  );
+
+  const nextInterfaces = interfaces.map((iface) => {
+    const name = String(iface.name ?? "");
+    if (!targetNames.has(name)) return iface;
+    return { ...iface, state: "absent" };
+  });
+
+  const nextVm: KubeVmNetworks = {
+    ...vm,
+    spec: {
+      ...vm.spec,
+      template: {
+        ...vm.spec?.template,
+        spec: {
+          ...templateSpec,
+          // Keep networks listed while state:absent is processed by KubeVirt
+          networks,
+          domain: {
+            ...templateSpec.domain,
+            devices: {
+              ...templateSpec.domain?.devices,
+              interfaces: nextInterfaces,
+            },
+          },
+        },
+      },
+    },
+  };
+
+  await custom.replaceNamespacedCustomObject({
+    group: "kubevirt.io",
+    version: "v1",
+    namespace: input.namespace,
+    plural: "virtualmachines",
+    name: input.routerName,
+    body: nextVm,
+  });
+}
+
+/**
+ * Attach a free VPC to an existing router via policy update + Multus hotplug.
+ * Does **not** recreate the appliance or require an SSH key. Agent assigns L3.
+ * When the cluster cannot live-apply Multus (RWO disk / no LiveUpdate migration),
+ * restarts the router VM so the NIC lands.
+ */
+export async function attachRouterVpc(
+  input: AttachRouterVpcRequest,
+): Promise<{ restarted: boolean }> {
+  const routerName = input.routerName.trim();
+  const vpcName = input.vpcName.trim();
+  if (!routerName) throw new Error("routerName is required");
+  if (!vpcName) throw new Error("vpcName is required");
+
+  const policy = await getRouterPolicyConfigMap(
+    input.cluster,
+    input.namespace,
+    routerName,
+  );
+  if (!policy?.doc) {
+    throw new Error(`Router ${input.namespace}/${routerName} not found`);
+  }
+  const doc = policy.doc;
+
+  // Ensure appliance exists (hotplug needs a live VM template)
+  await readRouterVm(input.cluster, input.namespace, routerName);
+
+  if (doc.interfaces.some((i) => i.vpc === vpcName)) {
+    throw new Error(`VPC ${vpcName} is already attached to this router`);
+  }
+
+  const vpc = await loadVpcAttachInfo(input.cluster, input.namespace, vpcName);
+  if (vpc.routerAnn && vpc.routerAnn !== routerName) {
+    throw new Error(`VPC ${vpcName} is already attached to router ${vpc.routerAnn}`);
+  }
+
+  // Distinct CIDR strings (same as create)
+  const existingCidrs = new Set(doc.interfaces.map((i) => i.cidr.trim()));
+  if (existingCidrs.has(vpc.cidr.trim())) {
+    throw new Error(
+      `VPC ${vpcName} CIDR ${vpc.cidr} is already used by another interface on this router`,
+    );
+  }
+
+  const externalExtra = doc.external?.multusNetwork ? 1 : 0;
+  if (doc.interfaces.length + 1 + externalExtra > KMC_MAX_MULTUS_ATTACHMENTS) {
+    throw new Error(
+      `At most ${KMC_MAX_MULTUS_ATTACHMENTS} Multus NICs (VPCs + optional external) are supported`,
+    );
+  }
+
+  const privateGateway = vpc.gateway?.trim() || defaultGatewayAddress(vpc.cidr);
+  validateGatewayInCidr(vpc.cidr, privateGateway);
+
+  const extraUsed = doc.interfaces.map((i) => i.gateway.split("/")[0]!).filter(Boolean);
+  const alloc = await allocateIpv4ForMultus(input.cluster, vpcName, input.namespace, {
+    preferredAddress: privateGateway,
+    claimGateway: true,
+    gatewayOverride: null,
+    extraUsed,
+  });
+  if (!alloc) {
+    throw new Error(`Could not allocate gateway IP on VPC ${input.namespace}/${vpcName}`);
+  }
+
+  const mac = generateLocalMacAddress().toLowerCase();
+
+  try {
+    await mutateRouterPolicyDoc(
+      input.cluster,
+      input.namespace,
+      routerName,
+      (d) => {
+        if (d.interfaces.some((i) => i.vpc === vpcName)) {
+          return false;
+        }
+        d.interfaces.push({
+          vpc: vpcName,
+          cidr: vpc.cidr.trim(),
+          gateway: privateGateway,
+          mac,
+          domain: defaultRouterDomain(vpcName),
+          dhcp: {
+            enabled: true,
+            leaseTime: "12h",
+            authoritative: true,
+          },
+        });
+      },
+      { bumpGeneration: true },
+    );
+
+    await hotplugRouterMultusNic({
+      cluster: input.cluster,
+      namespace: input.namespace,
+      routerName,
+      vpcName,
+      macAddress: mac,
+    });
+
+    await patchVpcRouterMetadata(input.cluster, input.namespace, vpcName, {
+      gateway: privateGateway,
+      routerName,
+      dns: [privateGateway],
+      cidr: vpc.cidr.trim(),
+    });
+
+    // Create stamps IPAM via the VM template only; re-sync so post-create
+    // VPC gateways appear in "IPv4 (allocated)" and free-IP scans.
+    const afterAttach = await getRouterPolicyConfigMap(
+      input.cluster,
+      input.namespace,
+      routerName,
+    );
+    if (afterAttach?.doc) {
+      await syncRouterVmIpamAnnotationsFromPolicy(
+        input.cluster,
+        input.namespace,
+        routerName,
+        afterAttach.doc,
+      );
+    }
+
+    const applied = await ensureRouterMultusApplied({
+      cluster: input.cluster,
+      namespace: input.namespace,
+      routerName,
+      vpcName,
+      expectPresent: true,
+    });
+    return applied;
+  } catch (err) {
+    // Best-effort rollback: drop interface from policy if hotplug/metadata failed
+    try {
+      await mutateRouterPolicyDoc(
+        input.cluster,
+        input.namespace,
+        routerName,
+        (d) => {
+          const before = d.interfaces.length;
+          d.interfaces = d.interfaces.filter(
+            (i) => !(i.vpc === vpcName && i.mac === mac),
+          );
+          if (d.interfaces.length === before) return false;
+        },
+        { bumpGeneration: true },
+      );
+    } catch {
+      /* ignore */
+    }
+    try {
+      await clearVpcRouterAnnotation(input.cluster, input.namespace, vpcName);
+    } catch {
+      /* ignore */
+    }
+    try {
+      const rolled = await getRouterPolicyConfigMap(
+        input.cluster,
+        input.namespace,
+        routerName,
+      );
+      if (rolled?.doc) {
+        await syncRouterVmIpamAnnotationsFromPolicy(
+          input.cluster,
+          input.namespace,
+          routerName,
+          rolled.doc,
+        );
+      }
+    } catch {
+      /* ignore */
+    }
+    throw new Error(formatError(err), { cause: err });
+  }
+}
+
+/**
+ * Detach a VPC from a multi-VPC router (policy + Multus hot-unplug, no recreate).
+ * Restarts the appliance when KubeVirt cannot live-unplug (same RWO case as attach).
+ */
+export async function detachRouterVpc(
+  input: DetachRouterVpcRequest,
+): Promise<{ restarted: boolean }> {
+  const routerName = input.routerName.trim();
+  const vpcName = input.vpcName.trim();
+  if (!routerName) throw new Error("routerName is required");
+  if (!vpcName) throw new Error("vpcName is required");
+
+  const policy = await getRouterPolicyConfigMap(
+    input.cluster,
+    input.namespace,
+    routerName,
+  );
+  if (!policy?.doc) {
+    throw new Error(`Router ${input.namespace}/${routerName} not found`);
+  }
+  const doc = policy.doc;
+  if (!doc.interfaces.some((i) => i.vpc === vpcName)) {
+    throw new Error(`VPC ${vpcName} is not attached to this router`);
+  }
+  if (doc.interfaces.length <= 1) {
+    throw new Error("Cannot detach the last VPC interface — delete the router instead");
+  }
+
+  const workloadLeases = (doc.leases ?? []).filter(
+    (L) => L.vpc === vpcName && L.vm && L.vm !== routerName,
+  );
+  // Prefer explicit vpc tag; also count FIPs whose private is in this VPC CIDR
+  const fipsForVpc = (doc.floatingIPs ?? []).filter((f) => {
+    if (!f.private?.trim()) return false;
+    if (f.vpc === vpcName) return true;
+    if (f.vpc && f.vpc !== vpcName) return false;
+    const iface = doc.interfaces.find((i) => i.vpc === vpcName);
+    if (!iface) return false;
+    try {
+      return containsIpv4(parseCidr(iface.cidr), f.private.split("/")[0]!);
+    } catch {
+      return false;
+    }
+  });
+
+  if (workloadLeases.length > 0 && !input.force) {
+    throw new Error(
+      `VPC ${vpcName} still has ${workloadLeases.length} DHCP lease(s) for workload VMs. Delete those VMs first or force-detach.`,
+    );
+  }
+  if (fipsForVpc.length > 0 && !input.force) {
+    throw new Error(
+      `VPC ${vpcName} still has ${fipsForVpc.length} active floating IP(s). Disassociate them first or force-detach (holds public addresses).`,
+    );
+  }
+
+  let heldFloats = false;
+  await mutateRouterPolicyDoc(
+    input.cluster,
+    input.namespace,
+    routerName,
+    (d) => {
+      d.interfaces = d.interfaces.filter((i) => i.vpc !== vpcName);
+      d.leases = (d.leases ?? []).filter((L) => L.vpc !== vpcName);
+      d.floatingIPs = (d.floatingIPs ?? []).map((f) => {
+        const matches =
+          f.vpc === vpcName ||
+          (Boolean(f.private?.trim()) &&
+            !f.vpc &&
+            (() => {
+              // private in detached CIDR — use pre-detach iface from outer doc
+              const iface = doc.interfaces.find((i) => i.vpc === vpcName);
+              if (!iface || !f.private) return false;
+              try {
+                return containsIpv4(parseCidr(iface.cidr), f.private.split("/")[0]!);
+              } catch {
+                return false;
+              }
+            })());
+        if (!matches || !f.private?.trim()) return f;
+        heldFloats = true;
+        return {
+          id: f.id,
+          public: f.public,
+          prefix: f.prefix,
+          protocol: f.protocol ?? "all",
+          vpc: f.vpc ?? vpcName,
+        };
+      });
+    },
+    { bumpGeneration: true },
+  );
+
+  try {
+    await hotunplugRouterMultusNic({
+      cluster: input.cluster,
+      namespace: input.namespace,
+      routerName,
+      vpcName,
+    });
+  } catch (err) {
+    console.error("hotunplugRouterMultusNic:", formatError(err));
+    // Policy already updated — surface but do not leave annotation set
+  }
+
+  try {
+    await clearVpcRouterAnnotation(input.cluster, input.namespace, vpcName);
+  } catch (err) {
+    console.error(`clear VPC ${vpcName} router ann:`, formatError(err));
+  }
+
+  const next = await getRouterPolicyConfigMap(
+    input.cluster,
+    input.namespace,
+    routerName,
+  );
+  if (next?.doc) {
+    try {
+      await syncRouterVmIpamAnnotationsFromPolicy(
+        input.cluster,
+        input.namespace,
+        routerName,
+        next.doc,
+      );
+    } catch (err) {
+      console.error(
+        `sync IPAM annotations after detach VPC ${vpcName}:`,
+        formatError(err),
+      );
+    }
+    if (heldFloats) {
+      await syncRouterFloatingAnnotation(
+        input.cluster,
+        input.namespace,
+        routerName,
+        floatingIpsFromRouterDoc(next.doc),
+      );
+    }
+  }
+
+  return ensureRouterMultusApplied({
+    cluster: input.cluster,
+    namespace: input.namespace,
+    routerName,
+    vpcName,
+    expectPresent: false,
+  });
+}
+
+/**
+ * Routers in the same namespace that can attach this VPC (budget + no CIDR overlap).
+ * Used from VPC detail “Attach existing router”.
+ */
+export async function listRoutersForVpcAttach(
+  cluster: ClusterId,
+  namespace: string,
+  vpcName: string,
+): Promise<
+  Array<{
+    name: string;
+    vpcNames: string[];
+    hasExternal: boolean;
+    agentStatus?: string;
+    /** Multus NICs already on the router (VPCs + optional external). */
+    multusCount: number;
+  }>
+> {
+  const vpc = await loadVpcAttachInfo(cluster, namespace, vpcName);
+  if (vpc.routerAnn) {
+    return [];
+  }
+  if (!vpc.cidr?.trim()) {
+    return [];
+  }
+  const vpcCidr = vpc.cidr.trim();
+
+  const policies = await listRouterPolicyConfigMaps(cluster);
+  const out: Array<{
+    name: string;
+    vpcNames: string[];
+    hasExternal: boolean;
+    agentStatus?: string;
+    multusCount: number;
+  }> = [];
+
+  for (const p of policies) {
+    if (p.namespace !== namespace || !p.doc) continue;
+    const doc = p.doc;
+    if (doc.interfaces.some((i) => i.vpc === vpcName)) continue;
+
+    const hasExternal = Boolean(doc.external?.multusNetwork?.trim());
+    const multusCount = doc.interfaces.length + (hasExternal ? 1 : 0);
+    if (multusCount + 1 > KMC_MAX_MULTUS_ATTACHMENTS) continue;
+
+    const existingCidrs = new Set(
+      doc.interfaces.map((i) => i.cidr.trim()).filter(Boolean),
+    );
+    if (existingCidrs.has(vpcCidr)) continue;
+
+    const agent = agentInfoFromRouterAnnotations(p.annotations);
+    out.push({
+      name: p.routerName,
+      vpcNames: doc.interfaces.map((i) => i.vpc).filter(Boolean),
+      hasExternal,
+      agentStatus: agent.agentStatus,
+      multusCount,
+    });
+  }
+
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
 }
 
 /** VPCs in a namespace that can accept a new router interface. */

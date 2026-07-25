@@ -1,43 +1,28 @@
-import {
-  Alert,
-  Badge,
-  Button,
-  Group,
-  Stack,
-  Title,
-} from "@mantine/core";
-import {
-  IconArrowLeft,
-  IconTrash,
-} from "@tabler/icons-react";
+import { Alert, Badge, Button, Group, Stack, Title } from "@mantine/core";
+import { IconArrowLeft, IconTrash } from "@tabler/icons-react";
 import { useState } from "react";
 import { Link, Outlet, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/routers.$cluster.$namespace.$name";
-import {
-  ConfirmDeleteModal,
-  DetailTabs,
-  ResourceIdentity,
-  StatusBadge,
-} from "~/ui";
+import { ConfirmDeleteModal, DetailTabs, ResourceIdentity, StatusBadge } from "~/ui";
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { getRequestSession } from "~/lib/auth/middleware.server";
 import { actionFailure } from "~/lib/errors";
-import {
-  detailTabPath,
-  routerPath,
-  routersListPath,
-} from "~/lib/format";
+import { detailTabPath, routerPath, routersListPath } from "~/lib/format";
 import { getClusterCatalog } from "~/lib/k8s/catalog.server";
 import { useRefresh } from "~/lib/refresh";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 import { listSshKeysOrEmpty } from "~/ssh-keys/ssh-keys.server";
 import {
+  attachRouterVpc,
   deleteRouter,
+  detachRouterVpc,
   getRouter,
+  listRouterAttachableVpcs,
   recreateRouterVm,
   setRouterExternalGateway,
 } from "~/vpcs/routers.server";
 import { listPublicEgressNetworks } from "~/vpcs/vpcs.server";
+import { restartVm } from "~/vms/vms.server";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `${params.name ?? "Router"} · kmc` }];
@@ -63,9 +48,17 @@ export async function loader({ params }: Route.LoaderArgs) {
     }
   }
 
+  let attachableVpcs: Awaited<ReturnType<typeof listRouterAttachableVpcs>> = [];
+  try {
+    attachableVpcs = await listRouterAttachableVpcs(cluster, namespace);
+  } catch {
+    attachableVpcs = [];
+  }
+
   return {
     router,
     publicNetworks,
+    attachableVpcs,
     catalog,
     catalogError,
     sshKeys: sshKeys.map((k) => ({
@@ -95,9 +88,7 @@ export async function action({ request, params }: Route.ActionArgs) {
   }
   if (intent === "set-external") {
     try {
-      const publicMultusNetwork = String(
-        form.get("publicMultusNetwork") ?? "",
-      ).trim();
+      const publicMultusNetwork = String(form.get("publicMultusNetwork") ?? "").trim();
       const sshPublicKey = await resolveSshPublicKey(form);
       await setRouterExternalGateway({
         cluster,
@@ -120,11 +111,9 @@ export async function action({ request, params }: Route.ActionArgs) {
       const sshPublicKey = await resolveSshPublicKey(form);
       const imageValue = String(form.get("image") ?? "").trim();
       const diskSize = String(form.get("diskSize") ?? "").trim() || "10Gi";
-      const storageClass =
-        String(form.get("storageClass") ?? "").trim() || undefined;
+      const storageClass = String(form.get("storageClass") ?? "").trim() || undefined;
       const sizeMode = String(form.get("sizeMode") ?? "manual").trim();
-      const instanceType =
-        String(form.get("instanceType") ?? "").trim() || undefined;
+      const instanceType = String(form.get("instanceType") ?? "").trim() || undefined;
       const cpuCoresRaw = String(form.get("cpuCores") ?? "").trim();
       const memory = String(form.get("memory") ?? "").trim() || undefined;
 
@@ -170,6 +159,73 @@ export async function action({ request, params }: Route.ActionArgs) {
       });
     }
   }
+  if (intent === "restart-vm") {
+    try {
+      await restartVm(cluster, namespace, name);
+      return { ok: true, intent: "restart-vm" };
+    } catch (err) {
+      return actionFailure("router.restartVm", err, {
+        cluster,
+        namespace,
+        name,
+        intent: "restart-vm",
+      });
+    }
+  }
+  if (intent === "attach-vpc") {
+    try {
+      const vpcName = String(form.get("vpcName") ?? "").trim();
+      if (!vpcName) {
+        return { ok: false, error: "Select a VPC to attach", intent };
+      }
+      const result = await attachRouterVpc({
+        cluster,
+        namespace,
+        routerName: name,
+        vpcName,
+      });
+      return {
+        ok: true,
+        intent: "attach-vpc",
+        restarted: result.restarted,
+      };
+    } catch (err) {
+      return actionFailure("router.attachVpc", err, {
+        cluster,
+        namespace,
+        name,
+        intent: "attach-vpc",
+      });
+    }
+  }
+  if (intent === "detach-vpc") {
+    try {
+      const vpcName = String(form.get("vpcName") ?? "").trim();
+      if (!vpcName) {
+        return { ok: false, error: "Missing VPC name", intent };
+      }
+      const force = form.get("force") === "true";
+      const result = await detachRouterVpc({
+        cluster,
+        namespace,
+        routerName: name,
+        vpcName,
+        force,
+      });
+      return {
+        ok: true,
+        intent: "detach-vpc",
+        restarted: result.restarted,
+      };
+    } catch (err) {
+      return actionFailure("router.detachVpc", err, {
+        cluster,
+        namespace,
+        name,
+        intent: "detach-vpc",
+      });
+    }
+  }
   return { ok: false, error: `Unknown intent: ${intent}` };
 }
 
@@ -209,7 +265,9 @@ export default function RouterDetailLayout({ loaderData }: Route.ComponentProps)
         notifyActionSuccess("Done", "External gateway updated");
       } else if (data.intent === "recreate-vm") {
         notifyActionSuccess("Done", "Appliance VM recreate requested");
-      } else {
+      } else if (data.intent === "restart-vm") {
+        notifyActionSuccess("Done", "Appliance VM restart requested");
+      } else if (data.intent === "delete") {
         notifyActionSuccess("Done", "Router deleted");
       }
       refreshNow();
@@ -243,6 +301,11 @@ export default function RouterDetailLayout({ loaderData }: Route.ComponentProps)
                 VM missing
               </Badge>
             )}
+            {router.vmRestartRequired && (
+              <Badge variant="light" color="yellow">
+                Restart required
+              </Badge>
+            )}
           </Group>
           <ResourceIdentity
             items={[
@@ -274,8 +337,8 @@ export default function RouterDetailLayout({ loaderData }: Route.ComponentProps)
       {router.vmMissing && (
         <Alert color="orange" variant="light" title="Appliance VM missing">
           The router policy (leases, floating IPs, interfaces) is still here, but the
-          VirtualMachine was deleted. Recreate the appliance below — do not create a
-          new router with the same name (policy already exists).
+          VirtualMachine was deleted. Recreate the appliance below — do not create a new
+          router with the same name (policy already exists).
         </Alert>
       )}
 

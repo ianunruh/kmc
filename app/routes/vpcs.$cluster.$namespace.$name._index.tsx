@@ -4,11 +4,13 @@ import {
   Button,
   Code,
   Group,
+  Select,
   SimpleGrid,
   Stack,
   Text,
 } from "@mantine/core";
 import {
+  IconLink,
   IconPlus,
   IconRouter,
   IconWorldWww,
@@ -44,17 +46,23 @@ import type { FloatingIpAssociation } from "~/lib/types";
 const LAYOUT_ID = "routes/vpcs.$cluster.$namespace.$name";
 
 export default function VpcOverviewTab() {
-  const { vpc } = useRouteLoaderData(LAYOUT_ID) as Awaited<ReturnType<typeof detailLoader>>;
+  const { vpc, attachableRouters } = useRouteLoaderData(LAYOUT_ID) as Awaited<
+    ReturnType<typeof detailLoader>
+  >;
   const fetcher = useFetcher<{
     ok?: boolean;
     error?: string;
     intent?: string;
+    restarted?: boolean;
   }>();
   const { refreshNow } = useRefresh();
   const [disassociateTarget, setDisassociateTarget] =
     useState<FloatingIpAssociation | null>(null);
   const [releaseTarget, setReleaseTarget] = useState<FloatingIpAssociation | null>(
     null,
+  );
+  const [attachRouterName, setAttachRouterName] = useState(
+    attachableRouters[0]?.name ?? "",
   );
   const busy = fetcher.state !== "idle";
   useFetcherResult(fetcher, (data) => {
@@ -64,7 +72,9 @@ export default function VpcOverviewTab() {
           ? "Disassociate failed"
           : data.intent === "release"
             ? "Release failed"
-            : "Delete failed";
+            : data.intent === "attach-router"
+              ? "Attach router failed"
+              : "Delete failed";
       notifyActionError(title, data.error);
     } else if (data.ok) {
       if (data.intent === "disassociate") {
@@ -78,6 +88,15 @@ export default function VpcOverviewTab() {
           "Done",
           "Floating IP released — public address returned to the pool",
         );
+        refreshNow();
+      } else if (data.intent === "attach-router") {
+        notifyActionSuccess(
+          "Done",
+          data.restarted
+            ? "Router attached — appliance restarted so the Multus NIC could land"
+            : "Router attached",
+        );
+        setAttachRouterName("");
         refreshNow();
       } else {
         notifyActionSuccess("Done", "VPC deleted");
@@ -213,8 +232,8 @@ export default function VpcOverviewTab() {
         ) : vpc.cidr ? (
           <Stack gap="sm">
             <Text size="sm" c="dimmed">
-              No shared router. Create one to provide DHCP/DNS and optional external SNAT
-              / floating IPs.
+              No shared router. Attach an existing router in this namespace or create a
+              new one for DHCP/DNS and optional external SNAT / floating IPs.
             </Text>
             <Group>
               <Button
@@ -227,6 +246,47 @@ export default function VpcOverviewTab() {
                 Create router
               </Button>
             </Group>
+            {attachableRouters.length > 0 && (
+              <Group align="flex-end" gap="sm" wrap="wrap">
+                <Select
+                  label="Existing router"
+                  placeholder="Select router"
+                  data={attachableRouters.map((r) => ({
+                    value: r.name,
+                    label: `${r.name}${
+                      r.vpcNames.length
+                        ? ` · ${r.vpcNames.join(", ")}`
+                        : ""
+                    }${r.hasExternal ? " · external" : ""}`,
+                  }))}
+                  value={attachRouterName || null}
+                  onChange={(v) => setAttachRouterName(v ?? "")}
+                  searchable
+                  clearable
+                  disabled={busy}
+                  style={{ minWidth: 240, flex: 1 }}
+                />
+                <Button
+                  size="sm"
+                  leftSection={<IconLink size={16} />}
+                  loading={
+                    busy && fetcher.formData?.get("intent") === "attach-router"
+                  }
+                  disabled={busy || !attachRouterName}
+                  onClick={() => {
+                    const fd = new FormData();
+                    fd.set("intent", "attach-router");
+                    fd.set("routerName", attachRouterName);
+                    fetcher.submit(fd, {
+                      method: "post",
+                      action: vpcPath(vpc),
+                    });
+                  }}
+                >
+                  Attach router
+                </Button>
+              </Group>
+            )}
           </Stack>
         ) : (
           <Text size="sm" c="dimmed">

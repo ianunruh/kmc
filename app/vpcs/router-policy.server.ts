@@ -40,16 +40,14 @@ import {
 } from "~/lib/k8s/cluster-config.server";
 import { getClusterClients } from "~/lib/k8s/clients.server";
 import { formatAge } from "~/lib/format";
-import {
-  addressFromIpv4Annotation,
-  containsIpv4,
-  parseCidr,
-} from "~/lib/ipam/cidr";
-import { IPAM_ANNOTATION_IPV4 } from "~/lib/ipam/constants";
+import { addressFromIpv4Annotation, containsIpv4, parseCidr } from "~/lib/ipam/cidr";
+import { IPAM_ANNOTATION_IPV4, IPAM_ANNOTATION_POOL } from "~/lib/ipam/constants";
 import {
   allocateIpv4ForMultus,
   findIpPoolForMultus,
+  ipamAnnotations,
   parseIpv4AnnotationList,
+  type AllocatedIp,
 } from "~/lib/ipam/pools.server";
 import { getRouterAgentScript } from "~/vpcs/router-agent-script";
 
@@ -186,7 +184,8 @@ const POLICY_MUTATE_MAX_ATTEMPTS = 12;
  * `mutate` may return `false` to skip the write (no-op). Throws if the policy
  * CM is missing.
  */
-async function mutateRouterPolicyDoc(
+/** Optimistic-concurrency policy update (leases, FIPs, attach/detach interfaces). */
+export async function mutateRouterPolicyDoc(
   cluster: ClusterId,
   namespace: string,
   routerName: string,
@@ -206,20 +205,14 @@ async function mutateRouterPolicyDoc(
         existing = await core.readNamespacedConfigMap({ name, namespace });
       } catch (err) {
         if (isNotFound(err)) {
-          throw new Error(
-            `Router policy not found for ${namespace}/${routerName}`,
-          );
+          throw new Error(`Router policy not found for ${namespace}/${routerName}`);
         }
         throw err;
       }
 
-      const doc = parseRouterPolicyDoc(
-        existing.data?.[KMC_ROUTER_POLICY_DATA_KEY],
-      );
+      const doc = parseRouterPolicyDoc(existing.data?.[KMC_ROUTER_POLICY_DATA_KEY]);
       if (!doc) {
-        throw new Error(
-          `Router policy not found for ${namespace}/${routerName}`,
-        );
+        throw new Error(`Router policy not found for ${namespace}/${routerName}`);
       }
 
       const result = mutate(doc);
@@ -667,9 +660,7 @@ export async function ensureRouterControlPlane(input: {
 
   // Upsert policy CM: read first so we never replace a missing object after a
   // misclassified create error (client-node status codes are inconsistent).
-  let existingCm: Awaited<
-    ReturnType<typeof core.readNamespacedConfigMap>
-  > | null = null;
+  let existingCm: Awaited<ReturnType<typeof core.readNamespacedConfigMap>> | null = null;
   try {
     existingCm = await core.readNamespacedConfigMap({ name: cmName, namespace: ns });
   } catch (err) {
@@ -883,9 +874,7 @@ export async function upsertRouterLease(
       (L) =>
         !(
           L.vpc === vpc &&
-          (L.mac.toLowerCase() === mac ||
-            L.ip === ip ||
-            (lease.vm && L.vm === lease.vm))
+          (L.mac.toLowerCase() === mac || L.ip === ip || (lease.vm && L.vm === lease.vm))
         ),
     );
     filtered.push({
@@ -943,44 +932,39 @@ export async function removeRouterLeasesForVm(
     if (!hasLease && !hasFloat) continue;
     try {
       let disassociatedFloats = false;
-      const next = await mutateRouterPolicyDoc(
-        cluster,
-        namespace,
-        routerName,
-        (doc) => {
-          const vmLeaseIps = new Set(
-            doc.leases
-              .filter((L) => L.vm === vmName)
-              .map((L) => addressFromIpv4Annotation(L.ip) ?? L.ip.trim())
-              .filter(Boolean),
-          );
-          const leaseBefore = doc.leases.length;
-          doc.leases = doc.leases.filter((L) => L.vm !== vmName);
-          const leaseChanged = doc.leases.length !== leaseBefore;
+      const next = await mutateRouterPolicyDoc(cluster, namespace, routerName, (doc) => {
+        const vmLeaseIps = new Set(
+          doc.leases
+            .filter((L) => L.vm === vmName)
+            .map((L) => addressFromIpv4Annotation(L.ip) ?? L.ip.trim())
+            .filter(Boolean),
+        );
+        const leaseBefore = doc.leases.length;
+        doc.leases = doc.leases.filter((L) => L.vm !== vmName);
+        const leaseChanged = doc.leases.length !== leaseBefore;
 
-          let fipChanged = false;
-          doc.floatingIPs = (doc.floatingIPs ?? []).map((f) => {
-            const privRaw = f.private?.trim();
-            if (!privRaw) return f;
-            const priv = addressFromIpv4Annotation(privRaw) ?? privRaw;
-            const matchesVm =
-              f.targetVm === vmName || (priv ? vmLeaseIps.has(priv) : false);
-            if (!matchesVm) return f;
-            fipChanged = true;
-            // Hold: keep public reservation; clear private mapping (like disassociate).
-            return {
-              id: f.id,
-              public: f.public,
-              prefix: f.prefix,
-              protocol: f.protocol ?? "all",
-              vpc: f.vpc,
-            };
-          });
+        let fipChanged = false;
+        doc.floatingIPs = (doc.floatingIPs ?? []).map((f) => {
+          const privRaw = f.private?.trim();
+          if (!privRaw) return f;
+          const priv = addressFromIpv4Annotation(privRaw) ?? privRaw;
+          const matchesVm =
+            f.targetVm === vmName || (priv ? vmLeaseIps.has(priv) : false);
+          if (!matchesVm) return f;
+          fipChanged = true;
+          // Hold: keep public reservation; clear private mapping (like disassociate).
+          return {
+            id: f.id,
+            public: f.public,
+            prefix: f.prefix,
+            protocol: f.protocol ?? "all",
+            vpc: f.vpc,
+          };
+        });
 
-          if (fipChanged) disassociatedFloats = true;
-          if (!leaseChanged && !fipChanged) return false;
-        },
-      );
+        if (fipChanged) disassociatedFloats = true;
+        if (!leaseChanged && !fipChanged) return false;
+      });
       // Secondary IPs on the router NIC stay (held floats); annotation lists all.
       if (disassociatedFloats) {
         await syncRouterFloatingAnnotation(
@@ -1021,13 +1005,9 @@ export async function deleteRouterControlPlane(
   };
 
   await ignore(() => core.deleteNamespacedConfigMap({ name: cmName, namespace }));
-  await ignore(() =>
-    rbac.deleteNamespacedRoleBinding({ name: roleName, namespace }),
-  );
+  await ignore(() => rbac.deleteNamespacedRoleBinding({ name: roleName, namespace }));
   await ignore(() => rbac.deleteNamespacedRole({ name: roleName, namespace }));
-  await ignore(() =>
-    core.deleteNamespacedServiceAccount({ name: saName, namespace }),
-  );
+  await ignore(() => core.deleteNamespacedServiceAccount({ name: saName, namespace }));
 }
 
 export async function listRouterPolicyConfigMaps(cluster: ClusterId): Promise<
@@ -1159,7 +1139,117 @@ async function resolvePrivateOnVpc(
   return { privateIpv4: match, targetVm: vmName };
 }
 
-async function syncRouterFloatingAnnotation(
+/**
+ * Rewrite the router VM's kmc.ianunruh.com/ipv4 (+ ipam-pool) from policy.
+ * Create stamps these via the VM template; attach/detach must re-sync or
+ * "IPv4 (allocated)" and free-IP scans miss post-create VPC gateways.
+ */
+/** @returns true when the VM was updated */
+export async function syncRouterVmIpamAnnotationsFromPolicy(
+  cluster: ClusterId,
+  namespace: string,
+  routerName: string,
+  doc: RouterPolicyDoc,
+): Promise<boolean> {
+  const allocations: AllocatedIp[] = [];
+  for (const iface of doc.interfaces) {
+    const gwAddr = iface.gateway.split("/")[0]!.trim();
+    if (!gwAddr) continue;
+    let prefix = 24;
+    try {
+      prefix = parseCidr(iface.cidr).prefix;
+    } catch {
+      /* keep default */
+    }
+    const pool = findIpPoolForMultus(cluster, iface.vpc);
+    allocations.push({
+      poolId: pool?.id ?? `vpc:${namespace}/${iface.vpc}`,
+      address: gwAddr,
+      prefix,
+      cidrHost: `${gwAddr}/${prefix}`,
+      dns: [],
+    });
+  }
+  if (doc.external?.primaryCidr?.trim()) {
+    const primary = doc.external.primaryCidr.trim();
+    const addr = primary.split("/")[0]!;
+    const prefix = Number(primary.split("/")[1]) || 24;
+    const externalPool = doc.external.multusNetwork
+      ? findIpPoolForMultus(cluster, doc.external.multusNetwork)
+      : undefined;
+    allocations.push({
+      poolId: externalPool?.id ?? "external",
+      address: addr,
+      prefix,
+      cidrHost: primary.includes("/") ? primary : `${addr}/${prefix}`,
+      dns: [],
+    });
+  }
+
+  const { custom } = getClusterClients(cluster);
+  const vm = (await custom.getNamespacedCustomObject({
+    group: "kubevirt.io",
+    version: "v1",
+    namespace,
+    plural: "virtualmachines",
+    name: routerName,
+  })) as {
+    metadata?: { annotations?: Record<string, string>; [k: string]: unknown };
+    [k: string]: unknown;
+  };
+
+  const annotations = { ...(vm.metadata?.annotations ?? {}) };
+  const next = ipamAnnotations(allocations);
+  if (Object.keys(next).length === 0) {
+    delete annotations[IPAM_ANNOTATION_IPV4];
+    delete annotations[IPAM_ANNOTATION_POOL];
+  } else {
+    Object.assign(annotations, next);
+  }
+
+  const prevIpv4 = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4] ?? "";
+  const prevPool = vm.metadata?.annotations?.[IPAM_ANNOTATION_POOL] ?? "";
+  const nextIpv4 = annotations[IPAM_ANNOTATION_IPV4] ?? "";
+  const nextPool = annotations[IPAM_ANNOTATION_POOL] ?? "";
+  if (prevIpv4 === nextIpv4 && prevPool === nextPool) return false;
+
+  await custom.replaceNamespacedCustomObject({
+    group: "kubevirt.io",
+    version: "v1",
+    namespace,
+    plural: "virtualmachines",
+    name: routerName,
+    body: {
+      ...vm,
+      metadata: {
+        ...(vm.metadata as object),
+        annotations,
+      },
+    },
+  });
+  return true;
+}
+
+/**
+ * Best-effort heal for routers whose IPAM annotations drifted after VPC attach.
+ * @returns true when the VM annotation was rewritten.
+ */
+export async function ensureRouterVmIpamAnnotations(
+  cluster: ClusterId,
+  namespace: string,
+  routerName: string,
+): Promise<boolean> {
+  const policy = await getRouterPolicyConfigMap(cluster, namespace, routerName);
+  if (!policy?.doc?.interfaces?.length) return false;
+  return syncRouterVmIpamAnnotationsFromPolicy(
+    cluster,
+    namespace,
+    routerName,
+    policy.doc,
+  );
+}
+
+export async function syncRouterFloatingAnnotation(
   cluster: ClusterId,
   namespace: string,
   routerVm: string,
@@ -1220,9 +1310,7 @@ export async function associateRouterFloatingIp(
     input.routerName,
   );
   if (!policy?.doc) {
-    throw new Error(
-      `No router policy for ${input.namespace}/${input.routerName}`,
-    );
+    throw new Error(`No router policy for ${input.namespace}/${input.routerName}`);
   }
   const doc = policy.doc;
   if (!doc.external?.multusNetwork?.trim()) {
@@ -1231,9 +1319,7 @@ export async function associateRouterFloatingIp(
     );
   }
   if (!doc.interfaces.some((i) => i.vpc === input.vpcName)) {
-    throw new Error(
-      `VPC ${input.vpcName} is not attached to router ${input.routerName}`,
-    );
+    throw new Error(`VPC ${input.vpcName} is not attached to router ${input.routerName}`);
   }
 
   const { privateIpv4, targetVm } = await resolvePrivateOnVpc(
@@ -1354,13 +1440,9 @@ export async function associateRouterFloatingIp(
       protocol: "all",
     },
   ];
-  await replaceRouterPolicyDoc(
-    input.cluster,
-    input.namespace,
-    input.routerName,
-    doc,
-    { bumpGeneration: true },
-  );
+  await replaceRouterPolicyDoc(input.cluster, input.namespace, input.routerName, doc, {
+    bumpGeneration: true,
+  });
   await syncRouterFloatingAnnotation(
     input.cluster,
     input.namespace,
@@ -1517,17 +1599,13 @@ export async function listFloatingIpsForVm(
 ): Promise<FloatingIpSummary[]> {
   const all = await listFloatingIpsFromRouterPolicies(cluster);
   const privSet = new Set(
-    privateAddresses
-      .map((a) => addressFromIpv4Annotation(a) ?? a.trim())
-      .filter(Boolean),
+    privateAddresses.map((a) => addressFromIpv4Annotation(a) ?? a.trim()).filter(Boolean),
   );
   return all.filter((f) => {
     if (f.namespace !== namespace) return false;
     if (f.state !== "associated") return false;
     if (f.targetVm && f.targetVm === vmName) return true;
-    const priv = f.private
-      ? (addressFromIpv4Annotation(f.private) ?? f.private)
-      : "";
+    const priv = f.private ? (addressFromIpv4Annotation(f.private) ?? f.private) : "";
     return priv ? privSet.has(priv) : false;
   });
 }

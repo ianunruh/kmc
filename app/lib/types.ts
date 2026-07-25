@@ -363,12 +363,7 @@ export interface NamespaceQuotaLimits {
   pvcs?: number;
 }
 
-export type NamespaceQuotaUnitKind =
-  | "cpu"
-  | "memory"
-  | "storage"
-  | "count"
-  | "other";
+export type NamespaceQuotaUnitKind = "cpu" | "memory" | "storage" | "count" | "other";
 
 /** One resource row from a ResourceQuota (hard + used). */
 export interface NamespaceQuotaResource {
@@ -905,6 +900,13 @@ export interface RouterDetail extends RouterSummary {
   vmReady?: boolean;
   /** True when the policy ConfigMap exists but the appliance VirtualMachine does not. */
   vmMissing?: boolean;
+  /**
+   * KubeVirt VirtualMachine condition RestartRequired=True (e.g. Multus NIC
+   * staged but not live — common with RWO disks / no LiveUpdate migration).
+   */
+  vmRestartRequired?: boolean;
+  /** Message from the RestartRequired condition when present. */
+  vmRestartRequiredMessage?: string;
 }
 
 /**
@@ -939,6 +941,24 @@ export interface SetRouterExternalGatewayRequest {
   routerName: string;
   publicMultusNetwork: string;
   sshPublicKey: string;
+}
+
+/** Attach a free VPC to an existing router via Multus hotplug (no VM recreate). */
+export interface AttachRouterVpcRequest {
+  cluster: ClusterId;
+  namespace: string;
+  routerName: string;
+  vpcName: string;
+}
+
+/** Detach a VPC from a multi-VPC router via Multus hot-unplug (no VM recreate). */
+export interface DetachRouterVpcRequest {
+  cluster: ClusterId;
+  namespace: string;
+  routerName: string;
+  vpcName: string;
+  /** Drop leases and hold FIPs for this VPC when guests still reference it. */
+  force?: boolean;
 }
 
 /** Associate a floating public IP to a private VPC address via a router external gateway. */

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""kmc-router-agent — reconcile DHCP/DNS (and later NAT) from a policy ConfigMap.
+"""kmc-router-agent — reconcile DHCP/DNS/NAT/L3 from a policy ConfigMap.
 
-Stdlib only. Watches the router policy ConfigMap, renders dnsmasq static
-leases per VPC interface, reports status/heartbeat, and self-updates when
-the ConfigMap data key ``agent.py`` changes.
+Stdlib only. Watches the router policy ConfigMap, owns private Multus L3
+(``ip addr`` by MAC), renders dnsmasq static leases per VPC interface,
+applies FORWARD/SNAT/floating IPs, reports status/heartbeat, and self-updates
+when the ConfigMap data key ``agent.py`` changes.
 
-Phase 1: DHCP + DNS on private Multus interfaces (no external / floating IPs).
+Private Multus gateway IPs are **not** configured by cloud-init netplan;
+this agent is the L3 owner so Multus hotplug can attach VPCs without recreate.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "8"
+AGENT_VERSION = "9"
 
 ENV_FILE = os.environ.get("KMC_ENV_FILE", "/etc/kmc/router-agent.env")
 STATE_DIR = Path(os.environ.get("KMC_STATE_DIR", "/var/lib/kmc"))
@@ -55,8 +57,15 @@ KMC_HEARTBEAT_SECONDS = 30
 KMC_WATCH_TIMEOUT_SECONDS = 300
 KMC_RESYNC_SECONDS = 300
 KMC_RECONNECT_SECONDS = 5
+# How long to wait for Multus hotplug before reporting Error (still retries).
+KMC_IFACE_PENDING_TIMEOUT_SECONDS = 120
+# Re-apply interval while waiting for hotplugged NICs.
+KMC_PENDING_RETRY_SECONDS = 5
 
 _shutdown = False
+# Last apply outcome: "Ready" | "Pending" | "Error"
+_last_apply_status = "Pending"
+_pending_since: float | None = None
 
 
 def log(msg: str) -> None:
@@ -82,6 +91,7 @@ def apply_config_from_env() -> None:
     global KMC_NAMESPACE, KMC_POLICY_CM, KUBECONFIG, KMC_APISERVER, KMC_CA_FILE
     global KMC_POLICY_KEY, KMC_AGENT_KEY, KMC_HEARTBEAT_SECONDS
     global KMC_WATCH_TIMEOUT_SECONDS, KMC_RESYNC_SECONDS, KMC_RECONNECT_SECONDS
+    global KMC_IFACE_PENDING_TIMEOUT_SECONDS, KMC_PENDING_RETRY_SECONDS
     global STATE_DIR, AGENT_PATH, DNSMASQ_D, DNSMASQ_MAIN, DNSMASQ_LEASEFILE
     global APPLIED_FILE, LAST_RV_FILE
 
@@ -96,6 +106,10 @@ def apply_config_from_env() -> None:
     KMC_WATCH_TIMEOUT_SECONDS = int(os.environ.get("KMC_WATCH_TIMEOUT_SECONDS", "300"))
     KMC_RESYNC_SECONDS = int(os.environ.get("KMC_RESYNC_SECONDS", "300"))
     KMC_RECONNECT_SECONDS = int(os.environ.get("KMC_RECONNECT_SECONDS", "5"))
+    KMC_IFACE_PENDING_TIMEOUT_SECONDS = int(
+        os.environ.get("KMC_IFACE_PENDING_TIMEOUT_SECONDS", "120")
+    )
+    KMC_PENDING_RETRY_SECONDS = int(os.environ.get("KMC_PENDING_RETRY_SECONDS", "5"))
     STATE_DIR = Path(os.environ.get("KMC_STATE_DIR", "/var/lib/kmc"))
     AGENT_PATH = Path(os.environ.get("KMC_AGENT_PATH", "/usr/local/sbin/kmc-router-agent"))
     DNSMASQ_D = Path(os.environ.get("KMC_DNSMASQ_D", "/var/lib/kmc/dnsmasq.d"))
@@ -197,6 +211,48 @@ def if_by_mac(want: str) -> str | None:
 
 def run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, check=check, text=True, capture_output=True)
+
+
+def prefix_from_cidr(cidr: str) -> int:
+    """Parse prefix length from CIDR; default /24 on garbage."""
+    try:
+        _, pref_s = cidr.strip().split("/", 1)
+        pref = int(pref_s)
+        if 0 <= pref <= 32:
+            return pref
+    except (ValueError, AttributeError):
+        pass
+    return 24
+
+
+def gateway_address(gateway: str) -> str:
+    """Strip optional /prefix from gateway field."""
+    return gateway.strip().split("/")[0].strip()
+
+
+def ensure_private_l3(mac: str, gateway: str, cidr: str) -> str | None:
+    """Bring up private Multus NIC and assign gateway/prefix. None if MAC missing.
+
+    Agent owns L3 for private VPC interfaces (not cloud-init netplan) so Multus
+    hotplug can land without recreating the appliance.
+    """
+    iface = if_by_mac(mac)
+    if not iface:
+        return None
+    gw = gateway_address(gateway)
+    if not gw:
+        raise RuntimeError(f"empty gateway for MAC {mac}")
+    prefix = prefix_from_cidr(cidr)
+    run(["ip", "link", "set", iface, "up"], check=False)
+    result = run(
+        ["ip", "addr", "replace", f"{gw}/{prefix}", "dev", iface],
+        check=False,
+    )
+    if result.returncode != 0:
+        err = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"ip addr replace {gw}/{prefix} dev {iface}: {err}")
+    run(["sysctl", "-w", f"net.ipv4.conf.{iface}.rp_filter=2"], check=False)
+    return iface
 
 
 def patch_status(
@@ -713,8 +769,12 @@ def apply_external_and_floats(doc: dict[str, Any], private_ifaces: list[str]) ->
     log(f"external on {public_if}: snat={snat} floats={len(new_floats)}")
 
 
-def apply_policy(doc: dict[str, Any]) -> str:
-    """Apply RouterPolicy; return generation string."""
+def apply_policy(doc: dict[str, Any]) -> tuple[str, str, str]:
+    """Apply RouterPolicy.
+
+    Returns ``(status, generation, error)`` where status is Ready, Pending, or Error.
+    Pending means one or more private Multus NICs are not yet present (hotplug lag).
+    """
     meta = doc.get("metadata") or {}
     generation = str(meta.get("generation", ""))
     interfaces = doc.get("interfaces") or []
@@ -726,9 +786,11 @@ def apply_policy(doc: dict[str, Any]) -> str:
 
     # Enable forwarding between private interfaces (multi-VPC) + external
     run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False)
+    run(["sysctl", "-w", "net.ipv4.conf.all.rp_filter=2"], check=False)
 
     active_vpcs: set[str] = set()
     private_ifaces: list[str] = []
+    pending_macs: list[str] = []
     for iface_doc in interfaces:
         vpc = str(iface_doc.get("vpc", "")).strip()
         mac = str(iface_doc.get("mac", "")).strip().lower()
@@ -743,9 +805,11 @@ def apply_policy(doc: dict[str, Any]) -> str:
             continue
         if not enabled:
             continue
-        iface = if_by_mac(mac)
+        iface = ensure_private_l3(mac, gateway, cidr)
         if not iface:
-            raise RuntimeError(f"interface for VPC {vpc} MAC {mac} not found")
+            pending_macs.append(f"{vpc}({mac})")
+            log(f"pending private NIC for VPC {vpc} MAC {mac}")
+            continue
         private_ifaces.append(iface)
         active_vpcs.add(vpc)
         vpc_leases = [L for L in leases_all if str(L.get("vpc", "")).strip() == vpc]
@@ -753,14 +817,14 @@ def apply_policy(doc: dict[str, Any]) -> str:
             vpc=vpc,
             iface=iface,
             cidr=cidr,
-            gateway=gateway,
+            gateway=gateway_address(gateway),
             domain=domain,
             lease_time=lease_time,
             leases=vpc_leases,
         )
         path = DNSMASQ_D / f"{vpc}.conf"
         path.write_text(conf, encoding="utf-8")
-        log(f"wrote {path} ({len(vpc_leases)} leases) on {iface}")
+        log(f"wrote {path} ({len(vpc_leases)} leases) on {iface} addr={gateway_address(gateway)}")
 
     # Remove stale per-VPC confs
     for path in DNSMASQ_D.glob("*.conf"):
@@ -769,7 +833,7 @@ def apply_policy(doc: dict[str, Any]) -> str:
             path.unlink(missing_ok=True)
             log(f"removed stale {path}")
 
-    # Inter-private FORWARD
+    # Inter-private FORWARD among ready ifaces
     for a in private_ifaces:
         for b in private_ifaces:
             if a == b:
@@ -782,7 +846,13 @@ def apply_policy(doc: dict[str, Any]) -> str:
 
     apply_external_and_floats(doc, private_ifaces)
     reload_dnsmasq(leases_all if isinstance(leases_all, list) else [])
-    return generation
+
+    if pending_macs:
+        msg = f"waiting for Multus NIC(s): {', '.join(pending_macs)}"
+        return "Pending", generation, msg
+    if not private_ifaces and interfaces:
+        return "Pending", generation, "no private interfaces ready"
+    return "Ready", generation, ""
 
 
 def policy_fingerprint(raw: str) -> str:
@@ -795,7 +865,12 @@ def reconcile_once(*, force: bool = False) -> None:
     Always GET the ConfigMap so we never trust a partial watch object. Compare
     a hash of policy.json so reformatting / annotation-only updates do not
     flush iptables DNAT (which would send FIP SSH to the router itself).
+
+    While status is Pending (waiting for Multus hotplug), re-apply even when the
+    policy fingerprint is unchanged so L3 can land without a ConfigMap write.
     """
+    global _last_apply_status, _pending_since
+
     cm = get_configmap()
     if maybe_self_update(cm):
         return
@@ -811,7 +886,8 @@ def reconcile_once(*, force: bool = False) -> None:
         raw_cmp = raw
 
     fp = policy_fingerprint(raw_cmp)
-    if not force and APPLIED_FILE.is_file():
+    pending_retry = _last_apply_status == "Pending"
+    if not force and not pending_retry and APPLIED_FILE.is_file():
         try:
             prev = APPLIED_FILE.read_text(encoding="utf-8").strip()
             # File may store fingerprint (sha256:...) or legacy raw policy body
@@ -825,17 +901,46 @@ def reconcile_once(*, force: bool = False) -> None:
     try:
         doc = json.loads(raw_cmp) if str(raw_cmp).strip() else {}
     except json.JSONDecodeError as e:
+        _last_apply_status = "Error"
         patch_status(status="Error", error=f"invalid policy JSON: {e}")
         raise
 
-    generation = apply_policy(doc)
+    status, generation, err = apply_policy(doc)
+    now = time.time()
+    if status == "Pending":
+        if _pending_since is None:
+            _pending_since = now
+        elapsed = now - _pending_since
+        if elapsed >= KMC_IFACE_PENDING_TIMEOUT_SECONDS:
+            err = f"{err} (after {int(elapsed)}s)"
+            # Stay in retry loop (_last_apply_status Pending) but surface Error in UI.
+            _last_apply_status = "Pending"
+            patch_status(status="Error", generation=str(generation), error=err)
+            log(f"pending timeout generation={generation or '?'}: {err}")
+            return
+        _last_apply_status = "Pending"
+        # Do not write APPLIED_FILE — stay sticky-pending until Ready
+        patch_status(status="Pending", generation=str(generation), error=err)
+        log(f"pending generation={generation or '?'}: {err}")
+        return
+
+    _pending_since = None
+    _last_apply_status = status
     try:
         # Store fingerprint only — smaller and stable
         APPLIED_FILE.write_text(f"sha256:{fp}\n", encoding="utf-8")
     except OSError as e:
         log(f"write applied policy failed: {e}")
-    patch_status(status="Ready", generation=str(generation), applied=True)
-    log(f"applied generation={generation or '?'} floats={len(doc.get('floatingIPs') or [])}")
+    patch_status(
+        status=status,
+        generation=str(generation),
+        applied=True,
+        error=err if status != "Ready" else "",
+    )
+    log(
+        f"applied status={status} generation={generation or '?'} "
+        f"floats={len(doc.get('floatingIPs') or [])}"
+    )
 
 
 def watch_loop() -> None:
@@ -874,7 +979,11 @@ def watch_loop() -> None:
                 time.sleep(KMC_RECONNECT_SECONDS)
                 continue
 
-        watch_timeout = max(5, min(KMC_HEARTBEAT_SECONDS, KMC_WATCH_TIMEOUT_SECONDS))
+        # While waiting for Multus NICs, poll aggressively instead of long watch.
+        if _last_apply_status == "Pending":
+            watch_timeout = max(3, min(KMC_PENDING_RETRY_SECONDS, KMC_HEARTBEAT_SECONDS))
+        else:
+            watch_timeout = max(5, min(KMC_HEARTBEAT_SECONDS, KMC_WATCH_TIMEOUT_SECONDS))
         qs = urllib.parse.urlencode(
             {
                 "watch": "true",
@@ -921,8 +1030,16 @@ def watch_loop() -> None:
                     # Always GET; compare policy hash — ignore annotation-only noise
                     reconcile_once(force=False)
                     last_resync = time.time()
-            # Watch ended (timeout) — heartbeat without re-applying dataplane
-            patch_status(heartbeat_only=True)
+            # Watch ended (timeout) — heartbeat; re-apply while Pending (hotplug lag)
+            if _last_apply_status == "Pending":
+                try:
+                    reconcile_once(force=True)
+                    last_resync = time.time()
+                except Exception as e:  # noqa: BLE001
+                    log(f"pending retry failed: {e}")
+                    traceback.print_exc()
+            else:
+                patch_status(heartbeat_only=True)
         except Exception as e:  # noqa: BLE001
             log(f"watch/reconcile error: {e}")
             traceback.print_exc()

@@ -3,6 +3,7 @@ import { createVmDiskSource } from "~/lib/types";
 import { KMC_ANN_DISK_SIZE } from "~/lib/k8s/constants";
 import {
   buildNetworkData,
+  buildRouterNetworkData,
   generateLocalMacAddress,
   ipamAnnotations,
   type AllocatedIp,
@@ -186,6 +187,17 @@ export type BuildVmManifestOpts = {
    * Pre-created by createVm before the VM is submitted.
    */
   extraDisks?: ResolvedExtraDisk[];
+  /**
+   * Shared router: Multus NICs keep MACs for the agent; private gateway L3 is
+   * owned by kmc-router-agent. Netplan still set-names private Multus NICs and
+   * configures pod (+ optional external Multus IP).
+   */
+  routerAgentOwnsPrivateL3?: boolean;
+  /**
+   * When routerAgentOwnsPrivateL3, Multus allocation used for public netplan
+   * (external gateway). Private Multus use set-name only (no addresses).
+   */
+  routerExternalAllocation?: AllocatedIp | null;
 };
 
 /** Stable Secret name for a VM's cloud-init user-data (same namespace as the VM). */
@@ -260,9 +272,7 @@ export function buildVirtualMachineManifest(
   });
 
   const rootDiskName =
-    diskSource === "existingDataVolume"
-      ? requireExistingDvName(input)
-      : input.name;
+    diskSource === "existingDataVolume" ? requireExistingDvName(input) : input.name;
 
   const disks: unknown[] = [
     {
@@ -293,7 +303,20 @@ export function buildVirtualMachineManifest(
     cloudInitNoCloud.userData = opts?.userData?.trim() || defaultUserData;
   }
 
-  if (allocations.length > 0) {
+  if (opts?.routerAgentOwnsPrivateL3) {
+    // Private Multus: set-name by MAC only; agent assigns gateway IPs.
+    // External (if any) still gets public IP + default route from netplan.
+    const external = opts.routerExternalAllocation ?? null;
+    const privateMultus = allocations.filter((a) => {
+      if (!external?.macAddress) return true;
+      return a.macAddress?.toLowerCase() !== external.macAddress.toLowerCase();
+    });
+    cloudInitNoCloud.networkData = buildRouterNetworkData({
+      clusterCidrs: includePodNetwork ? opts?.clusterCidrs : undefined,
+      privateMultus,
+      external,
+    });
+  } else if (allocations.length > 0) {
     cloudInitNoCloud.networkData = buildNetworkData(allocations, {
       // Masquerade needs guest DHCP on the pod NIC so port-forward can land.
       includePodDhcp: includePodNetwork,
@@ -436,18 +459,19 @@ function yamlLiteralScriptBody(script: string): string {
 
 /**
  * cloud-init user-data for a shared VPC router:
- * - One or more Multus private NICs (gateway IP per VPC, MAC-matched)
- * - Optional public Multus (external gateway: default route + MASQUERADE)
- * - Pod NIC: DHCP, cluster routes only (agent → apiserver)
- * - dnsmasq + kmc-router-agent for DHCP/DNS (+ floating IPs when external)
+ * - Multus NICs present at L2 (MACs for agent match); private L3 is agent-owned
+ * - Optional public Multus: netplan default route (until external hotplug)
+ * - Pod NIC: DHCP + cluster routes (agent → apiserver)
+ * - dnsmasq package + kmc-router-agent for DHCP/DNS/SNAT/FIPs + private L3
  */
 export function buildRouterUserData(input: {
   /** User key and optional platform console key(s). */
   sshPublicKey: string | string[];
-  /** Ordered private Multus MACs (same order as VPC interfaces). */
-  privateMacs: string[];
-  /** Public Multus MAC when external gateway is enabled. */
-  publicMac?: string;
+  /**
+   * Known Multus MACs at first boot (private + optional public). Used only to
+   * exclude them when discovering the pod NIC. Agent owns private L3/FORWARD.
+   */
+  knownMultusMacs?: string[];
   podCIDRs: string[];
   serviceCIDRs: string[];
   dnsIP?: string;
@@ -457,57 +481,44 @@ export function buildRouterUserData(input: {
   caData: string;
   agentToken: string;
 }): string {
-  const privateMacs = input.privateMacs.map((m) => m.trim().toLowerCase()).filter(Boolean);
-  if (privateMacs.length === 0) {
-    throw new Error("buildRouterUserData requires at least one private MAC");
-  }
-  const publicMac = input.publicMac?.trim().toLowerCase() || "";
+  const knownMacs = (input.knownMultusMacs ?? [])
+    .map((m) => m.trim().toLowerCase())
+    .filter(Boolean);
   const clusterCidrs = [
     ...input.podCIDRs.map((c) => c.trim()).filter(Boolean),
     ...input.serviceCIDRs.map((c) => c.trim()).filter(Boolean),
   ];
 
+  // Bootstrap only: pod reachability + packages. Private Multus L3, inter-VPC
+  // FORWARD, SNAT, and FIPs are fully owned by kmc-router-agent.
   const setupScript = [
     "#!/bin/bash",
     "set -euo pipefail",
-    `PRIVATE_MACS="${privateMacs.join(" ")}"`,
-    `PUBLIC_MAC="${publicMac}"`,
+    `KNOWN_MACS="${knownMacs.join(" ")}"`,
     `CLUSTER_CIDRS="${clusterCidrs.join(" ")}"`,
-    "if_by_mac() {",
-    '  local want="$1"',
-    "  local path iface mac",
-    "  for path in /sys/class/net/*; do",
-    '    iface=$(basename "$path")',
-    '    [[ "$iface" == "lo" ]] && continue',
-    '    [[ -f "$path/address" ]] || continue',
-    '    mac=$(tr "[:upper:]" "[:lower:]" < "$path/address")',
-    '    if [[ "$mac" == "$want" ]]; then',
-    '      echo "$iface"',
-    "      return 0",
-    "    fi",
-    "  done",
+    "is_known_mac() {",
+    '  local iface="$1" mac',
+    '  [[ -f "/sys/class/net/${iface}/address" ]] || return 1',
+    '  mac=$(tr "[:upper:]" "[:lower:]" < "/sys/class/net/${iface}/address")',
+    '  for m in $KNOWN_MACS; do [[ "$mac" == "$m" ]] && return 0; done',
     "  return 1",
     "}",
-    "PRIVATE_IFS=()",
-    "for mac in $PRIVATE_MACS; do",
-    '  iface=$(if_by_mac "$mac") || { echo "kmc-router: private NIC not found for $mac" >&2; exit 1; }',
-    '  PRIVATE_IFS+=("$iface")',
-    "done",
-    'PUBLIC_IF=""',
-    'if [[ -n "$PUBLIC_MAC" ]]; then',
-    '  PUBLIC_IF=$(if_by_mac "$PUBLIC_MAC") || { echo "kmc-router: public NIC not found for $PUBLIC_MAC" >&2; exit 1; }',
-    "fi",
     'POD_IF=""',
     "for path in /sys/class/net/*; do",
     '  iface=$(basename "$path")',
     '  [[ "$iface" == "lo" ]] && continue',
-    '  skip=0',
-    '  for p in "${PRIVATE_IFS[@]}"; do [[ "$iface" == "$p" ]] && skip=1 && break; done',
-    '  [[ -n "$PUBLIC_IF" && "$iface" == "$PUBLIC_IF" ]] && skip=1',
-    '  [[ "$skip" -eq 1 ]] && continue',
+    '  if is_known_mac "$iface"; then continue; fi',
     '  POD_IF="$iface"',
     "  break",
     "done",
+    // Fallback: first en* if MAC list empty or incomplete at early boot
+    'if [[ -z "$POD_IF" ]]; then',
+    "  for path in /sys/class/net/en*; do",
+    '    [[ -e "$path" ]] || continue',
+    '    POD_IF=$(basename "$path")',
+    "    break",
+    "  done",
+    "fi",
     'if [[ -z "$POD_IF" ]]; then',
     '  echo "kmc-router: pod NIC not found" >&2',
     "  exit 1",
@@ -515,12 +526,6 @@ export function buildRouterUserData(input: {
     "sysctl -w net.ipv4.ip_forward=1 >/dev/null",
     "sysctl -w net.ipv4.conf.all.rp_filter=2 >/dev/null || true",
     'sysctl -w "net.ipv4.conf.${POD_IF}.rp_filter=2" >/dev/null || true',
-    'for iface in "${PRIVATE_IFS[@]}"; do',
-    '  sysctl -w "net.ipv4.conf.${iface}.rp_filter=2" >/dev/null || true',
-    "done",
-    'if [[ -n "$PUBLIC_IF" ]]; then',
-    '  sysctl -w "net.ipv4.conf.${PUBLIC_IF}.rp_filter=2" >/dev/null || true',
-    "fi",
     "for i in $(seq 1 60); do",
     '  if ip -4 -o addr show dev "$POD_IF" | grep -q "inet "; then break; fi',
     '  command -v dhclient >/dev/null 2>&1 && dhclient -1 "$POD_IF" 2>/dev/null || true',
@@ -535,20 +540,6 @@ export function buildRouterUserData(input: {
     "# Never forward via pod NIC",
     'iptables -C FORWARD -i "$POD_IF" -j DROP 2>/dev/null || iptables -I FORWARD 1 -i "$POD_IF" -j DROP',
     'iptables -C FORWARD -o "$POD_IF" -j DROP 2>/dev/null || iptables -I FORWARD 1 -o "$POD_IF" -j DROP',
-    "# Allow forwarding between private VPC interfaces",
-    'for a in "${PRIVATE_IFS[@]}"; do',
-    '  for b in "${PRIVATE_IFS[@]}"; do',
-    '    [[ "$a" == "$b" ]] && continue',
-    '    iptables -C FORWARD -i "$a" -o "$b" -j ACCEPT 2>/dev/null || iptables -A FORWARD -i "$a" -o "$b" -j ACCEPT',
-    "  done",
-    "done",
-    'if [[ -n "$PUBLIC_IF" ]]; then',
-    '  iptables -t nat -C POSTROUTING -o "$PUBLIC_IF" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o "$PUBLIC_IF" -j MASQUERADE',
-    '  for a in "${PRIVATE_IFS[@]}"; do',
-    '    iptables -C FORWARD -i "$a" -o "$PUBLIC_IF" -j ACCEPT 2>/dev/null || iptables -A FORWARD -i "$a" -o "$PUBLIC_IF" -j ACCEPT',
-    '    iptables -C FORWARD -i "$PUBLIC_IF" -o "$a" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -A FORWARD -i "$PUBLIC_IF" -o "$a" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT',
-    "  done",
-    "fi",
     "# dnsmasq: avoid conflicting with systemd-resolved stub on 127.0.0.53",
     "mkdir -p /var/lib/kmc/dnsmasq.d /etc/dnsmasq.d",
     "systemctl disable --now systemd-resolved 2>/dev/null || true",
@@ -646,7 +637,7 @@ export function buildRouterUserData(input: {
     "  - path: /etc/systemd/system/kmc-router.service",
     "    content: |",
     "      [Unit]",
-    "      Description=kmc VPC router setup (forwarding + pod routes + dnsmasq)",
+    "      Description=kmc VPC router setup (pod routes + dnsmasq package)",
     "      After=network-online.target",
     "      Wants=network-online.target",
     "      [Service]",

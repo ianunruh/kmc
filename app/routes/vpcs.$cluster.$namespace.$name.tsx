@@ -37,6 +37,10 @@ import {
   getVpc,
   releaseFloatingIp,
 } from "~/vpcs/vpcs.server";
+import {
+  attachRouterVpc,
+  listRoutersForVpcAttach,
+} from "~/vpcs/routers.server";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `${params.name ?? "VPC"} · kmc` }];
@@ -48,7 +52,20 @@ export async function loader({ params }: Route.LoaderArgs) {
     throw new Response("Missing path params", { status: 400 });
   }
   const vpc = await getVpc(cluster, namespace, name);
-  return { vpc };
+  let attachableRouters: Awaited<ReturnType<typeof listRoutersForVpcAttach>> =
+    [];
+  if (vpc.cidr && !vpc.router) {
+    try {
+      attachableRouters = await listRoutersForVpcAttach(
+        cluster,
+        namespace,
+        name,
+      );
+    } catch {
+      attachableRouters = [];
+    }
+  }
+  return { vpc, attachableRouters };
 }
 
 export async function action({ request, params }: Route.ActionArgs) {
@@ -68,6 +85,33 @@ export async function action({ request, params }: Route.ActionArgs) {
         cluster,
         namespace,
         name,
+      });
+    }
+  }
+  if (intent === "attach-router") {
+    const routerName = String(form.get("routerName") ?? "").trim();
+    if (!routerName) {
+      return { ok: false, error: "Select a router", intent };
+    }
+    try {
+      const result = await attachRouterVpc({
+        cluster,
+        namespace,
+        routerName,
+        vpcName: name,
+      });
+      return {
+        ok: true,
+        intent: "attach-router",
+        restarted: result.restarted,
+      };
+    } catch (err) {
+      return actionFailure("vpc.attachRouter", err, {
+        intent,
+        cluster,
+        namespace,
+        name,
+        routerName,
       });
     }
   }
@@ -126,7 +170,9 @@ export default function VpcDetailLayout({ loaderData }: Route.ComponentProps) {
           ? "Disassociate failed"
           : data.intent === "release"
             ? "Release failed"
-            : "Delete failed";
+            : data.intent === "attach-router"
+              ? "Attach router failed"
+              : "Delete failed";
       notifyActionError(title, data.error);
     } else if (data.ok) {
       if (data.intent === "disassociate") {
@@ -139,6 +185,14 @@ export default function VpcDetailLayout({ loaderData }: Route.ComponentProps) {
         notifyActionSuccess(
           "Done",
           "Floating IP released — public address returned to the pool",
+        );
+        refreshNow();
+      } else if (data.intent === "attach-router") {
+        notifyActionSuccess(
+          "Done",
+          (data as { restarted?: boolean }).restarted
+            ? "Router attached — appliance restarted so the Multus NIC could land"
+            : "Router attached",
         );
         refreshNow();
       } else {

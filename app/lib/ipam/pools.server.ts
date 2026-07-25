@@ -689,6 +689,72 @@ export type BuildNetworkDataOpts = {
 };
 
 /**
+ * Router netplan: Multus private NICs are MAC-matched + set-name only (no
+ * addresses — agent owns L3). Optional external Multus still gets public IP +
+ * default route from netplan on create/recreate. Pod/masquerade gets DHCP +
+ * cluster routes so the agent can reach the apiserver.
+ */
+export function buildRouterNetworkData(opts: {
+  clusterCidrs?: string[];
+  masqueradeGateway?: string;
+  /**
+   * Private Multus allocations (MAC + networkName). Emitted as set-name only
+   * so pod can safely match leftover `en*`.
+   */
+  privateMultus?: AllocatedIp[];
+  /** Public Multus allocation when external gateway is configured at create/recreate. */
+  external?: AllocatedIp | null;
+}): string {
+  const lines = ["version: 2", "ethernets:"];
+  const privateList = opts.privateMultus ?? [];
+  privateList.forEach((allocation, index) => {
+    if (!allocation.macAddress?.trim()) return;
+    const key = ethernetKeyFor(allocation, index);
+    lines.push(`  ${key}:`);
+    lines.push(...matchLinesFor(allocation));
+    // No addresses — agent assigns gateway/prefix. optional avoids wait-online hang.
+    lines.push("    dhcp4: false", "    optional: true");
+  });
+
+  const external = opts.external;
+  if (external?.cidrHost?.trim()) {
+    const key = ethernetKeyFor(external, privateList.length);
+    lines.push(`  ${key}:`);
+    lines.push(...matchLinesFor(external));
+    lines.push("    dhcp4: false", "    addresses:", `      - ${external.cidrHost}`);
+    const gateway = external.gateway?.trim();
+    if (gateway) {
+      lines.push("    routes:", "      - to: default", `        via: ${gateway}`);
+    }
+    const nameservers =
+      external.dns.length > 0 ? external.dns : STATIC_NETPLAN_FALLBACK_DNS;
+    lines.push("    nameservers:", "      addresses:");
+    for (const d of nameservers) {
+      lines.push(`        - ${d}`);
+    }
+  }
+
+  const gw = opts.masqueradeGateway?.trim() || KUBEVIRT_MASQUERADE_GATEWAY;
+  const clusterCidrs = (opts.clusterCidrs ?? []).map((c) => c.trim()).filter(Boolean);
+  lines.push(
+    "  pod:",
+    "    match:",
+    '      name: "en*"',
+    "    dhcp4: true",
+    "    dhcp4-overrides:",
+    "      use-routes: false",
+  );
+  if (clusterCidrs.length > 0) {
+    lines.push("    routes:");
+    for (const cidr of clusterCidrs) {
+      lines.push(`      - to: ${cidr}`, `        via: ${gw}`);
+    }
+  }
+  lines.push("    optional: true");
+  return lines.join("\n") + "\n";
+}
+
+/**
  * cloud-init network-config (netplan) for one or more Multus IPAM allocations.
  * At most one default route is installed (primary = first with gateway, else first).
  */
@@ -727,9 +793,7 @@ export function buildNetworkData(
     // Always emit nameservers on static NICs so wait-online --dns can succeed.
     // Empty dns (common on router recreate / VPC gateway claim) previously hung boot.
     const nameservers =
-      allocation.dns.length > 0
-        ? allocation.dns
-        : STATIC_NETPLAN_FALLBACK_DNS;
+      allocation.dns.length > 0 ? allocation.dns : STATIC_NETPLAN_FALLBACK_DNS;
     lines.push("    nameservers:", "      addresses:");
     for (const d of nameservers) {
       lines.push(`        - ${d}`);
@@ -740,11 +804,8 @@ export function buildNetworkData(
     // After Multus set-name, the pod/masquerade NIC remains en*; DHCP for
     // address only (no default route — Multus stays L3 primary). Explicit
     // routes for pod/service CIDRs so guest → cluster works over masquerade.
-    const gw =
-      opts.masqueradeGateway?.trim() || KUBEVIRT_MASQUERADE_GATEWAY;
-    const clusterCidrs = (opts.clusterCidrs ?? [])
-      .map((c) => c.trim())
-      .filter(Boolean);
+    const gw = opts.masqueradeGateway?.trim() || KUBEVIRT_MASQUERADE_GATEWAY;
+    const clusterCidrs = (opts.clusterCidrs ?? []).map((c) => c.trim()).filter(Boolean);
     lines.push(
       "  pod:",
       "    match:",

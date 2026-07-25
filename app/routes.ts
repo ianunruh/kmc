@@ -92,10 +92,7 @@ export default [
 
   route("namespaces", "routes/namespaces._index.tsx"),
   route("namespaces/create", "routes/namespaces.create.tsx"),
-  route(
-    "namespaces/:cluster/:name/edit",
-    "routes/namespaces.$cluster.$name.edit.tsx",
-  ),
+  route("namespaces/:cluster/:name/edit", "routes/namespaces.$cluster.$name.edit.tsx"),
   route("namespaces/:cluster/:name", "routes/namespaces.$cluster.$name.tsx", [
     index("routes/namespaces.$cluster.$name._index.tsx"),
     route("yaml", "routes/namespaces.$cluster.$name.yaml.tsx"),
@@ -117,6 +114,7 @@ export default [
   route("api/catalog/:cluster", "routes/api.catalog.$cluster.ts"),
   route("api/networks/:cluster", "routes/api.networks.$cluster.ts"),
   route("api/datavolumes/:cluster", "routes/api.datavolumes.$cluster.ts"),
+  route("api/router-attachable/:cluster", "routes/api.router-attachable.$cluster.ts"),
   route("api/vms/:cluster", "routes/api.vms.$cluster.ts"),
   route(
     "api/vms/:cluster/:namespace/:name/metrics",

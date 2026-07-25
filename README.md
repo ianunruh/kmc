@@ -171,7 +171,7 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 - **Extra disks + hotplug** — secondary blank or existing DataVolumes (scsi, up to 8) on Launch VM or VM **Storage** tab; attach/detach by updating the VirtualMachine spec (`hotpluggable: true` disks/volumes). Live attach needs KubeVirt **`DeclarativeHotplugVolumes`** (do not also enable deprecated `HotplugVolumes`). Detach can keep or delete the DataVolume. Guests see unformatted block devices — format/mount inside the guest.
 - **IPAM** — optional per-cluster IPv4 pools for Multus NADs; auto-allocate + netplan cloud-init on create
 - **VPCs** — self-service Multus networks from a cluster VLAN pool (`vlanPools`); optional private CIDR for IPAM
-- **Routers** — shared DHCP/DNS appliance per namespace (OpenStack-style); external SNAT + floating IPs; multi-VPC attach later
+- **Routers** — shared DHCP/DNS appliance per namespace (OpenStack-style); multi-VPC at create and day-2 Multus hotplug attach/detach; agent-owned private L3; external SNAT + floating IPs
 - **SSH keys** — signed-in users save named public keys (ConfigMap on the settings cluster); select when creating a VM
 - **Ingresses** — create/list/detail/delete HTTP Ingresses bound to a VM (companion ClusterIP Service selects `kubevirt.io/vm`)
 
@@ -228,18 +228,19 @@ Static Multus networks and `ipPools` entries continue to work unchanged.
 
 OpenStack-style **shared routers** provide per-VPC gateway, DHCP, and DNS without changing the cluster CNI (Calico stays primary).
 
-| Piece                                | Role                                                                |
-| ------------------------------------ | ------------------------------------------------------------------- |
-| Router VM                            | Multus leg(s) on attached VPC(s) + pod NIC for the agent            |
-| Policy ConfigMap `kmc-router-<name>` | Interfaces, static DHCP leases, agent script (survives VM recreate) |
-| In-guest agent                       | Watches policy → dnsmasq static `dhcp-host` + DNS                   |
+| Piece                                | Role                                                                   |
+| ------------------------------------ | ---------------------------------------------------------------------- |
+| Router VM                            | Multus leg(s) on attached VPC(s) + pod NIC for the agent               |
+| Policy ConfigMap `kmc-router-<name>` | Interfaces, static DHCP leases, agent script (survives VM recreate)    |
+| In-guest agent                       | Owns private Multus L3 (`ip addr` by MAC); dnsmasq + FORWARD/SNAT/FIPs |
 
 **Flow**
 
 1. Create a VPC with private IPAM (CIDR).
-2. **Routers → Create** (or VPC detail → Create router) — attach at least one VPC. The router claims that VPC’s gateway IP.
-3. Launch workload VMs on the VPC: kmc registers a static lease and configures the guest private NIC with **DHCP** (MAC-matched).
+2. **Routers → Create** (or VPC detail → Create router) — attach one or more free VPCs. The router claims each VPC’s gateway IP.
+3. Launch workload VMs on a VPC: kmc registers a static lease and configures the guest private NIC with **DHCP** (MAC-matched).
 4. Guests get address / default route / DNS from the router (`<vm>.<vpc>.vpc.local`).
+5. **Attach more VPCs** later from router detail (Multus hotplug — no appliance recreate). **Detach** with lease/FIP safety rails (force optional).
 
 **External gateway + floating IPs**
 
@@ -282,14 +283,24 @@ into the held state (leases are removed; public addresses are not released).
 **In-guest agent** (`app/vpcs/kmc-router-agent.py`, Python 3 stdlib only):
 
 - Bootstrap copy is written by cloud-init; runtime source of truth is ConfigMap `agent.py`
+- **Owns private Multus L3**: for each policy interface, waits for MAC, `ip link set up`, `ip addr replace gateway/prefix` (not cloud-init netplan)
+- Reports **Pending** while Multus hotplug NICs are missing; **Ready** when all private ifaces have L3 + dnsmasq
 - Watches the policy ConfigMap and applies DHCP/DNS, SNAT, and 1:1 DNAT/SNAT floating IPs
 - On each apply: rewrites static `dhcp-host` entries, **stops** dnsmasq, prunes the lease DB to MAC+IP pairs still in policy, then starts dnsmasq — so deleting a VM and recreating it can reuse the IPAM address with a new MAC (without this, dnsmasq keeps the old lease and logs `not using configured address … because it is leased to <old-mac>`)
 - Heartbeats via `kmc.ianunruh.com/agent-heartbeat-at` (~30s); kmc marks the agent **Stale** if the heartbeat is older than 90s
 - When kmc updates `agent.py`, the agent rewrites itself and re-execs
 
+Cloud-init **netplan** on the router only configures the **pod** NIC (cluster routes) and, when external is set at create/recreate, the **public** Multus IP + default route. Private Multus addresses are never written by netplan.
+
+**Multi-VPC attach / detach (day-2)**
+
+- Attach: mutate policy → patch router VM Multus NIC (hotplug) → stamp VPC `kmc.ianunruh.com/router` annotation. No SSH key / no recreate.
+- Detach: refuse last interface; refuse workload leases / active FIPs unless force; mutate policy → hot-unplug (`state: absent`) → clear annotation.
+- **Cluster prereq:** KubeVirt NIC hotplug (Multus thick + multus-dynamic-networks-controller, or migration-based LiveUpdate). Without it, attach leaves agent Pending/Error until the NIC appears.
+
 **UI**
 
-- **Routers** — create / detail; enable external gateway; leases and floating IPs
+- **Routers** — create (multi-VPC select) / detail (attach/detach VPC); enable external gateway; leases and floating IPs
 - **Floating IPs** nav — list/filter all associations; disassociate / release
 - **Associate floating IP** (`/floating-ips/create`) — pick VPC (must have router + external) + target VM (or private IP)
 - **VPC detail** — router pointer, floating IP table, associate / disassociate
@@ -297,9 +308,10 @@ into the held state (leases are removed; public addresses are not released).
 
 **Limits**
 
-- One VPC at create (multi-VPC attach later)
+- Multus budget: up to 8 Multus NICs (VPCs + optional external)
 - A VPC can attach to only one router (gateway IP ownership)
-- Setting external later requires an SSH key (new cloud-init) and causes brief downtime
+- Cannot detach the last VPC (delete the router instead)
+- Setting external later requires an SSH key (new cloud-init) and **recreates** the appliance (brief downtime)
 
 **Policy sketch** (`policy.json` in the ConfigMap): `interfaces[]` (vpc, cidr, gateway, mac, domain, dhcp), `leases[]`, `external` (multusNetwork, primaryCidr, gateway, mac, snat), `floatingIPs[]`.
 

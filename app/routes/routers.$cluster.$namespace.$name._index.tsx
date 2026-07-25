@@ -2,6 +2,7 @@ import {
   Alert,
   Badge,
   Button,
+  Checkbox,
   Code,
   Group,
   NumberInput,
@@ -12,11 +13,12 @@ import {
   Textarea,
   TextInput,
 } from "@mantine/core";
-import { IconRefresh, IconWorldWww } from "@tabler/icons-react";
+import { IconLink, IconRefresh, IconUnlink, IconWorldWww } from "@tabler/icons-react";
 import { useMemo, useState } from "react";
 import { Link, useFetcher, useRouteLoaderData } from "react-router";
 import type { loader as detailLoader } from "./routers.$cluster.$namespace.$name";
 import {
+  ConfirmActionModal,
   DetailField,
   DetailSection,
   ResourceLink,
@@ -38,6 +40,7 @@ import {
 } from "~/instancetypes/options";
 import { useRefresh } from "~/lib/refresh";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
+import { KMC_MAX_MULTUS_ATTACHMENTS } from "~/lib/k8s/constants";
 
 const LAYOUT_ID = "routes/routers.$cluster.$namespace.$name";
 
@@ -45,21 +48,31 @@ export default function RouterOverviewTab() {
   const {
     router,
     publicNetworks,
+    attachableVpcs,
     catalog,
     catalogError,
     sshKeys,
     signedIn,
   } = useRouteLoaderData(LAYOUT_ID) as Awaited<ReturnType<typeof detailLoader>>;
-  const fetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
+  const fetcher = useFetcher<{
+    ok?: boolean;
+    error?: string;
+    intent?: string;
+    restarted?: boolean;
+  }>();
   const { refreshNow } = useRefresh();
-  const [publicNet, setPublicNet] = useState(
-    publicNetworks[0]?.multusNetwork ?? "",
-  );
+  const [publicNet, setPublicNet] = useState(publicNetworks[0]?.multusNetwork ?? "");
   const [sshMode, setSshMode] = useState<"saved" | "paste">(
     signedIn && sshKeys.length > 0 ? "saved" : "paste",
   );
   const [savedKeyId, setSavedKeyId] = useState(sshKeys[0]?.id ?? "");
   const [sshPaste, setSshPaste] = useState("");
+  const [attachVpc, setAttachVpc] = useState("");
+  const [detachTarget, setDetachTarget] = useState<{
+    vpc: string;
+    leaseCount: number;
+  } | null>(null);
+  const [detachForce, setDetachForce] = useState(false);
 
   const imageOptions = useMemo(() => {
     if (!catalog) return [];
@@ -77,15 +90,11 @@ export default function RouterOverviewTab() {
     () => instanceTypeSelectData(catalog?.instanceTypes ?? []),
     [catalog],
   );
-  const defaultInstanceType = preferredInstanceTypeName(
-    catalog?.instanceTypes ?? [],
-  );
+  const defaultInstanceType = preferredInstanceTypeName(catalog?.instanceTypes ?? []);
 
   const [image, setImage] = useState(defaultImage);
   const [diskSize, setDiskSize] = useState("10Gi");
-  const [storageClass, setStorageClass] = useState(
-    catalog?.defaultStorageClass ?? "",
-  );
+  const [storageClass, setStorageClass] = useState(catalog?.defaultStorageClass ?? "");
   const [sizeMode, setSizeMode] = useState<"instancetype" | "manual">(
     hasInstanceTypes && defaultInstanceType ? "instancetype" : "manual",
   );
@@ -102,6 +111,18 @@ export default function RouterOverviewTab() {
     (sizeMode === "instancetype" && !instanceType) ||
     (sizeMode === "manual" && !memory.trim());
 
+  const freeAttachable = useMemo(
+    () =>
+      (attachableVpcs ?? []).filter(
+        (v) => v.cidr && !v.attachedRouter && !router.vpcNames.includes(v.name),
+      ),
+    [attachableVpcs, router.vpcNames],
+  );
+
+  const multusBudget = router.interfaces.length + (router.hasExternal ? 1 : 0);
+  const attachDisabled =
+    busy || router.vmMissing || !attachVpc || multusBudget >= KMC_MAX_MULTUS_ATTACHMENTS;
+
   useFetcherResult(fetcher, (data) => {
     if (data.error) {
       notifyActionError("Action failed", data.error);
@@ -112,8 +133,19 @@ export default function RouterOverviewTab() {
           ? "External gateway enabled (router VM recreated)"
           : data.intent === "recreate-vm"
             ? "Router appliance VM recreated from policy"
-            : "Action completed",
+            : data.intent === "attach-vpc"
+              ? data.restarted
+                ? "VPC attached — router restarted so the Multus NIC could land"
+                : "VPC attached"
+              : data.intent === "detach-vpc"
+                ? data.restarted
+                  ? "VPC detached — router restarted to drop the Multus NIC"
+                  : "VPC detached"
+                : "Action completed",
       );
+      setDetachTarget(null);
+      setDetachForce(false);
+      setAttachVpc("");
       refreshNow();
     }
   });
@@ -140,13 +172,46 @@ export default function RouterOverviewTab() {
 
   return (
     <Stack gap="md">
+      {router.vmRestartRequired && !router.vmMissing && (
+        <Alert
+          color="yellow"
+          variant="light"
+          title="Appliance restart required"
+        >
+          <Stack gap="sm">
+            <Text size="sm">
+              {router.vmRestartRequiredMessage?.trim() ||
+                "KubeVirt staged a change (for example a Multus NIC) that is not live until the appliance VM restarts. DHCP/agent on existing interfaces keep running until then."}
+            </Text>
+            <Group>
+              <Button
+                size="xs"
+                color="yellow"
+                leftSection={<IconRefresh size={14} />}
+                loading={busy}
+                onClick={() => {
+                  const fd = new FormData();
+                  fd.set("intent", "restart-vm");
+                  fetcher.submit(fd, {
+                    method: "post",
+                    action: routerPath(router),
+                  });
+                }}
+              >
+                Restart appliance
+              </Button>
+            </Group>
+          </Stack>
+        </Alert>
+      )}
+
       {router.vmMissing && (
         <DetailSection title="Recreate appliance VM">
           <Stack gap="sm">
             <Text size="sm" c="dimmed">
-              Rebuilds the KubeVirt VM from this router&apos;s policy ConfigMap
-              (stable MACs, gateway IPs, leases, and floating IPs). Cloud-init is
-              regenerated with a new agent token.
+              Rebuilds the KubeVirt VM from this router&apos;s policy ConfigMap (stable
+              MACs, gateway IPs, leases, and floating IPs). Cloud-init is regenerated with
+              a new agent token.
             </Text>
             {catalogError && (
               <Alert color="red" variant="light" title="Catalog unavailable">
@@ -186,9 +251,7 @@ export default function RouterOverviewTab() {
                   { value: "manual", label: "CPU / memory" },
                 ]}
                 value={sizeMode}
-                onChange={(v) =>
-                  setSizeMode(v === "manual" ? "manual" : "instancetype")
-                }
+                onChange={(v) => setSizeMode(v === "manual" ? "manual" : "instancetype")}
               />
             ) : null}
             {sizeMode === "instancetype" && hasInstanceTypes ? (
@@ -294,7 +357,18 @@ export default function RouterOverviewTab() {
                     Missing
                   </Badge>
                 ) : router.vmStatus ? (
-                  <StatusBadge status={router.vmStatus} />
+                  <Group gap={6} wrap="wrap">
+                    <StatusBadge status={router.vmStatus} />
+                    {router.vmRestartRequired && (
+                      <Badge size="sm" variant="light" color="yellow">
+                        Restart required
+                      </Badge>
+                    )}
+                  </Group>
+                ) : router.vmRestartRequired ? (
+                  <Badge size="sm" variant="light" color="yellow">
+                    Restart required
+                  </Badge>
                 ) : (
                   "—"
                 )
@@ -320,9 +394,7 @@ export default function RouterOverviewTab() {
             <DetailField
               label="Heartbeat"
               value={
-                router.agentHeartbeatAt
-                  ? formatDateTime(router.agentHeartbeatAt)
-                  : "—"
+                router.agentHeartbeatAt ? formatDateTime(router.agentHeartbeatAt) : "—"
               }
             />
           </SimpleGrid>
@@ -341,7 +413,7 @@ export default function RouterOverviewTab() {
           ) : (
             <ResourceTable
               isEmpty={false}
-              headers={["VPC", "CIDR", "Gateway", "Domain", "Leases"]}
+              headers={["VPC", "CIDR", "Gateway", "Domain", "Leases", ""]}
             >
               {router.interfaces.map((iface) => (
                 <Table.Tr key={iface.vpc}>
@@ -368,12 +440,115 @@ export default function RouterOverviewTab() {
                     </Text>
                   </Table.Td>
                   <Table.Td>{iface.leaseCount ?? 0}</Table.Td>
+                  <Table.Td>
+                    <Button
+                      size="compact-xs"
+                      variant="subtle"
+                      color="red"
+                      leftSection={<IconUnlink size={12} />}
+                      disabled={busy || router.interfaces.length <= 1 || router.vmMissing}
+                      onClick={() =>
+                        setDetachTarget({
+                          vpc: iface.vpc,
+                          leaseCount: iface.leaseCount ?? 0,
+                        })
+                      }
+                    >
+                      Detach
+                    </Button>
+                  </Table.Td>
                 </Table.Tr>
               ))}
             </ResourceTable>
           )}
+          {!router.vmMissing && (
+            <Stack gap="xs" mt="sm">
+              <Group align="flex-end" gap="sm" wrap="wrap">
+                <Select
+                  label="Attach VPC"
+                  placeholder={
+                    freeAttachable.length === 0 ? "No free VPCs" : "Select VPC"
+                  }
+                  data={freeAttachable.map((v) => ({
+                    value: v.name,
+                    label: `${v.name} · ${v.cidr}`,
+                  }))}
+                  value={attachVpc || null}
+                  onChange={(v) => setAttachVpc(v ?? "")}
+                  searchable
+                  clearable
+                  disabled={busy || freeAttachable.length === 0}
+                  style={{ minWidth: 220, flex: 1 }}
+                />
+                <Button
+                  size="xs"
+                  leftSection={<IconLink size={14} />}
+                  loading={busy && fetcher.formData?.get("intent") === "attach-vpc"}
+                  disabled={attachDisabled}
+                  onClick={() => {
+                    const fd = new FormData();
+                    fd.set("intent", "attach-vpc");
+                    fd.set("vpcName", attachVpc);
+                    fetcher.submit(fd, {
+                      method: "post",
+                      action: routerPath(router),
+                    });
+                  }}
+                >
+                  Attach VPC
+                </Button>
+              </Group>
+              {multusBudget >= KMC_MAX_MULTUS_ATTACHMENTS && (
+                <Text size="xs" c="orange">
+                  Multus NIC budget full ({KMC_MAX_MULTUS_ATTACHMENTS}).
+                </Text>
+              )}
+            </Stack>
+          )}
         </DetailSection>
       </SimpleGrid>
+
+      <ConfirmActionModal
+        opened={Boolean(detachTarget)}
+        onClose={() => {
+          setDetachTarget(null);
+          setDetachForce(false);
+        }}
+        title={detachTarget ? `Detach VPC ${detachTarget.vpc}` : "Detach VPC"}
+        confirmLabel="Detach"
+        confirmColor="red"
+        loading={busy}
+        message={
+          <Stack gap="sm">
+            <Text size="sm">
+              Detach removes this VPC from the router via Multus hot-unplug (no full VM
+              recreate). Guests on other VPCs stay up.
+            </Text>
+            {detachTarget && detachTarget.leaseCount > 0 && (
+              <Alert color="orange" variant="light" title="Active leases">
+                This VPC has {detachTarget.leaseCount} DHCP lease(s). Detach is refused
+                unless you force — guests will lose gateway/DHCP.
+              </Alert>
+            )}
+            <Checkbox
+              label="Force detach (drop leases; hold floating IPs)"
+              checked={detachForce}
+              onChange={(e) => setDetachForce(e.currentTarget.checked)}
+            />
+          </Stack>
+        }
+        onConfirm={() => {
+          if (!detachTarget) return;
+          const fd = new FormData();
+          fd.set("intent", "detach-vpc");
+          fd.set("vpcName", detachTarget.vpc);
+          if (detachForce) fd.set("force", "true");
+          fetcher.submit(fd, {
+            method: "post",
+            action: routerPath(router),
+          });
+        }}
+      />
 
       <DetailSection title="External gateway">
         {router.external ? (
@@ -396,11 +571,7 @@ export default function RouterOverviewTab() {
               <DetailField
                 label="Public gateway"
                 value={
-                  router.external.gateway ? (
-                    <Code>{router.external.gateway}</Code>
-                  ) : (
-                    "—"
-                  )
+                  router.external.gateway ? <Code>{router.external.gateway}</Code> : "—"
                 }
               />
               <DetailField
@@ -421,8 +592,8 @@ export default function RouterOverviewTab() {
         ) : (
           <Stack gap="sm">
             <Text size="sm" c="dimmed">
-              Adding an external gateway recreates the router VM with a public Multus
-              NIC (brief downtime). SSH key is required for the new cloud-init.
+              Adding an external gateway recreates the router VM with a public Multus NIC
+              (brief downtime). SSH key is required for the new cloud-init.
             </Text>
             <Select
               label="Public / egress network"
@@ -495,7 +666,7 @@ export default function RouterOverviewTab() {
               to={floatingIpCreatePath({
                 cluster: router.cluster,
                 namespace: router.namespace,
-                vpc: router.vpcNames[0],
+                ...(router.vpcNames.length === 1 ? { vpc: router.vpcNames[0] } : {}),
               })}
               size="xs"
               variant="light"
@@ -514,10 +685,7 @@ export default function RouterOverviewTab() {
               : "Enable an external gateway first."}
           </Text>
         ) : (
-          <ResourceTable
-            isEmpty={false}
-            headers={["Public", "Private", "VM", "State"]}
-          >
+          <ResourceTable isEmpty={false} headers={["Public", "Private", "VM", "State"]}>
             {router.floatingIps.map((f) => (
               <Table.Tr key={f.id}>
                 <Table.Td>
@@ -525,9 +693,7 @@ export default function RouterOverviewTab() {
                     {f.public}/{f.prefix}
                   </Code>
                 </Table.Td>
-                <Table.Td>
-                  {f.private ? <Code>{f.private}</Code> : "—"}
-                </Table.Td>
+                <Table.Td>{f.private ? <Code>{f.private}</Code> : "—"}</Table.Td>
                 <Table.Td>
                   {f.targetVm ? (
                     <ResourceLink

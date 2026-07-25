@@ -44,21 +44,23 @@ import {
   KMC_ANN_ROUTER,
   KMC_LABEL_RESOURCE,
   KMC_LABEL_RETAINED_FROM_VM,
+  KMC_LABEL_ROLE,
   KMC_LABEL_VLAN,
   KMC_MANAGED_BY,
   KMC_MAX_EXTRA_DISKS,
   KMC_RESERVED_VOLUME_NAMES,
   KMC_RESOURCE_NETWORK,
   KMC_RESOURCE_VPC,
+  KMC_ROLE_ROUTER,
   MANAGED_BY_LABEL,
   REUSABLE_DV_PHASES,
 } from "~/lib/k8s/constants";
 import { DNS1123_LABEL } from "~/lib/format";
 import { addressFromIpv4Annotation } from "~/lib/ipam/cidr";
 import { parseIpv4AnnotationList } from "~/lib/ipam/pools.server";
-import { listFloatingIpsFromRouterPolicies } from "~/vpcs/router-policy.server";
-
 import {
+  ensureRouterVmIpamAnnotations,
+  listFloatingIpsFromRouterPolicies,
   removeRouterLeasesForVm,
   upsertRouterLease,
 } from "~/vpcs/router-policy.server";
@@ -793,6 +795,24 @@ export async function getVm(
       throw new Response("Virtual machine not found", { status: 404 });
     }
     throw err;
+  }
+
+  // Router VMs: heal IPAM annotations when post-create VPC attach omitted them.
+  if (vm.metadata?.labels?.[KMC_LABEL_ROLE] === KMC_ROLE_ROUTER) {
+    try {
+      const healed = await ensureRouterVmIpamAnnotations(cluster, namespace, name);
+      if (healed) {
+        vm = (await custom.getNamespacedCustomObject({
+          group: "kubevirt.io",
+          version: "v1",
+          namespace,
+          plural: "virtualmachines",
+          name,
+        })) as KubeVm;
+      }
+    } catch {
+      /* best-effort */
+    }
   }
 
   let vmi: KubeVmi | null = null;

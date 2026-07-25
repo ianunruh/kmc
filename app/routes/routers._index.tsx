@@ -3,18 +3,14 @@ import {
   Alert,
   Button,
   Checkbox,
+  Group,
   Menu,
   Select,
   Stack,
   Text,
   TextInput,
 } from "@mantine/core";
-import {
-  IconDotsVertical,
-  IconPlus,
-  IconSearch,
-  IconTrash,
-} from "@tabler/icons-react";
+import { IconDotsVertical, IconPlus, IconSearch, IconTrash } from "@tabler/icons-react";
 import { useMemo, useState } from "react";
 import { Link, useFetcher } from "react-router";
 import type { Route } from "./+types/routers._index";
@@ -42,7 +38,7 @@ import {
   runBulkAction,
 } from "~/lib/bulk-action";
 import { actionFailure } from "~/lib/errors";
-import { routerPath, routersListPath } from "~/lib/format";
+import { routerPath, routersListPath, vpcPath } from "~/lib/format";
 import { clusterFromRequest } from "~/lib/search-params";
 import { matchesQuery, useListFilters } from "~/lib/use-list-filters";
 import { useRefresh } from "~/lib/refresh";
@@ -103,9 +99,7 @@ export async function action({ request }: Route.ActionArgs) {
   }
 }
 
-type ActionResult =
-  | { ok?: boolean; error?: string; intent?: string }
-  | BulkActionResult;
+type ActionResult = { ok?: boolean; error?: string; intent?: string } | BulkActionResult;
 
 export default function RoutersPage({ loaderData }: Route.ComponentProps) {
   const { items, clusters } = loaderData;
@@ -124,12 +118,7 @@ export default function RoutersPage({ loaderData }: Route.ComponentProps) {
     return items.filter((r) => {
       if (filters.cluster && r.cluster !== filters.cluster) return false;
       if (filters.namespace && r.namespace !== filters.namespace) return false;
-      return matchesQuery(qDraft, [
-        r.name,
-        r.namespace,
-        r.cluster,
-        ...r.vpcNames,
-      ]);
+      return matchesQuery(qDraft, [r.name, r.namespace, r.cluster, ...r.vpcNames]);
     });
   }, [items, filters.cluster, filters.namespace, qDraft]);
 
@@ -177,7 +166,7 @@ export default function RoutersPage({ loaderData }: Route.ComponentProps) {
     <Stack gap="md">
       <PageHeader
         title="Routers"
-        description="Shared VPC routers (DHCP + DNS). One router can attach multiple VPCs; optional external gateway comes later."
+        description="Shared VPC routers (DHCP + DNS). Multi-VPC attach at create or later via hotplug; optional external Multus for SNAT and floating IPs."
         actions={
           <Button
             component={Link}
@@ -225,11 +214,7 @@ export default function RoutersPage({ loaderData }: Route.ComponentProps) {
       </FilterBar>
 
       <Stack gap="sm">
-        <BulkActionBar
-          selectedCount={selectedCount}
-          onClear={clear}
-          disabled={busy}
-        >
+        <BulkActionBar selectedCount={selectedCount} onClear={clear} disabled={busy}>
           <Button
             size="xs"
             variant="light"
@@ -289,9 +274,26 @@ export default function RoutersPage({ loaderData }: Route.ComponentProps) {
                   </ResourceLink>
                 </Table.Td>
                 <Table.Td>
-                  <Text size="sm" ff="monospace">
-                    {r.vpcNames.length ? r.vpcNames.join(", ") : "—"}
-                  </Text>
+                  {r.vpcNames.length === 0 ? (
+                    <Text size="sm" c="dimmed">
+                      —
+                    </Text>
+                  ) : (
+                    <Group gap={4} wrap="wrap">
+                      {r.vpcNames.map((vpc) => (
+                        <ResourceLink
+                          key={vpc}
+                          to={vpcPath({
+                            cluster: r.cluster,
+                            namespace: r.namespace,
+                            name: vpc,
+                          })}
+                        >
+                          {vpc}
+                        </ResourceLink>
+                      ))}
+                    </Group>
+                  )}
                 </Table.Td>
                 <Table.Td>
                   {r.agentStatus ? (
