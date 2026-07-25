@@ -743,6 +743,60 @@ export interface UpsertClusterInstanceTypeRequest {
   memory: string;
 }
 
+// --- Backends (kmc-managed Services for pod-network VM exposure) ---
+
+/**
+ * How a backend Service selects virt-launcher pods.
+ * Step 1: single-vm only. Later: labels | group.
+ */
+export type BackendMembership = {
+  mode: "single-vm";
+  vmName: string;
+};
+
+export type BackendServiceType = "ClusterIP" | "LoadBalancer";
+
+export type BackendPortProtocol = "TCP" | "UDP";
+
+export interface BackendPort {
+  name?: string;
+  port: number;
+  targetPort: number;
+  protocol?: BackendPortProtocol;
+}
+
+export interface CreateBackendRequest {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  membership: BackendMembership;
+  ports: BackendPort[];
+  /** Default ClusterIP. LoadBalancer reserved for step 3. */
+  serviceType?: BackendServiceType;
+  /**
+   * Extra labels merged onto the Service (e.g. ingress name linkage when
+   * created as a companion to an Ingress).
+   */
+  extraLabels?: Record<string, string>;
+}
+
+export interface BackendSummary {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  serviceType: string;
+  membership: BackendMembership | { mode: "unknown" };
+  /** Single-vm convenience (undefined for other modes). */
+  vmName?: string;
+  ports: BackendPort[];
+  selector: Record<string, string>;
+  age: string;
+  /** First loadBalancer ingress host/IP when present */
+  externalAddress?: string;
+  endpointsReady?: number;
+  endpointsTotal?: number;
+}
+
 // --- Ingresses (networking.k8s.io) bound to VMs ---
 
 export interface IngressSummary {
@@ -777,6 +831,15 @@ export interface IngressRuleInfo {
   paths: IngressRulePath[];
 }
 
+/** Companion backend Service details (membership + selector) on Ingress detail. */
+export interface IngressBackendInfo {
+  /** Service exists in the cluster */
+  exists: boolean;
+  serviceType?: string;
+  membership: BackendMembership | { mode: "unknown" };
+  selector: Record<string, string>;
+}
+
 export interface IngressDetail extends IngressSummary {
   uid?: string;
   labels: Record<string, string>;
@@ -792,6 +855,8 @@ export interface IngressDetail extends IngressSummary {
   /** Endpoint readiness for the companion Service (when available) */
   endpointsReady?: number;
   endpointsTotal?: number;
+  /** Parsed from companion Service labels + spec.selector */
+  backend?: IngressBackendInfo;
   vm?: { name: string; exists: boolean; podNetwork: boolean };
 }
 

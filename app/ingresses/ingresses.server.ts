@@ -8,12 +8,21 @@ import type {
 } from "~/lib/types";
 import {
   KMC_INGRESS_LABEL_SELECTOR,
+  KMC_LABEL_INGRESS,
   KMC_LABEL_VM,
 } from "~/lib/k8s/constants";
 import { getClusterClients, getConfiguredContexts } from "~/lib/k8s/clients.server";
 import { toResourceYaml } from "~/lib/k8s/yaml.server";
+import {
+  createBackend,
+  deleteBackend,
+  readEndpointsCounts,
+  readServiceOptional,
+  singleVmMembership,
+} from "~/backends/backends.server";
+import { membershipFromLabels } from "~/backends/membership.server";
 import { listClusters } from "~/vms/vms.server";
-import { buildIngressManifest, buildServiceManifest } from "./template.server";
+import { buildIngressManifest } from "./template.server";
 
 interface KubeIngress {
   metadata?: {
@@ -48,30 +57,6 @@ interface KubeIngress {
       ingress?: Array<{ ip?: string; hostname?: string }>;
     };
   };
-}
-
-interface KubeService {
-  metadata?: {
-    name?: string;
-    namespace?: string;
-  };
-  spec?: {
-    ports?: Array<{
-      name?: string;
-      port?: number;
-      targetPort?: number | string;
-      protocol?: string;
-    }>;
-    selector?: Record<string, string>;
-  };
-}
-
-interface KubeEndpoints {
-  subsets?: Array<{
-    addresses?: unknown[];
-    notReadyAddresses?: unknown[];
-    ports?: unknown[];
-  }>;
 }
 
 function mapHosts(ing: KubeIngress): string[] {
@@ -156,48 +141,6 @@ function mapSummary(cluster: ClusterId, ing: KubeIngress): IngressSummary {
 function isNotFound(err: unknown): boolean {
   const message = formatError(err).toLowerCase();
   return message.includes("404") || message.includes("not found");
-}
-
-async function readServiceOptional(
-  cluster: ClusterId,
-  namespace: string,
-  name: string,
-): Promise<KubeService | null> {
-  try {
-    const { core } = getClusterClients(cluster);
-    return (await core.readNamespacedService({
-      name,
-      namespace,
-    })) as KubeService;
-  } catch (err) {
-    if (isNotFound(err)) return null;
-    throw err;
-  }
-}
-
-async function readEndpointsCounts(
-  cluster: ClusterId,
-  namespace: string,
-  name: string,
-): Promise<{ ready: number; total: number } | null> {
-  try {
-    const { core } = getClusterClients(cluster);
-    const ep = (await core.readNamespacedEndpoints({
-      name,
-      namespace,
-    })) as KubeEndpoints;
-    let ready = 0;
-    let notReady = 0;
-    for (const subset of ep.subsets ?? []) {
-      ready += subset.addresses?.length ?? 0;
-      notReady += subset.notReadyAddresses?.length ?? 0;
-    }
-    return { ready, total: ready + notReady };
-  } catch (err) {
-    if (isNotFound(err)) return null;
-    // Endpoints may be restricted; detail still works without them
-    return null;
-  }
 }
 
 async function vmBindingInfo(
@@ -316,16 +259,24 @@ export async function getIngress(
 
   const summary = mapSummary(cluster, ing);
   const serviceName = summary.serviceName ?? name;
-  const [service, endpoints, vm] = await Promise.all([
+  const [service, endpoints] = await Promise.all([
     readServiceOptional(cluster, namespace, serviceName),
     readEndpointsCounts(cluster, namespace, serviceName),
-    summary.vmName
-      ? vmBindingInfo(cluster, namespace, summary.vmName)
-      : Promise.resolve(undefined),
   ]);
+
+  const membership = membershipFromLabels(service?.metadata?.labels);
+  const backendVmName =
+    membership.mode === "single-vm" ? membership.vmName : undefined;
+  // Prefer Ingress label; Service membership is the backend source of truth
+  const targetVmName = summary.vmName ?? backendVmName;
+
+  const vm = targetVmName
+    ? await vmBindingInfo(cluster, namespace, targetVmName)
+    : undefined;
 
   return {
     ...summary,
+    vmName: targetVmName,
     uid: ing.metadata?.uid,
     labels: ing.metadata?.labels ?? {},
     annotations: Object.fromEntries(
@@ -346,6 +297,18 @@ export async function getIngress(
     })),
     endpointsReady: endpoints?.ready,
     endpointsTotal: endpoints?.total,
+    backend: service
+      ? {
+          exists: true,
+          serviceType: service.spec?.type ?? "ClusterIP",
+          membership,
+          selector: service.spec?.selector ?? {},
+        }
+      : {
+          exists: false,
+          membership: { mode: "unknown" as const },
+          selector: {},
+        },
     vm,
   };
 }
@@ -377,27 +340,9 @@ export async function createIngress(
   if (!input.vmName?.trim()) throw new Error("target VM is required");
   if (!input.host?.trim()) throw new Error("host is required");
 
-  const { core, networking, custom } = getClusterClients(input.cluster);
+  const { networking } = getClusterClients(input.cluster);
 
-  // Ensure target VM exists
-  try {
-    await custom.getNamespacedCustomObject({
-      group: "kubevirt.io",
-      version: "v1",
-      namespace: input.namespace,
-      plural: "virtualmachines",
-      name: input.vmName,
-    });
-  } catch (err) {
-    if (isNotFound(err)) {
-      throw new Error(
-        `VirtualMachine "${input.namespace}/${input.vmName}" not found`,
-      );
-    }
-    throw new Error(formatError(err), { cause: err });
-  }
-
-  // Pre-check name collisions
+  // Pre-check Ingress name collision (backend create checks Service)
   try {
     await networking.readNamespacedIngress({
       name: input.name,
@@ -415,36 +360,30 @@ export async function createIngress(
     }
   }
 
-  try {
-    await core.readNamespacedService({
-      name: input.name,
-      namespace: input.namespace,
-    });
-    throw new Error(
-      `Service "${input.namespace}/${input.name}" already exists (companion Service shares the Ingress name)`,
-    );
-  } catch (err) {
-    if (err instanceof Error && err.message.includes("already exists")) {
-      throw err;
-    }
-    if (!isNotFound(err)) {
-      throw new Error(formatError(err), { cause: err });
-    }
-  }
+  const servicePort = input.servicePort ?? 80;
+  const targetPort = input.targetPort ?? servicePort;
 
-  const serviceBody = buildServiceManifest(input);
-  const ingressBody = buildIngressManifest(input);
+  // Companion backend Service (selector + ports); VM existence checked inside
+  await createBackend({
+    cluster: input.cluster,
+    namespace: input.namespace,
+    name: input.name,
+    membership: singleVmMembership(input.vmName),
+    ports: [
+      {
+        name: "http",
+        port: servicePort,
+        targetPort,
+        protocol: "TCP",
+      },
+    ],
+    serviceType: "ClusterIP",
+    extraLabels: {
+      [KMC_LABEL_INGRESS]: input.name,
+    },
+  });
 
-  try {
-    await core.createNamespacedService({
-      namespace: input.namespace,
-      body: serviceBody as never,
-    });
-  } catch (err) {
-    throw new Error(`Failed to create Service: ${formatError(err)}`, {
-      cause: err,
-    });
-  }
+  const ingressBody = buildIngressManifest(input, input.name);
 
   try {
     const created = (await networking.createNamespacedIngress({
@@ -453,12 +392,9 @@ export async function createIngress(
     })) as KubeIngress;
     return mapSummary(input.cluster, created);
   } catch (err) {
-    // Best-effort rollback of companion Service
+    // Best-effort rollback of companion backend Service
     try {
-      await core.deleteNamespacedService({
-        name: input.name,
-        namespace: input.namespace,
-      });
+      await deleteBackend(input.cluster, input.namespace, input.name);
     } catch {
       // ignore
     }
@@ -473,7 +409,7 @@ export async function deleteIngress(
   namespace: string,
   name: string,
 ): Promise<void> {
-  const { core, networking } = getClusterClients(cluster);
+  const { networking } = getClusterClients(cluster);
 
   try {
     await networking.deleteNamespacedIngress({ name, namespace });
@@ -484,7 +420,7 @@ export async function deleteIngress(
   }
 
   try {
-    await core.deleteNamespacedService({ name, namespace });
+    await deleteBackend(cluster, namespace, name);
   } catch (err) {
     if (!isNotFound(err)) {
       throw new Error(

@@ -1,4 +1,4 @@
-import { Code, SimpleGrid, Stack, Text } from "@mantine/core";
+import { Badge, Code, Group, SimpleGrid, Stack, Text } from "@mantine/core";
 import { useRouteLoaderData } from "react-router";
 import {
   DetailField,
@@ -13,15 +13,39 @@ import {
   ingressesListPath,
   vmPath,
 } from "~/lib/format";
+import type { IngressBackendInfo } from "~/lib/types";
 import type { loader as detailLoader } from "./ingresses.$cluster.$namespace.$name";
 
 const LAYOUT_ID = "routes/ingresses.$cluster.$namespace.$name";
+
+function membershipModeLabel(
+  membership: IngressBackendInfo["membership"],
+): string {
+  switch (membership.mode) {
+    case "single-vm":
+      return "Single VM";
+    case "unknown":
+      return "Unknown";
+    default: {
+      const mode = (membership as { mode: string }).mode;
+      return mode;
+    }
+  }
+}
+
+function formatSelector(selector: Record<string, string>): string {
+  const entries = Object.entries(selector);
+  if (entries.length === 0) return "";
+  return entries.map(([k, v]) => `${k}=${v}`).join(", ");
+}
 
 export default function IngressOverviewTab() {
   const data = useRouteLoaderData(LAYOUT_ID) as Awaited<
     ReturnType<typeof detailLoader>
   >;
   const { ing } = data;
+  const backend = ing.backend;
+  const selectorText = backend ? formatSelector(backend.selector) : "";
 
   return (
     <Stack gap="md">
@@ -58,28 +82,6 @@ export default function IngressOverviewTab() {
               label="Hosts"
               value={ing.hosts.length > 0 ? ing.hosts.join(", ") : undefined}
             />
-            <DetailField
-              label="Target VM"
-              value={
-                ing.vmName ? (
-                  ing.vm?.exists === false ? (
-                    <Text size="sm" c="dimmed">
-                      {ing.vmName} (missing)
-                    </Text>
-                  ) : (
-                    <ResourceLink
-                      to={vmPath({
-                        cluster: ing.cluster,
-                        namespace: ing.namespace,
-                        name: ing.vmName,
-                      })}
-                    >
-                      {ing.vmName}
-                    </ResourceLink>
-                  )
-                ) : undefined
-              }
-            />
             <DetailField label="Service" value={ing.serviceName} />
             <DetailField
               label="Endpoints"
@@ -92,38 +94,105 @@ export default function IngressOverviewTab() {
           </SimpleGrid>
         </DetailSection>
 
-        <DetailSection title="Service ports">
-          {ing.servicePorts && ing.servicePorts.length > 0 ? (
-            <ResourceTable
-              headers={["Name", "Port", "Target", "Protocol"]}
-              isEmpty={false}
-            >
-              {ing.servicePorts.map((p, i) => (
-                <Table.Tr key={`${p.name ?? "port"}-${p.port}-${i}`}>
-                  <Table.Td>
-                    <Text size="sm">{p.name ?? "—"}</Text>
-                  </Table.Td>
-                  <Table.Td>
-                    <Text size="sm">{p.port}</Text>
-                  </Table.Td>
-                  <Table.Td>
-                    <Text size="sm">{String(p.targetPort)}</Text>
-                  </Table.Td>
-                  <Table.Td>
-                    <Text size="sm" c="dimmed">
-                      {p.protocol ?? "TCP"}
-                    </Text>
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </ResourceTable>
-          ) : (
+        <DetailSection title="Backend">
+          {!backend || !backend.exists ? (
             <Text size="sm" c="dimmed">
               Companion Service not found (name: {ing.serviceName ?? ing.name})
             </Text>
+          ) : (
+            <SimpleGrid cols={2} spacing="sm">
+              <DetailField
+                label="Membership"
+                value={
+                  <Badge size="sm" variant="light" color="gray">
+                    {membershipModeLabel(backend.membership)}
+                  </Badge>
+                }
+              />
+              <DetailField label="Service type" value={backend.serviceType} />
+              <DetailField
+                label="Target VM"
+                value={
+                  ing.vmName ? (
+                    ing.vm?.exists === false ? (
+                      <Text size="sm" c="dimmed">
+                        {ing.vmName} (missing)
+                      </Text>
+                    ) : (
+                      <Group gap="xs" wrap="wrap">
+                        <ResourceLink
+                          to={vmPath({
+                            cluster: ing.cluster,
+                            namespace: ing.namespace,
+                            name: ing.vmName,
+                          })}
+                        >
+                          {ing.vmName}
+                        </ResourceLink>
+                        {ing.vm && !ing.vm.podNetwork && (
+                          <Badge size="sm" variant="light" color="orange">
+                            Multus only
+                          </Badge>
+                        )}
+                      </Group>
+                    )
+                  ) : (
+                    <Text size="sm" c="dimmed">
+                      —
+                    </Text>
+                  )
+                }
+              />
+              <DetailField
+                label="Selector"
+                value={
+                  selectorText ? (
+                    <Code style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                      {selectorText}
+                    </Code>
+                  ) : (
+                    <Text size="sm" c="dimmed">
+                      (none)
+                    </Text>
+                  )
+                }
+              />
+            </SimpleGrid>
           )}
         </DetailSection>
       </SimpleGrid>
+
+      <DetailSection title="Service ports">
+        {ing.servicePorts && ing.servicePorts.length > 0 ? (
+          <ResourceTable
+            headers={["Name", "Port", "Target", "Protocol"]}
+            isEmpty={false}
+          >
+            {ing.servicePorts.map((p, i) => (
+              <Table.Tr key={`${p.name ?? "port"}-${p.port}-${i}`}>
+                <Table.Td>
+                  <Text size="sm">{p.name ?? "—"}</Text>
+                </Table.Td>
+                <Table.Td>
+                  <Text size="sm">{p.port}</Text>
+                </Table.Td>
+                <Table.Td>
+                  <Text size="sm">{String(p.targetPort)}</Text>
+                </Table.Td>
+                <Table.Td>
+                  <Text size="sm" c="dimmed">
+                    {p.protocol ?? "TCP"}
+                  </Text>
+                </Table.Td>
+              </Table.Tr>
+            ))}
+          </ResourceTable>
+        ) : (
+          <Text size="sm" c="dimmed">
+            Companion Service not found (name: {ing.serviceName ?? ing.name})
+          </Text>
+        )}
+      </DetailSection>
 
       <DetailSection title="Rules">
         {ing.rules.length === 0 ? (

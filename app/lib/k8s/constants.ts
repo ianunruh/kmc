@@ -29,20 +29,29 @@ export const KMC_LABEL_VM = `${KMC_LABEL_NAMESPACE}/vm`;
 export const KMC_LABEL_TARGET_KIND = `${KMC_LABEL_NAMESPACE}/target-kind`;
 export const KMC_TARGET_KIND_VM = "VirtualMachine";
 
-/** Ingress name stamped on the companion Service for reverse lookup. */
+/** Ingress name stamped on the companion backend Service (1:1 create). */
 export const KMC_LABEL_INGRESS = `${KMC_LABEL_NAMESPACE}/ingress`;
 
 /** List selector for kmc-managed Ingresses bound to a single VM. */
 export const KMC_INGRESS_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_TARGET_KIND}=${KMC_TARGET_KIND_VM}`;
+
+/** Labels on kmc-managed resources (VPC NAD, backend Service, etc.). */
+export const KMC_LABEL_RESOURCE = `${KMC_LABEL_NAMESPACE}/resource`;
+
+/**
+ * Value of kmc.ianunruh.com/resource for kmc-managed backend Services
+ * (pod-network VM exposure: ClusterIP today, LoadBalancer later).
+ */
+export const KMC_RESOURCE_BACKEND = "backend";
+
+/** List selector for kmc-managed backend Services. */
+export const KMC_BACKEND_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_BACKEND}`;
 
 /** Value of kmc.ianunruh.com/resource for self-service VPC NADs. */
 export const KMC_RESOURCE_VPC = "vpc";
 
 /** Value of kmc.ianunruh.com/resource for static/shared Multus NADs (from ipPools). */
 export const KMC_RESOURCE_NETWORK = "network";
-
-/** Labels on kmc-managed VPC NetworkAttachmentDefinitions. */
-export const KMC_LABEL_RESOURCE = `${KMC_LABEL_NAMESPACE}/resource`;
 export const KMC_LABEL_VLAN = `${KMC_LABEL_NAMESPACE}/vlan`;
 export const KMC_LABEL_VLAN_POOL = `${KMC_LABEL_NAMESPACE}/vlan-pool`;
 /** Static ipPools id stamped on ensured shared Multus NADs. */

@@ -20,41 +20,19 @@ export function ownershipLabels(input: {
   };
 }
 
-export function buildServiceManifest(input: CreateIngressRequest) {
-  const servicePort = input.servicePort ?? 80;
-  const targetPort = input.targetPort ?? servicePort;
-  const labels = ownershipLabels({ name: input.name, vmName: input.vmName });
-
-  return {
-    apiVersion: "v1",
-    kind: "Service",
-    metadata: {
-      name: input.name,
-      namespace: input.namespace,
-      labels,
-    },
-    spec: {
-      type: "ClusterIP",
-      selector: {
-        "kubevirt.io/vm": input.vmName,
-      },
-      ports: [
-        {
-          name: "http",
-          protocol: "TCP",
-          port: servicePort,
-          targetPort,
-        },
-      ],
-    },
-  };
-}
-
-export function buildIngressManifest(input: CreateIngressRequest) {
+/**
+ * Ingress-only manifest. Companion Service is created via app/backends.
+ * @param serviceName defaults to ingress name (1:1 v1 convention)
+ */
+export function buildIngressManifest(
+  input: CreateIngressRequest,
+  serviceName?: string,
+) {
   const servicePort = input.servicePort ?? 80;
   const path = input.path?.trim() || "/";
   const pathType = input.pathType ?? "Prefix";
   const labels = ownershipLabels({ name: input.name, vmName: input.vmName });
+  const backendService = serviceName?.trim() || input.name;
 
   return {
     apiVersion: "networking.k8s.io/v1",
@@ -78,7 +56,7 @@ export function buildIngressManifest(input: CreateIngressRequest) {
                 pathType,
                 backend: {
                   service: {
-                    name: input.name,
+                    name: backendService,
                     port: { number: servicePort },
                   },
                 },
