@@ -275,7 +275,8 @@ policy ConfigMap already exists.
 private target but **keeps** the public address held (secondary IP stays on the
 router; IPAM still reserves it). **Release** removes the policy entry so the
 address returns to the public pool. Held addresses can be re-associated later
-without re-allocating.
+without re-allocating. Deleting a guest VM also disassociates its floating IPs
+into the held state (leases are removed; public addresses are not released).
 
 **In-guest agent** (`app/vpcs/kmc-router-agent.py`, Python 3 stdlib only):
 

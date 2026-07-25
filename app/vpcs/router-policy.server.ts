@@ -899,6 +899,11 @@ export async function upsertRouterLease(
   });
 }
 
+/**
+ * On VM delete (or failed create): drop DHCP leases for the guest and
+ * disassociate any floating IPs that targeted it. Public addresses are retained
+ * as **held** (same as manual disassociate) so they stay reserved for the VPC.
+ */
 export async function removeRouterLeasesForVm(
   cluster: ClusterId,
   namespace: string,
@@ -930,13 +935,61 @@ export async function removeRouterLeasesForVm(
       "";
     if (!routerName) continue;
     const preview = parseRouterPolicyDoc(cm.data?.[KMC_ROUTER_POLICY_DATA_KEY]);
-    if (!preview?.leases.some((L) => L.vm === vmName)) continue;
+    if (!preview) continue;
+    const hasLease = preview.leases.some((L) => L.vm === vmName);
+    const hasFloat = (preview.floatingIPs ?? []).some(
+      (f) => f.targetVm === vmName && Boolean(f.private?.trim()),
+    );
+    if (!hasLease && !hasFloat) continue;
     try {
-      await mutateRouterPolicyDoc(cluster, namespace, routerName, (doc) => {
-        const before = doc.leases.length;
-        doc.leases = doc.leases.filter((L) => L.vm !== vmName);
-        if (doc.leases.length === before) return false;
-      });
+      let disassociatedFloats = false;
+      const next = await mutateRouterPolicyDoc(
+        cluster,
+        namespace,
+        routerName,
+        (doc) => {
+          const vmLeaseIps = new Set(
+            doc.leases
+              .filter((L) => L.vm === vmName)
+              .map((L) => addressFromIpv4Annotation(L.ip) ?? L.ip.trim())
+              .filter(Boolean),
+          );
+          const leaseBefore = doc.leases.length;
+          doc.leases = doc.leases.filter((L) => L.vm !== vmName);
+          const leaseChanged = doc.leases.length !== leaseBefore;
+
+          let fipChanged = false;
+          doc.floatingIPs = (doc.floatingIPs ?? []).map((f) => {
+            const privRaw = f.private?.trim();
+            if (!privRaw) return f;
+            const priv = addressFromIpv4Annotation(privRaw) ?? privRaw;
+            const matchesVm =
+              f.targetVm === vmName || (priv ? vmLeaseIps.has(priv) : false);
+            if (!matchesVm) return f;
+            fipChanged = true;
+            // Hold: keep public reservation; clear private mapping (like disassociate).
+            return {
+              id: f.id,
+              public: f.public,
+              prefix: f.prefix,
+              protocol: f.protocol ?? "all",
+              vpc: f.vpc,
+            };
+          });
+
+          if (fipChanged) disassociatedFloats = true;
+          if (!leaseChanged && !fipChanged) return false;
+        },
+      );
+      // Secondary IPs on the router NIC stay (held floats); annotation lists all.
+      if (disassociatedFloats) {
+        await syncRouterFloatingAnnotation(
+          cluster,
+          namespace,
+          routerName,
+          floatingIpsFromRouterDoc(next),
+        );
+      }
     } catch (err) {
       console.error(
         `removeRouterLeasesForVm ${namespace}/${cm.metadata?.name}:`,
