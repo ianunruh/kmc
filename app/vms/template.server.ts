@@ -246,12 +246,14 @@ export function buildSshUserData(
     "  - default",
     "ssh_authorized_keys:",
     ...keys.map((k) => `  - ${k}`),
-    "packages:",
-    "  - traceroute",
   ];
   if (opts?.installGuestAgent) {
+    // Packages need egress (apt). Only install when guest agent is requested —
+    // that path assumes the guest can reach external repos.
     lines.push(
+      "packages:",
       "  - qemu-guest-agent",
+      "  - traceroute",
       "runcmd:",
       "  - systemctl enable --now qemu-guest-agent",
     );
