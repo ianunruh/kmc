@@ -179,15 +179,28 @@ export async function listDataVolumes(clusterFilter?: ClusterId): Promise<{
   return { items, clusters };
 }
 
+type VmVolumeRef = {
+  dataVolume?: { name?: string };
+  persistentVolumeClaim?: { claimName?: string };
+};
+
 /**
- * Find VirtualMachines in the namespace that attach this DataVolume (or its PVC).
+ * Map DataVolume / PVC names → VirtualMachine names that reference them
+ * (template volumes + dataVolumeTemplates). One list walk for pickers.
  */
-async function findAttachedVmNames(
+export async function mapDataVolumeAttachmentsInNamespace(
   cluster: ClusterId,
   namespace: string,
-  dataVolumeName: string,
-  claimName?: string,
-): Promise<string[]> {
+): Promise<Map<string, string[]>> {
+  const attached = new Map<string, string[]>();
+  const add = (key: string | undefined, vmName: string) => {
+    const k = key?.trim();
+    if (!k) return;
+    const list = attached.get(k) ?? [];
+    if (!list.includes(vmName)) list.push(vmName);
+    attached.set(k, list);
+  };
+
   const { custom } = getClusterClients(cluster);
   try {
     const res = (await custom.listNamespacedCustomObject({
@@ -199,39 +212,49 @@ async function findAttachedVmNames(
       items?: Array<{
         metadata?: { name?: string };
         spec?: {
+          dataVolumeTemplates?: Array<{ metadata?: { name?: string } }>;
           template?: {
             spec?: {
-              volumes?: Array<{
-                dataVolume?: { name?: string };
-                persistentVolumeClaim?: { claimName?: string };
-              }>;
+              volumes?: VmVolumeRef[];
             };
           };
         };
       }>;
     };
-    const names: string[] = [];
-    const claim = claimName?.trim() || dataVolumeName;
     for (const vm of res.items ?? []) {
       const vmName = vm.metadata?.name;
       if (!vmName) continue;
       for (const vol of vm.spec?.template?.spec?.volumes ?? []) {
-        if (vol.dataVolume?.name === dataVolumeName) {
-          names.push(vmName);
-          break;
-        }
-        const pvc = vol.persistentVolumeClaim?.claimName;
-        if (pvc && (pvc === claim || pvc === dataVolumeName)) {
-          names.push(vmName);
-          break;
-        }
+        add(vol.dataVolume?.name, vmName);
+        add(vol.persistentVolumeClaim?.claimName, vmName);
+      }
+      for (const tpl of vm.spec?.dataVolumeTemplates ?? []) {
+        add(tpl.metadata?.name, vmName);
       }
     }
-    names.sort((a, b) => a.localeCompare(b));
-    return names;
   } catch {
-    return [];
+    return attached;
   }
+  return attached;
+}
+
+/**
+ * Find VirtualMachines in the namespace that attach this DataVolume (or its PVC).
+ */
+async function findAttachedVmNames(
+  cluster: ClusterId,
+  namespace: string,
+  dataVolumeName: string,
+  claimName?: string,
+): Promise<string[]> {
+  const map = await mapDataVolumeAttachmentsInNamespace(cluster, namespace);
+  const names = new Set<string>();
+  for (const n of map.get(dataVolumeName) ?? []) names.add(n);
+  const claim = claimName?.trim();
+  if (claim && claim !== dataVolumeName) {
+    for (const n of map.get(claim) ?? []) names.add(n);
+  }
+  return Array.from(names).sort((a, b) => a.localeCompare(b));
 }
 
 export async function getDataVolume(
@@ -390,16 +413,32 @@ export type ReusableDataVolumeOption = {
 };
 
 /**
- * DataVolumes in a namespace suitable for create-from-existing (phase Succeeded).
- * In-use checks still run server-side on submit.
+ * DataVolumes suitable for attach / create-from-existing:
+ * phase Succeeded and not referenced by any VM in the namespace
+ * (template volumes or dataVolumeTemplates).
+ * Submit still re-checks via assertDataVolumeReusable.
  */
 export async function listReusableDataVolumes(
   cluster: ClusterId,
   namespace: string,
 ): Promise<ReusableDataVolumeOption[]> {
-  const items = await listDataVolumesInNamespace(cluster, namespace);
+  const [items, attachments] = await Promise.all([
+    listDataVolumesInNamespace(cluster, namespace),
+    mapDataVolumeAttachmentsInNamespace(cluster, namespace),
+  ]);
+  const isInUse = (dv: DataVolumeSummary) => {
+    if ((attachments.get(dv.name) ?? []).length > 0) return true;
+    // claimName often equals DV name; when different, PVC refs also count.
+    // We don't have claimName on summary — DV name is enough for kmc standalone
+    // disks (claimName === DV name). Roots use the same convention.
+    return false;
+  };
   const reusable = items
-    .filter((dv) => (REUSABLE_DV_PHASES as readonly string[]).includes(dv.phase))
+    .filter(
+      (dv) =>
+        (REUSABLE_DV_PHASES as readonly string[]).includes(dv.phase) &&
+        !isInUse(dv),
+    )
     .map((dv) => ({
       name: dv.name,
       phase: dv.phase,

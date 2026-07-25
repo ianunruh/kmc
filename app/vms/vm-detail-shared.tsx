@@ -53,6 +53,10 @@ export function intentSuccessLabel(intent?: string): string {
       return "snapshot delete";
     case "restore-snapshot":
       return "snapshot restore";
+    case "attach-disk":
+      return "disk attach";
+    case "detach-disk":
+      return "disk detach";
     default:
       return intent ?? "action";
   }
@@ -66,4 +70,9 @@ export type VmDetailActionResult = {
   retainedDisks?: string[];
   snapshotName?: string;
   restoreName?: string;
+  volumeName?: string;
+  dataVolumeName?: string;
+  createdDataVolume?: boolean;
+  deletedDataVolume?: boolean;
+  retainedDataVolume?: boolean;
 };

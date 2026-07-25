@@ -1,11 +1,17 @@
 import { formatError } from "~/lib/errors";
 import { canEditVmSpec } from "~/lib/format";
 import type {
+  AttachVmDiskRequest,
+  AttachVmDiskResult,
   ClusterId,
   ClusterInfo,
+  CreateVmExtraDisk,
   CreateVmRequest,
+  DetachVmDiskRequest,
+  DetachVmDiskResult,
   UpdateVmRequest,
   VmDetail,
+  VmDiskSourceMode,
   VmGuestAgentInfo,
   VmGuestFilesystem,
   VmNetworkInfo,
@@ -40,11 +46,14 @@ import {
   KMC_LABEL_RETAINED_FROM_VM,
   KMC_LABEL_VLAN,
   KMC_MANAGED_BY,
+  KMC_MAX_EXTRA_DISKS,
+  KMC_RESERVED_VOLUME_NAMES,
   KMC_RESOURCE_NETWORK,
   KMC_RESOURCE_VPC,
   MANAGED_BY_LABEL,
   REUSABLE_DV_PHASES,
 } from "~/lib/k8s/constants";
+import { DNS1123_LABEL } from "~/lib/format";
 import { addressFromIpv4Annotation } from "~/lib/ipam/cidr";
 import { parseIpv4AnnotationList } from "~/lib/ipam/pools.server";
 import { listFloatingIpsFromRouterPolicies } from "~/vpcs/router-policy.server";
@@ -57,6 +66,7 @@ import {
   bindAllocationsToNetworks,
   buildVirtualMachineManifest,
   multusNetworksFromRequest,
+  type ResolvedExtraDisk,
 } from "./template.server";
 
 interface KubeVm {
@@ -124,8 +134,11 @@ interface KubeVm {
         }>;
         volumes?: Array<{
           name?: string;
-          dataVolume?: { name?: string };
-          persistentVolumeClaim?: { claimName?: string };
+          dataVolume?: { name?: string; hotpluggable?: boolean };
+          persistentVolumeClaim?: {
+            claimName?: string;
+            hotpluggable?: boolean;
+          };
           cloudInitNoCloud?: {
             userData?: string;
             networkData?: string;
@@ -182,8 +195,19 @@ interface KubeVmi {
       reason?: string;
       lastTransitionTime?: string;
     }>;
+    /** Hotplug / volume readiness (name matches template volume name). */
+    volumeStatus?: Array<{
+      name?: string;
+      phase?: string;
+      reason?: string;
+      message?: string;
+      target?: string;
+      hotplugVolume?: unknown;
+    }>;
   };
 }
+
+const RESERVED_VOLUME_NAME_SET = new Set<string>(KMC_RESERVED_VOLUME_NAMES);
 
 function mapVm(
   cluster: ClusterId,
@@ -403,6 +427,7 @@ async function loadClusterDataVolumeDiskIndex(
 function mapVolumes(
   vm: KubeVm,
   dvIndex?: Map<string, DataVolumeDiskInfo>,
+  vmi?: KubeVmi | null,
 ): VmVolumeInfo[] {
   const disks = vm.spec?.template?.spec?.domain?.devices?.disks ?? [];
   const diskByName = new Map(disks.map((d) => [d.name ?? "", d] as const));
@@ -410,10 +435,19 @@ function mapVolumes(
     (vm.spec?.dataVolumeTemplates ?? []).map((dv) => [dv.metadata?.name ?? "", dv]),
   );
   const namespace = vm.metadata?.namespace ?? "default";
+  const phaseByName = new Map(
+    (vmi?.status?.volumeStatus ?? [])
+      .filter((vs) => vs.name)
+      .map((vs) => [vs.name!, vs.phase ?? ""] as const),
+  );
 
   return (vm.spec?.template?.spec?.volumes ?? []).map((vol) => {
-    const disk = diskByName.get(vol.name ?? "");
+    const volName = vol.name ?? "";
+    const disk = diskByName.get(volName);
     const bus = disk?.disk?.bus ?? disk?.cdrom?.bus;
+    const volumePhase = phaseByName.get(volName) || undefined;
+    const isRoot = volName === "root";
+
     if (vol.dataVolume?.name) {
       const tpl = dvTemplates.get(vol.dataVolume.name);
       let size =
@@ -437,49 +471,70 @@ function mapVolumes(
         }
       }
       // Root disk size annotation when DV index unavailable
-      if (!size && vol.name === "root") {
+      if (!size && isRoot) {
         size = vm.metadata?.annotations?.[KMC_ANN_DISK_SIZE]?.trim() || undefined;
       }
+      const hotpluggable = vol.dataVolume.hotpluggable === true;
+      const canDetach =
+        !RESERVED_VOLUME_NAME_SET.has(volName) && Boolean(vol.dataVolume.name);
       return {
-        name: vol.name ?? "",
+        name: volName,
         kind: "DataVolume",
         detail: src ?? vol.dataVolume.name,
         diskBus: bus,
         size,
         storageClass,
         linkName: vol.dataVolume.name,
+        isRoot,
+        hotpluggable,
+        volumePhase,
+        canDetach,
       };
     }
     if (vol.persistentVolumeClaim?.claimName) {
+      const hotpluggable = vol.persistentVolumeClaim.hotpluggable === true;
       return {
-        name: vol.name ?? "",
+        name: volName,
         kind: "PVC",
         detail: vol.persistentVolumeClaim.claimName,
         diskBus: bus,
         // CDI often backs a DV of the same name; link to DV detail when possible.
         linkName: vol.persistentVolumeClaim.claimName,
+        isRoot,
+        hotpluggable,
+        volumePhase,
+        canDetach: false,
       };
     }
     if (vol.cloudInitNoCloud) {
       return {
-        name: vol.name ?? "",
+        name: volName,
         kind: "cloudInitNoCloud",
         detail: vol.cloudInitNoCloud.networkData ? "userData + networkData" : "userData",
         diskBus: bus,
+        isRoot,
+        volumePhase,
+        canDetach: false,
       };
     }
     if (vol.containerDisk?.image) {
       return {
-        name: vol.name ?? "",
+        name: volName,
         kind: "containerDisk",
         detail: vol.containerDisk.image,
         diskBus: bus,
+        isRoot,
+        volumePhase,
+        canDetach: false,
       };
     }
     return {
-      name: vol.name ?? "unknown",
+      name: volName || "unknown",
       kind: "other",
       diskBus: bus,
+      isRoot,
+      volumePhase,
+      canDetach: false,
     };
   });
 }
@@ -707,7 +762,7 @@ function mapVmDetail(
       message: c.message,
       lastTransitionTime: c.lastTransitionTime,
     })),
-    volumes: mapVolumes(vm, dvIndex),
+    volumes: mapVolumes(vm, dvIndex, vmi),
     networks: mapNetworks(vm, vmi),
     ipv4Address: liveIpv4,
     vmiPhase: vmi?.status?.phase,
@@ -1065,6 +1120,608 @@ export async function ensureRootDataVolumeFromImage(opts: {
   return { name, created: true };
 }
 
+/**
+ * Create a blank standalone DataVolume for a secondary disk.
+ * Lifecycle is managed by kmc (delete/retain / detach), not ownerRefs.
+ */
+export async function ensureBlankDataVolume(opts: {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  size: string;
+  storageClass?: string;
+  /** VirtualMachine name for kubevirt.io/vm label (actual VM, not DV name). */
+  vmName: string;
+}): Promise<{ name: string; created: boolean }> {
+  const name = opts.name.trim();
+  if (!name) throw new Error("DataVolume name is required");
+  if (!opts.size?.trim()) throw new Error("size is required");
+  if (!opts.vmName?.trim()) throw new Error("vmName is required");
+
+  const { custom } = getClusterClients(opts.cluster);
+  try {
+    await custom.getNamespacedCustomObject({
+      group: "cdi.kubevirt.io",
+      version: "v1beta1",
+      namespace: opts.namespace,
+      plural: "datavolumes",
+      name,
+    });
+    return { name, created: false };
+  } catch (err) {
+    if (!isNotFoundError(err)) throw new Error(formatError(err), { cause: err });
+  }
+
+  try {
+    await custom.createNamespacedCustomObject({
+      group: "cdi.kubevirt.io",
+      version: "v1beta1",
+      namespace: opts.namespace,
+      plural: "datavolumes",
+      body: {
+        apiVersion: "cdi.kubevirt.io/v1beta1",
+        kind: "DataVolume",
+        metadata: {
+          name,
+          namespace: opts.namespace,
+          labels: {
+            [MANAGED_BY_LABEL]: KMC_MANAGED_BY,
+            "kubevirt.io/vm": opts.vmName.trim(),
+          },
+        },
+        spec: {
+          source: { blank: {} },
+          storage: {
+            accessModes: ["ReadWriteOnce"],
+            volumeMode: "Block",
+            resources: {
+              requests: {
+                storage: opts.size.trim(),
+              },
+            },
+            ...(opts.storageClass
+              ? { storageClassName: opts.storageClass }
+              : {}),
+          },
+        },
+      },
+    });
+  } catch (err) {
+    throw new Error(formatError(err), { cause: err });
+  }
+  return { name, created: true };
+}
+
+/** Stable DV name for a secondary volume: `{vm}-{volume}`, ≤63 chars. */
+export function secondaryDataVolumeName(
+  vmName: string,
+  volumeName: string,
+): string {
+  const vm = vmName.trim();
+  const vol = volumeName.trim();
+  const combined = `${vm}-${vol}`;
+  if (combined.length <= 63) return combined;
+  const maxVm = 63 - 1 - vol.length;
+  if (maxVm < 1) {
+    throw new Error(
+      `Volume name "${vol}" is too long to form a DataVolume name with VM "${vm}"`,
+    );
+  }
+  return `${vm.slice(0, maxVm)}-${vol}`;
+}
+
+function existingVolumeNames(vm: KubeVm): Set<string> {
+  return new Set(
+    (vm.spec?.template?.spec?.volumes ?? [])
+      .map((v) => v.name?.trim() ?? "")
+      .filter(Boolean),
+  );
+}
+
+function countSecondaryDataDisks(vm: KubeVm): number {
+  return (vm.spec?.template?.spec?.volumes ?? []).filter((v) => {
+    const n = v.name?.trim() ?? "";
+    if (!n || RESERVED_VOLUME_NAME_SET.has(n)) return false;
+    return Boolean(v.dataVolume?.name || v.persistentVolumeClaim?.claimName);
+  }).length;
+}
+
+function validateVolumeName(name: string): void {
+  if (!name) throw new Error("Volume name is required");
+  if (name.length > 63) throw new Error("Volume name max 63 characters");
+  if (!DNS1123_LABEL.test(name)) {
+    throw new Error(
+      "Volume name must be a DNS-1123 label (lowercase alphanumeric and hyphens)",
+    );
+  }
+  if (RESERVED_VOLUME_NAME_SET.has(name)) {
+    throw new Error(`Volume name "${name}" is reserved`);
+  }
+}
+
+/**
+ * Pick a free volume name on the VM (`disk-N` or validate preferred).
+ */
+function allocateVolumeName(vm: KubeVm, preferred?: string): string {
+  const used = existingVolumeNames(vm);
+  if (preferred?.trim()) {
+    const name = preferred.trim();
+    validateVolumeName(name);
+    if (used.has(name)) {
+      throw new Error(`Volume name "${name}" is already attached to this VM`);
+    }
+    return name;
+  }
+  for (let i = 1; i <= KMC_MAX_EXTRA_DISKS + 32; i++) {
+    const candidate = `disk-${i}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  throw new Error("Could not allocate a free volume name");
+}
+
+function resolveExtraDiskSource(
+  disk: CreateVmExtraDisk,
+): VmDiskSourceMode {
+  return disk.source === "existingDataVolume" ? "existingDataVolume" : "blank";
+}
+
+/**
+ * Materialize create-time extra disks (blank create or validate existing).
+ * Returns resolved volume/DV names and any DVs created in this call (for rollback).
+ */
+async function materializeExtraDisks(opts: {
+  cluster: ClusterId;
+  namespace: string;
+  vmName: string;
+  extraDisks: CreateVmExtraDisk[];
+  /** Volume names already claimed (root/cloudinit + prior extras). */
+  reservedNames: Set<string>;
+}): Promise<{ resolved: ResolvedExtraDisk[]; createdDvNames: string[] }> {
+  const { cluster, namespace, vmName, extraDisks } = opts;
+  if (extraDisks.length === 0) return { resolved: [], createdDvNames: [] };
+  if (extraDisks.length > KMC_MAX_EXTRA_DISKS) {
+    throw new Error(
+      `At most ${KMC_MAX_EXTRA_DISKS} secondary disks are supported`,
+    );
+  }
+
+  const used = new Set(opts.reservedNames);
+  // Seed reserved with synthetic root/cloudinit so allocate never collides.
+  used.add("root");
+  used.add("cloudinit");
+
+  const resolved: ResolvedExtraDisk[] = [];
+  const createdDvNames: string[] = [];
+  const usedDvNames = new Set<string>();
+
+  try {
+    for (let i = 0; i < extraDisks.length; i++) {
+      const disk = extraDisks[i]!;
+      const source = resolveExtraDiskSource(disk);
+
+      let volumeName: string;
+      if (disk.name?.trim()) {
+        volumeName = disk.name.trim();
+        validateVolumeName(volumeName);
+        if (used.has(volumeName)) {
+          throw new Error(`Duplicate volume name "${volumeName}"`);
+        }
+      } else {
+        volumeName = "";
+        for (let n = 1; n <= KMC_MAX_EXTRA_DISKS + 32; n++) {
+          const candidate = `disk-${n}`;
+          if (!used.has(candidate)) {
+            volumeName = candidate;
+            break;
+          }
+        }
+        if (!volumeName) throw new Error("Could not allocate a free volume name");
+      }
+      used.add(volumeName);
+
+      let dataVolumeName: string;
+      if (source === "existingDataVolume") {
+        dataVolumeName = disk.existingDataVolumeName?.trim() ?? "";
+        if (!dataVolumeName) {
+          throw new Error(
+            `extraDisks[${i}]: existingDataVolumeName is required when source is existingDataVolume`,
+          );
+        }
+        validateVolumeName(dataVolumeName); // DNS-1123 for DV names
+        if (usedDvNames.has(dataVolumeName)) {
+          throw new Error(
+            `DataVolume ${dataVolumeName} is listed more than once`,
+          );
+        }
+        await assertDataVolumeReusable({
+          cluster,
+          namespace,
+          dataVolumeName,
+        });
+      } else {
+        const size = disk.size?.trim();
+        if (!size) {
+          throw new Error(`extraDisks[${i}]: size is required for blank disks`);
+        }
+        dataVolumeName = secondaryDataVolumeName(vmName, volumeName);
+        if (usedDvNames.has(dataVolumeName)) {
+          throw new Error(`DataVolume name collision: ${dataVolumeName}`);
+        }
+        const result = await ensureBlankDataVolume({
+          cluster,
+          namespace,
+          name: dataVolumeName,
+          size,
+          storageClass: disk.storageClass,
+          vmName,
+        });
+        if (result.created) createdDvNames.push(result.name);
+      }
+      usedDvNames.add(dataVolumeName);
+      resolved.push({ volumeName, dataVolumeName });
+    }
+  } catch (err) {
+    for (const dv of createdDvNames) {
+      try {
+        await deleteDataVolumeRaw(cluster, namespace, dv);
+      } catch {
+        /* ignore */
+      }
+    }
+    throw err;
+  }
+
+  return { resolved, createdDvNames };
+}
+
+async function fetchVmRaw(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+): Promise<KubeVm> {
+  const { custom } = getClusterClients(cluster);
+  try {
+    return (await custom.getNamespacedCustomObject({
+      group: "kubevirt.io",
+      version: "v1",
+      namespace,
+      plural: "virtualmachines",
+      name,
+    })) as KubeVm;
+  } catch (err) {
+    if (isNotFoundError(err)) {
+      throw new Error(`VirtualMachine not found: ${namespace}/${name}`);
+    }
+    throw new Error(formatError(err), { cause: err });
+  }
+}
+
+/**
+ * Declarative hotplug attach (DeclarativeHotplugVolumes):
+ * GET + replace VM template with a hotpluggable disk + DataVolume volume.
+ * Works while running (controller hotplugs) or stopped (present on next start).
+ * Single 409 retry with fresh resourceVersion.
+ */
+async function attachVolumeDeclarative(opts: {
+  cluster: ClusterId;
+  namespace: string;
+  vmName: string;
+  volumeName: string;
+  dataVolumeName: string;
+}): Promise<void> {
+  const { custom } = getClusterClients(opts.cluster);
+  const attempt = async (): Promise<void> => {
+    const vm = await fetchVmRaw(opts.cluster, opts.namespace, opts.vmName);
+    const body = structuredClone(vm) as KubeVm & Record<string, unknown>;
+    delete (body as { status?: unknown }).status;
+
+    const templateSpec = body.spec?.template?.spec;
+    if (!templateSpec) {
+      throw new Error("VirtualMachine has no template.spec");
+    }
+    const domain = templateSpec.domain ?? {};
+    const devices = domain.devices ?? {};
+    const disks = [...(devices.disks ?? [])];
+    const volumes = [...(templateSpec.volumes ?? [])];
+
+    if (volumes.some((v) => v.name === opts.volumeName)) {
+      throw new Error(`Volume "${opts.volumeName}" already exists on the VM`);
+    }
+    if (disks.some((d) => d.name === opts.volumeName)) {
+      throw new Error(`Disk "${opts.volumeName}" already exists on the VM`);
+    }
+
+    disks.push({ name: opts.volumeName, disk: { bus: "scsi" } });
+    volumes.push({
+      name: opts.volumeName,
+      dataVolume: { name: opts.dataVolumeName, hotpluggable: true },
+    });
+
+    devices.disks = disks;
+    domain.devices = devices;
+    templateSpec.domain = domain;
+    templateSpec.volumes = volumes;
+    body.spec = body.spec ?? {};
+    body.spec.template = body.spec.template ?? {};
+    body.spec.template.spec = templateSpec;
+
+    await custom.replaceNamespacedCustomObject({
+      group: "kubevirt.io",
+      version: "v1",
+      namespace: opts.namespace,
+      plural: "virtualmachines",
+      name: opts.vmName,
+      body,
+    });
+  };
+
+  try {
+    await attempt();
+  } catch (err) {
+    if (!isConflictError(err)) {
+      throw new Error(formatError(err), { cause: err });
+    }
+    try {
+      await attempt();
+    } catch (retryErr) {
+      throw new Error(formatError(retryErr), { cause: retryErr });
+    }
+  }
+}
+
+/**
+ * Declarative hotplug detach: remove disk + volume from the VM template.
+ * Single 409 retry with fresh resourceVersion.
+ */
+async function detachVolumeDeclarative(opts: {
+  cluster: ClusterId;
+  namespace: string;
+  vmName: string;
+  volumeName: string;
+}): Promise<void> {
+  const { custom } = getClusterClients(opts.cluster);
+  const attempt = async (): Promise<void> => {
+    const vm = await fetchVmRaw(opts.cluster, opts.namespace, opts.vmName);
+    const body = structuredClone(vm) as KubeVm & Record<string, unknown>;
+    delete (body as { status?: unknown }).status;
+
+    const templateSpec = body.spec?.template?.spec;
+    if (!templateSpec) {
+      throw new Error("VirtualMachine has no template.spec");
+    }
+    const domain = templateSpec.domain ?? {};
+    const devices = domain.devices ?? {};
+    const beforeDisks = devices.disks ?? [];
+    const beforeVolumes = templateSpec.volumes ?? [];
+    const disks = beforeDisks.filter((d) => d.name !== opts.volumeName);
+    const volumes = beforeVolumes.filter((v) => v.name !== opts.volumeName);
+
+    if (
+      volumes.length === beforeVolumes.length &&
+      disks.length === beforeDisks.length
+    ) {
+      throw new Error(`Volume "${opts.volumeName}" not found on the VM`);
+    }
+
+    devices.disks = disks;
+    domain.devices = devices;
+    templateSpec.domain = domain;
+    templateSpec.volumes = volumes;
+    body.spec = body.spec ?? {};
+    body.spec.template = body.spec.template ?? {};
+    body.spec.template.spec = templateSpec;
+
+    await custom.replaceNamespacedCustomObject({
+      group: "kubevirt.io",
+      version: "v1",
+      namespace: opts.namespace,
+      plural: "virtualmachines",
+      name: opts.vmName,
+      body,
+    });
+  };
+
+  try {
+    await attempt();
+  } catch (err) {
+    if (!isConflictError(err)) {
+      throw new Error(formatError(err), { cause: err });
+    }
+    try {
+      await attempt();
+    } catch (retryErr) {
+      throw new Error(formatError(retryErr), { cause: retryErr });
+    }
+  }
+}
+
+/**
+ * Attach a secondary data disk (blank or existing DV) via declarative hotplug.
+ * Requires KubeVirt feature gate DeclarativeHotplugVolumes for live attach;
+ * stopped VMs still accept the spec change for the next start.
+ */
+export async function attachVmDisk(
+  input: AttachVmDiskRequest,
+): Promise<AttachVmDiskResult> {
+  const cluster = input.cluster?.trim();
+  const namespace = input.namespace?.trim();
+  const vmName = input.vmName?.trim();
+  if (!cluster) throw new Error("cluster is required");
+  if (!namespace) throw new Error("namespace is required");
+  if (!vmName) throw new Error("vmName is required");
+
+  await assertVmNamespaceAllowed(cluster, namespace);
+
+  const vm = await fetchVmRaw(cluster, namespace, vmName);
+  if (countSecondaryDataDisks(vm) >= KMC_MAX_EXTRA_DISKS) {
+    throw new Error(
+      `At most ${KMC_MAX_EXTRA_DISKS} secondary disks are supported`,
+    );
+  }
+
+  const volumeName = allocateVolumeName(vm, input.name);
+  const source: VmDiskSourceMode =
+    input.source === "existingDataVolume" ? "existingDataVolume" : "blank";
+
+  let dataVolumeName: string;
+  let createdDataVolume = false;
+
+  if (source === "existingDataVolume") {
+    dataVolumeName = input.existingDataVolumeName?.trim() ?? "";
+    if (!dataVolumeName) {
+      throw new Error("existingDataVolumeName is required");
+    }
+    if (!DNS1123_LABEL.test(dataVolumeName)) {
+      throw new Error("existingDataVolumeName must be a DNS-1123 label");
+    }
+    // Already attached to this VM?
+    const already = (vm.spec?.template?.spec?.volumes ?? []).some(
+      (v) => v.dataVolume?.name === dataVolumeName,
+    );
+    if (already) {
+      throw new Error(
+        `DataVolume ${dataVolumeName} is already attached to this VM`,
+      );
+    }
+    await assertDataVolumeReusable({
+      cluster,
+      namespace,
+      dataVolumeName,
+    });
+  } else {
+    const size = input.size?.trim();
+    if (!size) throw new Error("size is required for blank disks");
+    dataVolumeName = secondaryDataVolumeName(vmName, volumeName);
+    const result = await ensureBlankDataVolume({
+      cluster,
+      namespace,
+      name: dataVolumeName,
+      size,
+      storageClass: input.storageClass,
+      vmName,
+    });
+    createdDataVolume = result.created;
+    // If DV already existed but was not reusable/attached, refuse reuse of a non-blank path.
+    if (!result.created) {
+      // Existing DV with same auto name — only allow if reusable (unattached).
+      try {
+        await assertDataVolumeReusable({
+          cluster,
+          namespace,
+          dataVolumeName,
+        });
+      } catch (err) {
+        throw new Error(
+          `DataVolume ${dataVolumeName} already exists and cannot be attached: ${formatError(err)}`,
+          { cause: err },
+        );
+      }
+    }
+  }
+
+  try {
+    await attachVolumeDeclarative({
+      cluster,
+      namespace,
+      vmName,
+      volumeName,
+      dataVolumeName,
+    });
+  } catch (err) {
+    if (createdDataVolume) {
+      try {
+        await deleteDataVolumeRaw(cluster, namespace, dataVolumeName);
+      } catch {
+        /* ignore */
+      }
+    }
+    throw err instanceof Error ? err : new Error(formatError(err), { cause: err });
+  }
+
+  // Clear retain labels / stamp kubevirt.io/vm for blank and reused DVs.
+  await stampDataVolumeAttachedToVm({
+    cluster,
+    namespace,
+    dvName: dataVolumeName,
+    vmName,
+  });
+
+  return { volumeName, dataVolumeName, createdDataVolume };
+}
+
+/**
+ * Detach a secondary data disk via declarative hotplug (remove from VM spec).
+ * Default keeps the DataVolume (retain stamp). Optional deleteDisk removes it.
+ */
+export async function detachVmDisk(
+  input: DetachVmDiskRequest,
+): Promise<DetachVmDiskResult> {
+  const cluster = input.cluster?.trim();
+  const namespace = input.namespace?.trim();
+  const vmName = input.vmName?.trim();
+  const volumeName = input.volumeName?.trim();
+  if (!cluster) throw new Error("cluster is required");
+  if (!namespace) throw new Error("namespace is required");
+  if (!vmName) throw new Error("vmName is required");
+  if (!volumeName) throw new Error("volumeName is required");
+
+  if (RESERVED_VOLUME_NAME_SET.has(volumeName)) {
+    throw new Error(`Cannot detach reserved volume "${volumeName}"`);
+  }
+
+  const vm = await fetchVmRaw(cluster, namespace, vmName);
+  const vol = (vm.spec?.template?.spec?.volumes ?? []).find(
+    (v) => v.name === volumeName,
+  );
+  if (!vol) {
+    throw new Error(`Volume "${volumeName}" not found on the VM`);
+  }
+  const dataVolumeName = vol.dataVolume?.name?.trim();
+  if (!dataVolumeName) {
+    throw new Error(
+      `Volume "${volumeName}" is not a DataVolume and cannot be detached from the console`,
+    );
+  }
+
+  await detachVolumeDeclarative({ cluster, namespace, vmName, volumeName });
+
+  let deletedDataVolume = false;
+  let retainedDataVolume = false;
+
+  if (input.deleteDisk === true) {
+    try {
+      await deleteDataVolumeRaw(cluster, namespace, dataVolumeName);
+      deletedDataVolume = true;
+    } catch (err) {
+      throw new Error(
+        `Disk detached but failed to delete DataVolume ${dataVolumeName}: ${formatError(err)}`,
+        { cause: err },
+      );
+    }
+  } else {
+    try {
+      const { custom } = getClusterClients(cluster);
+      const stamped = await stampRetainedDataVolume({
+        custom,
+        namespace,
+        dvName: dataVolumeName,
+        vmName,
+      });
+      retainedDataVolume = stamped;
+    } catch {
+      // Detach succeeded; retain stamp is best-effort.
+      retainedDataVolume = false;
+    }
+  }
+
+  return {
+    volumeName,
+    dataVolumeName,
+    deletedDataVolume,
+    retainedDataVolume,
+  };
+}
+
 export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
   if (!input.cluster?.trim()) throw new Error("cluster is required");
   if (!input.namespace?.trim()) throw new Error("namespace is required");
@@ -1189,6 +1846,22 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
     }
   }
 
+  // Secondary data disks (standalone blank / existing DVs).
+  const extraDisksInput = input.extraDisks ?? [];
+  let resolvedExtraDisks: ResolvedExtraDisk[] = [];
+  let createdExtraDvs: string[] = [];
+  if (extraDisksInput.length > 0) {
+    const material = await materializeExtraDisks({
+      cluster: input.cluster,
+      namespace: input.namespace,
+      vmName: input.name.trim(),
+      extraDisks: extraDisksInput,
+      reservedNames: new Set(["root", "cloudinit"]),
+    });
+    resolvedExtraDisks = material.resolved;
+    createdExtraDvs = material.createdDvNames;
+  }
+
   // Platform console key so browser Terminal can SSH without the user's private key.
   const platformPub = await getPlatformConsolePublicKey();
   // Dual-home: route cluster CIDRs via masquerade GW (not Multus default).
@@ -1204,6 +1877,7 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
     extraAuthorizedKeys: platformPub ? [platformPub] : [],
     includePodNetwork: dualHome,
     clusterCidrs,
+    extraDisks: resolvedExtraDisks,
   }) as {
     metadata?: { annotations?: Record<string, string> };
     [key: string]: unknown;
@@ -1215,6 +1889,23 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
       [KMC_ANN_DISK_SIZE]: rootDiskSizeAnn,
     };
   }
+
+  const rollbackCreatedDisks = async () => {
+    if (createdRootDv) {
+      try {
+        await deleteDataVolumeRaw(input.cluster, input.namespace, createdRootDv);
+      } catch {
+        /* ignore */
+      }
+    }
+    for (const dv of createdExtraDvs) {
+      try {
+        await deleteDataVolumeRaw(input.cluster, input.namespace, dv);
+      } catch {
+        /* ignore */
+      }
+    }
+  };
 
   try {
     const created = (await custom.createNamespacedCustomObject({
@@ -1241,14 +1932,8 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
     } catch {
       /* ignore */
     }
-    // Remove DV we just created so retries are clean
-    if (createdRootDv) {
-      try {
-        await deleteDataVolumeRaw(input.cluster, input.namespace, createdRootDv);
-      } catch {
-        /* ignore */
-      }
-    }
+    // Remove DVs we just created so retries are clean
+    await rollbackCreatedDisks();
     throw new Error(formatError(err), { cause: err });
   }
 }
@@ -1833,7 +2518,8 @@ export async function assertDataVolumeReusable(opts: {
     }
   }
 
-  // In-use scan: any VM in the namespace that references this DV or its PVC.
+  // In-use scan: any VM in the namespace that references this DV, its PVC, or
+  // a dataVolumeTemplate with the same name.
   const vmList = (await custom.listNamespacedCustomObject({
     group: "kubevirt.io",
     version: "v1",
@@ -1846,13 +2532,20 @@ export async function assertDataVolumeReusable(opts: {
     for (const vol of vm.spec?.template?.spec?.volumes ?? []) {
       if (vol.dataVolume?.name === dataVolumeName) {
         throw new Error(
-          `DataVolume is attached to VirtualMachine ${vmName}`,
+          `DataVolume is still attached to VirtualMachine ${vmName} (volume ${vol.name ?? dataVolumeName}). Detach it there first, or wait for the VM spec to refresh.`,
         );
       }
       const pvc = vol.persistentVolumeClaim?.claimName;
       if (pvc && (pvc === claimName || pvc === dataVolumeName)) {
         throw new Error(
-          `DataVolume backing PVC is attached to VirtualMachine ${vmName}`,
+          `DataVolume backing PVC is still attached to VirtualMachine ${vmName}`,
+        );
+      }
+    }
+    for (const tpl of vm.spec?.dataVolumeTemplates ?? []) {
+      if (tpl.metadata?.name === dataVolumeName) {
+        throw new Error(
+          `DataVolume is still referenced by VirtualMachine ${vmName} dataVolumeTemplate`,
         );
       }
     }
@@ -1863,6 +2556,61 @@ export async function assertDataVolumeReusable(opts: {
     dv.spec?.pvc?.resources?.requests?.storage;
 
   return { phase, size, claimName };
+}
+
+/**
+ * After re-attaching a retained/standalone DV, clear retain labels and stamp
+ * kubevirt.io/vm for the new owner. Best-effort (non-fatal).
+ */
+async function stampDataVolumeAttachedToVm(opts: {
+  cluster: ClusterId;
+  namespace: string;
+  dvName: string;
+  vmName: string;
+}): Promise<void> {
+  const { custom } = getClusterClients(opts.cluster);
+  try {
+    const dv = (await custom.getNamespacedCustomObject({
+      group: "cdi.kubevirt.io",
+      version: "v1beta1",
+      namespace: opts.namespace,
+      plural: "datavolumes",
+      name: opts.dvName,
+    })) as KubeDataVolumeForRetain;
+
+    const labels: Record<string, string> = {
+      ...(dv.metadata?.labels ?? {}),
+      [MANAGED_BY_LABEL]: KMC_MANAGED_BY,
+      "kubevirt.io/vm": opts.vmName,
+    };
+    delete labels[KMC_LABEL_RETAINED_FROM_VM];
+    const annotations = { ...(dv.metadata?.annotations ?? {}) };
+    delete annotations[KMC_ANN_RETAINED_AT];
+
+    await custom.replaceNamespacedCustomObject({
+      group: "cdi.kubevirt.io",
+      version: "v1beta1",
+      namespace: opts.namespace,
+      plural: "datavolumes",
+      name: opts.dvName,
+      body: {
+        apiVersion: dv.apiVersion ?? "cdi.kubevirt.io/v1beta1",
+        kind: dv.kind ?? "DataVolume",
+        metadata: {
+          name: opts.dvName,
+          namespace: opts.namespace,
+          resourceVersion: dv.metadata?.resourceVersion,
+          uid: dv.metadata?.uid,
+          labels,
+          annotations,
+          ownerReferences: dv.metadata?.ownerReferences,
+        },
+        spec: dv.spec,
+      },
+    });
+  } catch {
+    /* ignore — attach already succeeded */
+  }
 }
 
 export async function deleteVm(

@@ -76,6 +76,17 @@ export interface VmVolumeInfo {
    * Namespace is the VM's namespace unless noted otherwise.
    */
   linkName?: string;
+  /** True when this is the boot disk (`root`). */
+  isRoot?: boolean;
+  /**
+   * DataVolume / PVC volume marked hotpluggable (detach via removevolume).
+   * Create-time secondaries and hotplugged disks set this.
+   */
+  hotpluggable?: boolean;
+  /** Live hotplug phase from VMI status.volumeStatus when the VM is running. */
+  volumePhase?: string;
+  /** True when the UI may offer Detach (DataVolume-backed secondary disk). */
+  canDetach?: boolean;
 }
 
 export interface VmNetworkInfo {
@@ -201,6 +212,67 @@ export interface CreateVmRequest {
    * guest OS info). Requires guest package repos on first boot.
    */
   installGuestAgent?: boolean;
+  /**
+   * Optional secondary data disks (standalone DataVolumes, scsi bus).
+   * Root remains the primary boot disk; these are hotpluggable for later detach.
+   */
+  extraDisks?: CreateVmExtraDisk[];
+}
+
+/** How a secondary disk obtains its backing DataVolume. */
+export type VmDiskSourceMode = "blank" | "existingDataVolume";
+
+/** Extra disk requested at VM create time. */
+export interface CreateVmExtraDisk {
+  /** Volume + disk device name; optional → server assigns disk-N. */
+  name?: string;
+  /** Default blank. existingDataVolume requires existingDataVolumeName. */
+  source?: VmDiskSourceMode;
+  /** Required when source is blank (default). */
+  size?: string;
+  storageClass?: string;
+  /** Required when source is existingDataVolume. */
+  existingDataVolumeName?: string;
+}
+
+/** Attach a secondary disk to a running or stopped VM (persistent). */
+export interface AttachVmDiskRequest {
+  cluster: ClusterId;
+  namespace: string;
+  vmName: string;
+  /** Optional volume name; server default disk-N. */
+  name?: string;
+  source: VmDiskSourceMode;
+  /** Required when source is blank. */
+  size?: string;
+  storageClass?: string;
+  /** Required when source is existingDataVolume. */
+  existingDataVolumeName?: string;
+}
+
+export interface AttachVmDiskResult {
+  volumeName: string;
+  dataVolumeName: string;
+  /** True when a new blank DataVolume was created for this attach. */
+  createdDataVolume: boolean;
+}
+
+/** Detach a secondary disk from a VM. */
+export interface DetachVmDiskRequest {
+  cluster: ClusterId;
+  namespace: string;
+  vmName: string;
+  /** Volume name on the VM (not necessarily the DataVolume name). */
+  volumeName: string;
+  /** When true, delete the DataVolume after detach. Default false (keep / retain). */
+  deleteDisk?: boolean;
+}
+
+export interface DetachVmDiskResult {
+  volumeName: string;
+  dataVolumeName?: string;
+  deletedDataVolume: boolean;
+  retainedDataVolume: boolean;
 }
 
 /** Resolve create disk mode; default image for routers and legacy callers. */

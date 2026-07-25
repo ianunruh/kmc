@@ -136,6 +136,14 @@ export function bindAllocationsToNetworks(
   return bound;
 }
 
+/** Resolved secondary disk ready for the VM template (create path). */
+export type ResolvedExtraDisk = {
+  /** Volume + disk device name (e.g. disk-1). */
+  volumeName: string;
+  /** Standalone DataVolume name in the VM namespace. */
+  dataVolumeName: string;
+};
+
 export type BuildVmManifestOpts = {
   /** Extra labels on the VM and template (merged after defaults). */
   labels?: Record<string, string>;
@@ -173,6 +181,11 @@ export type BuildVmManifestOpts = {
    * steals all cluster-bound traffic.
    */
   clusterCidrs?: string[];
+  /**
+   * Secondary data disks (scsi + hotpluggable standalone DataVolumes).
+   * Pre-created by createVm before the VM is submitted.
+   */
+  extraDisks?: ResolvedExtraDisk[];
 };
 
 /** Stable Secret name for a VM's cloud-init user-data (same namespace as the VM). */
@@ -299,6 +312,21 @@ export function buildVirtualMachineManifest(
       cloudInitNoCloud,
     },
   ];
+
+  // Secondary data disks: scsi + hotpluggable so Storage-tab detach works later.
+  for (const extra of opts?.extraDisks ?? []) {
+    const volumeName = extra.volumeName.trim();
+    const dataVolumeName = extra.dataVolumeName.trim();
+    if (!volumeName || !dataVolumeName) continue;
+    disks.push({
+      name: volumeName,
+      disk: { bus: "scsi" },
+    });
+    volumes.push({
+      name: volumeName,
+      dataVolume: { name: dataVolumeName, hotpluggable: true },
+    });
+  }
 
   const domain: Record<string, unknown> = {
     devices: {

@@ -37,6 +37,7 @@ import {
   vmsListPath,
 } from "~/lib/format";
 import { getImagePreference } from "~/lib/k8s/catalog.server";
+import { KMC_MAX_EXTRA_DISKS } from "~/lib/k8s/constants";
 import { listSshKeysOrEmpty } from "~/ssh-keys/ssh-keys.server";
 import { FormActions, FormSection } from "~/ui";
 import {
@@ -47,6 +48,7 @@ import { createVm, listClusters } from "~/vms/vms.server";
 import type {
   ClusterCatalog,
   CreateVmDiskSourceMode,
+  CreateVmExtraDisk,
   CreateVmRequest,
   NetworkInfo,
 } from "~/lib/types";
@@ -209,6 +211,54 @@ export async function action({ request }: Route.ActionArgs) {
     basePayload.includePodNetwork = includePodNetwork;
   }
 
+  // Optional secondary blank disks (JSON array from the form).
+  const extraDisksRaw = String(form.get("extraDisks") ?? "").trim();
+  if (extraDisksRaw) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(extraDisksRaw);
+    } catch {
+      return { error: "Invalid extraDisks payload" };
+    }
+    if (!Array.isArray(parsed)) {
+      return { error: "extraDisks must be an array" };
+    }
+    if (parsed.length > KMC_MAX_EXTRA_DISKS) {
+      return {
+        error: `At most ${KMC_MAX_EXTRA_DISKS} secondary disks are supported`,
+      };
+    }
+    const extraDisks: CreateVmExtraDisk[] = [];
+    const usedNames = new Set<string>();
+    for (let i = 0; i < parsed.length; i++) {
+      const row = parsed[i] as { name?: string; size?: string; storageClass?: string };
+      const size = String(row?.size ?? "").trim();
+      if (!size) return { error: `Additional disk ${i + 1}: size is required` };
+      const name = String(row?.name ?? "").trim();
+      if (name) {
+        const nameErr = validateDns1123Label(name);
+        if (nameErr) return { error: `Additional disk ${i + 1}: ${nameErr}` };
+        if (name === "root" || name === "cloudinit") {
+          return { error: `Additional disk ${i + 1}: name "${name}" is reserved` };
+        }
+        if (usedNames.has(name)) {
+          return { error: `Duplicate additional disk name "${name}"` };
+        }
+        usedNames.add(name);
+      }
+      const storageClass = String(row?.storageClass ?? "").trim() || undefined;
+      extraDisks.push({
+        source: "blank",
+        size,
+        ...(name ? { name } : {}),
+        ...(storageClass ? { storageClass } : {}),
+      });
+    }
+    if (extraDisks.length > 0) {
+      basePayload.extraDisks = extraDisks;
+    }
+  }
+
   const created: string[] = [];
   try {
     for (const vmName of names) {
@@ -295,6 +345,15 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
        * via KubeVirt port-forward. Opt out for Multus-only guests.
        */
       includePodNetwork: true,
+      /**
+       * Optional secondary blank disks (scsi, hotpluggable).
+       * Each row: optional name, size, optional storageClass.
+       */
+      extraDisks: [] as Array<{
+        name: string;
+        size: string;
+        storageClass: string;
+      }>,
       sshKeyMode: (hasSavedKeys ? "saved" : "paste") as "saved" | "paste",
       savedSshKeyId: hasSavedKeys ? sshKeys[0]!.id : "",
       sshPublicKey: "",
@@ -358,6 +417,15 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       data.diskSize = values.diskSize;
       data.storageClass = values.storageClass;
       data.image = values.image;
+    }
+    if (values.extraDisks.length > 0) {
+      data.extraDisks = JSON.stringify(
+        values.extraDisks.map((d) => ({
+          name: d.name.trim() || undefined,
+          size: d.size.trim(),
+          storageClass: d.storageClass.trim() || undefined,
+        })),
+      );
     }
     submit(data, { method: "post" });
   });
@@ -816,6 +884,107 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 </Alert>
               </>
             )}
+          </FormSection>
+
+          <FormSection title="Additional disks">
+            <Text size="sm" c="dimmed">
+              Optional blank data disks (scsi, up to {KMC_MAX_EXTRA_DISKS}). Format and
+              mount inside the guest.
+            </Text>
+            {form.values.extraDisks.length === 0 ? (
+              <Text size="sm" c="dimmed">
+                No extra disks — root disk only. You can also attach disks later from the
+                VM Storage tab (including existing DataVolumes).
+              </Text>
+            ) : (
+              <Stack gap="sm">
+                {form.values.extraDisks.map((disk, index) => (
+                  <SimpleGrid
+                    key={index}
+                    cols={{ base: 1, sm: 4 }}
+                    spacing="sm"
+                    style={{ alignItems: "end" }}
+                  >
+                    <TextInput
+                      label={index === 0 ? "Name" : undefined}
+                      placeholder={`disk-${index + 1}`}
+                      description={index === 0 ? "Optional" : undefined}
+                      value={disk.name}
+                      onChange={(e) => {
+                        const next = [...form.values.extraDisks];
+                        next[index] = {
+                          ...next[index]!,
+                          name: e.currentTarget.value,
+                        };
+                        form.setFieldValue("extraDisks", next);
+                      }}
+                    />
+                    <TextInput
+                      label={index === 0 ? "Size" : undefined}
+                      placeholder="10Gi"
+                      required
+                      value={disk.size}
+                      onChange={(e) => {
+                        const next = [...form.values.extraDisks];
+                        next[index] = {
+                          ...next[index]!,
+                          size: e.currentTarget.value,
+                        };
+                        form.setFieldValue("extraDisks", next);
+                      }}
+                    />
+                    <Select
+                      label={index === 0 ? "Storage class" : undefined}
+                      placeholder="Default"
+                      clearable
+                      data={storageOptions}
+                      value={disk.storageClass || null}
+                      onChange={(v) => {
+                        const next = [...form.values.extraDisks];
+                        next[index] = {
+                          ...next[index]!,
+                          storageClass: v ?? "",
+                        };
+                        form.setFieldValue("extraDisks", next);
+                      }}
+                    />
+                    <ActionIcon
+                      variant="subtle"
+                      color="red"
+                      aria-label="Remove disk"
+                      onClick={() => {
+                        form.setFieldValue(
+                          "extraDisks",
+                          form.values.extraDisks.filter((_, i) => i !== index),
+                        );
+                      }}
+                    >
+                      <IconTrash size={16} />
+                    </ActionIcon>
+                  </SimpleGrid>
+                ))}
+              </Stack>
+            )}
+            <Button
+              type="button"
+              variant="light"
+              size="xs"
+              leftSection={<IconPlus size={14} />}
+              disabled={form.values.extraDisks.length >= KMC_MAX_EXTRA_DISKS}
+              onClick={() => {
+                if (form.values.extraDisks.length >= KMC_MAX_EXTRA_DISKS) return;
+                form.setFieldValue("extraDisks", [
+                  ...form.values.extraDisks,
+                  {
+                    name: "",
+                    size: "10Gi",
+                    storageClass: form.values.storageClass || "",
+                  },
+                ]);
+              }}
+            >
+              Add data disk
+            </Button>
           </FormSection>
 
           <FormSection title="Access & network">

@@ -5,13 +5,16 @@ import {
   Code,
   Group,
   Modal,
+  Radio,
+  SegmentedControl,
+  Select,
   Stack,
   Table,
   Text,
   TextInput,
 } from "@mantine/core";
 import { IconPlus } from "@tabler/icons-react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useFetcher } from "react-router";
 import type { Route } from "./+types/vms.$cluster.$namespace.$name.storage";
 import {
@@ -25,7 +28,13 @@ import { StatusBadge } from "~/ui/status-badge";
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
 import { canRestoreVmSnapshot, formatAge, formatBytes } from "~/lib/format";
-import type { VmSnapshotSummary } from "~/lib/types";
+import { KMC_MAX_EXTRA_DISKS } from "~/lib/k8s/constants";
+import type {
+  ClusterCatalog,
+  VmDiskSourceMode,
+  VmSnapshotSummary,
+  VmVolumeInfo,
+} from "~/lib/types";
 import {
   createVmRestore,
   createVmSnapshot,
@@ -39,6 +48,7 @@ import {
   volumeHref,
   type VmDetailActionResult,
 } from "~/vms/vm-detail-shared";
+import { attachVmDisk, detachVmDisk } from "~/vms/vms.server";
 
 export async function loader({ params }: Route.LoaderArgs) {
   const { cluster, namespace, name } = params;
@@ -97,6 +107,56 @@ export async function action({ request, params }: Route.ActionArgs) {
       });
       return { ok: true, intent, snapshotName, restoreName: result.name };
     }
+    if (intent === "attach-disk") {
+      const sourceRaw = String(form.get("source") ?? "blank").trim();
+      const source: VmDiskSourceMode =
+        sourceRaw === "existingDataVolume" ? "existingDataVolume" : "blank";
+      const volumeName = String(form.get("volumeName") ?? "").trim() || undefined;
+      const size = String(form.get("size") ?? "").trim() || undefined;
+      const storageClass =
+        String(form.get("storageClass") ?? "").trim() || undefined;
+      const existingDataVolumeName =
+        String(form.get("existingDataVolumeName") ?? "").trim() || undefined;
+      const result = await attachVmDisk({
+        cluster,
+        namespace,
+        vmName: name,
+        name: volumeName,
+        source,
+        size,
+        storageClass,
+        existingDataVolumeName,
+      });
+      return {
+        ok: true,
+        intent,
+        volumeName: result.volumeName,
+        dataVolumeName: result.dataVolumeName,
+        createdDataVolume: result.createdDataVolume,
+      };
+    }
+    if (intent === "detach-disk") {
+      const volumeName = String(form.get("volumeName") ?? "").trim();
+      if (!volumeName) {
+        return { ok: false, error: "Missing volume name", intent };
+      }
+      const deleteDisk = form.get("deleteDisk") === "true";
+      const result = await detachVmDisk({
+        cluster,
+        namespace,
+        vmName: name,
+        volumeName,
+        deleteDisk,
+      });
+      return {
+        ok: true,
+        intent,
+        volumeName: result.volumeName,
+        dataVolumeName: result.dataVolumeName,
+        deletedDataVolume: result.deletedDataVolume,
+        retainedDataVolume: result.retainedDataVolume,
+      };
+    }
     return { ok: false, error: `Unknown intent: ${intent}`, intent };
   } catch (err) {
     return actionFailure(`vm.${intent}`, err, {
@@ -108,10 +168,21 @@ export async function action({ request, params }: Route.ActionArgs) {
   }
 }
 
+type DataVolumesFetcherData = {
+  dataVolumes: Array<{
+    name: string;
+    phase: string;
+    size?: string;
+    retainedFromVm?: string;
+  }>;
+};
+
 export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
   const { vm } = useVmDetail();
   const { snapshots } = loaderData;
   const fetcher = useFetcher<VmDetailActionResult>();
+  const catalogFetcher = useFetcher<ClusterCatalog>();
+  const dataVolumesFetcher = useFetcher<DataVolumesFetcherData>();
   const { refreshNow } = useRefresh();
   const [createSnapshotOpen, setCreateSnapshotOpen] = useState(false);
   const [snapshotNameInput, setSnapshotNameInput] = useState("");
@@ -119,10 +190,37 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
     useState<VmSnapshotSummary | null>(null);
   const [restoreSnapshotTarget, setRestoreSnapshotTarget] =
     useState<VmSnapshotSummary | null>(null);
+  const [addDiskOpen, setAddDiskOpen] = useState(false);
+  const [diskSource, setDiskSource] = useState<VmDiskSourceMode>("blank");
+  const [diskVolumeName, setDiskVolumeName] = useState("");
+  const [diskSize, setDiskSize] = useState("10Gi");
+  const [diskStorageClass, setDiskStorageClass] = useState("");
+  const [diskExistingDv, setDiskExistingDv] = useState("");
+  const [detachTarget, setDetachTarget] = useState<VmVolumeInfo | null>(null);
+  const [detachDeleteDisk, setDetachDeleteDisk] = useState(false);
   const busy = fetcher.state !== "idle";
+
+  const secondaryCount = useMemo(
+    () => vm.volumes.filter((v) => v.canDetach).length,
+    [vm.volumes],
+  );
+  const canAddDisk = secondaryCount < KMC_MAX_EXTRA_DISKS;
 
   const intentBusy = (intent: string) =>
     busy && fetcher.formData?.get("intent") === intent;
+
+  useEffect(() => {
+    if (!addDiskOpen) return;
+    if (catalogFetcher.state === "idle" && !catalogFetcher.data) {
+      catalogFetcher.load(`/api/catalog/${encodeURIComponent(vm.cluster)}`);
+    }
+    if (diskSource === "existingDataVolume") {
+      dataVolumesFetcher.load(
+        `/api/datavolumes/${encodeURIComponent(vm.cluster)}?namespace=${encodeURIComponent(vm.namespace)}`,
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addDiskOpen, diskSource, vm.cluster, vm.namespace]);
 
   useFetcherResult(fetcher, (data) => {
     if (data.error) {
@@ -156,14 +254,88 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
             ? `Restore ${data.restoreName} started from ${data.snapshotName ?? "snapshot"}`
             : "Restore started",
         );
+      } else if (data.intent === "attach-disk") {
+        notifyActionSuccess(
+          "Done",
+          data.volumeName
+            ? `Disk ${data.volumeName} attached` +
+                (data.dataVolumeName ? ` (${data.dataVolumeName})` : "")
+            : "Disk attached",
+        );
+      } else if (data.intent === "detach-disk") {
+        const bits = [
+          data.volumeName ? `Detached ${data.volumeName}` : "Disk detached",
+        ];
+        if (data.deletedDataVolume && data.dataVolumeName) {
+          bits.push(`deleted DataVolume ${data.dataVolumeName}`);
+        } else if (data.retainedDataVolume && data.dataVolumeName) {
+          bits.push(`kept DataVolume ${data.dataVolumeName}`);
+        } else if (data.dataVolumeName) {
+          bits.push(`DataVolume ${data.dataVolumeName} left in namespace`);
+        }
+        notifyActionSuccess("Done", bits.join(" — "));
       }
       refreshNow();
     }
   });
 
+  const storageOptions = useMemo(() => {
+    const classes = catalogFetcher.data?.storageClasses ?? [];
+    return classes.map((sc) => ({
+      value: sc.name,
+      label: sc.isDefault ? `${sc.name} (default)` : sc.name,
+    }));
+  }, [catalogFetcher.data]);
+
+  const dataVolumeOptions = useMemo(() => {
+    const items = dataVolumesFetcher.data?.dataVolumes ?? [];
+    return items.map((dv) => {
+      const bits = [dv.name];
+      if (dv.size) bits.push(dv.size);
+      if (dv.retainedFromVm) bits.push(`retained from ${dv.retainedFromVm}`);
+      return {
+        value: dv.name,
+        label: bits.length > 1 ? `${bits[0]} (${bits.slice(1).join(" · ")})` : bits[0]!,
+      };
+    });
+  }, [dataVolumesFetcher.data]);
+
+  const openAddDisk = () => {
+    setDiskSource("blank");
+    setDiskVolumeName("");
+    setDiskSize("10Gi");
+    setDiskStorageClass(catalogFetcher.data?.defaultStorageClass ?? "");
+    setDiskExistingDv("");
+    setAddDiskOpen(true);
+  };
+
   return (
     <Stack gap="md">
-      <DetailSection title="Volumes">
+      <DetailSection
+        title="Volumes"
+        actions={
+          <Button
+            size="xs"
+            variant="light"
+            color="teal"
+            leftSection={<IconPlus size={14} />}
+            disabled={busy || !canAddDisk}
+            loading={intentBusy("attach-disk")}
+            title={
+              canAddDisk
+                ? "Attach a blank or existing DataVolume"
+                : `At most ${KMC_MAX_EXTRA_DISKS} secondary disks`
+            }
+            onClick={openAddDisk}
+          >
+            Add disk
+          </Button>
+        }
+      >
+        <Text size="sm" c="dimmed" mb="sm">
+          Secondary disks use scsi (hotplug-friendly). New volumes appear as
+          unformatted block devices — partition and mount inside the guest.
+        </Text>
         {vm.volumes.length === 0 ? (
           <Text size="sm" c="dimmed">
             No volumes
@@ -171,7 +343,7 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
         ) : (
           <Table.ScrollContainer
             className="kmc-table-scroll"
-            minWidth={720}
+            minWidth={800}
             type="native"
           >
             <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
@@ -183,6 +355,8 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
                   <Table.Th>Size</Table.Th>
                   <Table.Th>Storage class</Table.Th>
                   <Table.Th>Bus</Table.Th>
+                  <Table.Th>Phase</Table.Th>
+                  <Table.Th />
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -196,6 +370,16 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
                         ) : (
                           vol.name
                         )}
+                        {vol.isRoot ? (
+                          <Badge size="xs" variant="outline" ml={6}>
+                            root
+                          </Badge>
+                        ) : null}
+                        {vol.hotpluggable ? (
+                          <Badge size="xs" variant="light" color="teal" ml={6}>
+                            hotplug
+                          </Badge>
+                        ) : null}
                       </Table.Td>
                       <Table.Td>
                         {href ? (
@@ -214,6 +398,31 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
                       <Table.Td>{vol.size ?? "—"}</Table.Td>
                       <Table.Td>{vol.storageClass ?? "—"}</Table.Td>
                       <Table.Td>{vol.diskBus ?? "—"}</Table.Td>
+                      <Table.Td>
+                        {vol.volumePhase ? (
+                          <StatusBadge status={vol.volumePhase} />
+                        ) : (
+                          <Text size="sm" c="dimmed">
+                            —
+                          </Text>
+                        )}
+                      </Table.Td>
+                      <Table.Td>
+                        {vol.canDetach ? (
+                          <Button
+                            size="compact-xs"
+                            variant="subtle"
+                            color="red"
+                            disabled={busy}
+                            onClick={() => {
+                              setDetachDeleteDisk(false);
+                              setDetachTarget(vol);
+                            }}
+                          >
+                            Detach
+                          </Button>
+                        ) : null}
+                      </Table.Td>
                     </Table.Tr>
                   );
                 })}
@@ -320,6 +529,7 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
         <Text size="sm" c="dimmed" mb="sm">
           Point-in-time disk backups (KubeVirt VirtualMachineSnapshot). Online
           snapshots are more consistent when the guest agent is connected.
+          Attached secondary disks are included.
         </Text>
         {vm.hasVmi && !vm.guestAgent?.connected && (
           <Alert color="gray" variant="light" mb="sm" title="Guest agent not connected">
@@ -438,6 +648,181 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
       </DetailSection>
 
       <Modal
+        opened={addDiskOpen}
+        onClose={() => setAddDiskOpen(false)}
+        title="Add disk"
+        centered
+      >
+        <Stack gap="md">
+          <Text size="sm" c="dimmed">
+            Attach a persistent secondary disk to{" "}
+            <Text span fw={700}>
+              {vm.name}
+            </Text>
+            . Updates the VirtualMachine spec (declarative hotplug); the guest
+            sees it live when running, or on next start when stopped.
+          </Text>
+          <SegmentedControl
+            fullWidth
+            value={diskSource}
+            onChange={(v) => setDiskSource(v as VmDiskSourceMode)}
+            data={[
+              { label: "New blank disk", value: "blank" },
+              { label: "Existing DataVolume", value: "existingDataVolume" },
+            ]}
+            disabled={busy}
+          />
+          <TextInput
+            label="Volume name"
+            description="Optional DNS label; default disk-1, disk-2, …"
+            placeholder="disk-1"
+            value={diskVolumeName}
+            onChange={(e) => setDiskVolumeName(e.currentTarget.value)}
+            disabled={busy}
+          />
+          {diskSource === "blank" ? (
+            <>
+              <TextInput
+                label="Size"
+                placeholder="10Gi"
+                required
+                value={diskSize}
+                onChange={(e) => setDiskSize(e.currentTarget.value)}
+                disabled={busy}
+              />
+              <Select
+                label="Storage class"
+                placeholder="Cluster default"
+                clearable
+                data={storageOptions}
+                value={diskStorageClass || null}
+                onChange={(v) => setDiskStorageClass(v ?? "")}
+                disabled={busy || catalogFetcher.state === "loading"}
+                nothingFoundMessage="No storage classes"
+              />
+            </>
+          ) : (
+            <Select
+              label="DataVolume"
+              placeholder="Select reusable DataVolume"
+              searchable
+              required
+              data={dataVolumeOptions}
+              value={diskExistingDv || null}
+              onChange={(v) => setDiskExistingDv(v ?? "")}
+              disabled={busy || dataVolumesFetcher.state === "loading"}
+              nothingFoundMessage="No reusable DataVolumes in this namespace"
+            />
+          )}
+          <Group justify="flex-end">
+            <Button
+              variant="default"
+              onClick={() => setAddDiskOpen(false)}
+              disabled={busy}
+            >
+              Cancel
+            </Button>
+            <Button
+              loading={intentBusy("attach-disk")}
+              onClick={() => {
+                if (diskSource === "blank" && !diskSize.trim()) return;
+                if (diskSource === "existingDataVolume" && !diskExistingDv.trim()) {
+                  return;
+                }
+                setAddDiskOpen(false);
+                const payload: Record<string, string> = {
+                  intent: "attach-disk",
+                  source: diskSource,
+                };
+                if (diskVolumeName.trim()) payload.volumeName = diskVolumeName.trim();
+                if (diskSource === "blank") {
+                  payload.size = diskSize.trim();
+                  if (diskStorageClass.trim()) {
+                    payload.storageClass = diskStorageClass.trim();
+                  }
+                } else {
+                  payload.existingDataVolumeName = diskExistingDv.trim();
+                }
+                fetcher.submit(payload, { method: "post" });
+              }}
+            >
+              Attach disk
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      <Modal
+        opened={detachTarget != null}
+        onClose={() => setDetachTarget(null)}
+        title="Detach disk"
+        centered
+      >
+        <Stack gap="md">
+          <Text size="sm">
+            Detach volume{" "}
+            <Text span fw={700}>
+              {detachTarget?.name}
+            </Text>
+            {detachTarget?.linkName ? (
+              <>
+                {" "}
+                (DataVolume{" "}
+                <Code>{detachTarget.linkName}</Code>)
+              </>
+            ) : null}{" "}
+            from this VM.
+          </Text>
+          <Radio.Group
+            value={detachDeleteDisk ? "delete" : "keep"}
+            onChange={(v) => setDetachDeleteDisk(v === "delete")}
+          >
+            <Stack gap="xs">
+              <Radio
+                value="keep"
+                label="Detach and keep DataVolume"
+                description="Disk remains in the namespace for reuse"
+              />
+              <Radio
+                value="delete"
+                label="Detach and delete DataVolume"
+                description="Permanently remove the backing disk"
+              />
+            </Stack>
+          </Radio.Group>
+          <Group justify="flex-end">
+            <Button
+              variant="default"
+              onClick={() => setDetachTarget(null)}
+              disabled={busy}
+            >
+              Cancel
+            </Button>
+            <Button
+              color="red"
+              loading={intentBusy("detach-disk")}
+              onClick={() => {
+                if (!detachTarget) return;
+                const volumeName = detachTarget.name;
+                const deleteDisk = detachDeleteDisk;
+                setDetachTarget(null);
+                fetcher.submit(
+                  {
+                    intent: "detach-disk",
+                    volumeName,
+                    deleteDisk: deleteDisk ? "true" : "false",
+                  },
+                  { method: "post" },
+                );
+              }}
+            >
+              Detach
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      <Modal
         opened={createSnapshotOpen}
         onClose={() => setCreateSnapshotOpen(false)}
         title="Create snapshot"
@@ -516,23 +901,23 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
       <ConfirmActionModal
         opened={restoreSnapshotTarget != null}
         onClose={() => setRestoreSnapshotTarget(null)}
-        title="Restore from snapshot"
+        title="Restore snapshot"
         confirmLabel="Restore"
         confirmColor="orange"
         loading={busy}
         message={
-          <>
-            Disk contents of{" "}
-            <Text span fw={700}>
-              {vm.cluster}/{vm.namespace}/{vm.name}
-            </Text>{" "}
-            will roll back to snapshot{" "}
-            <Text span fw={700}>
-              {restoreSnapshotTarget?.name}
-            </Text>
-            . The VM will be stopped if it is running. Network identity and IPAM
-            annotations are kept.
-          </>
+          restoreSnapshotTarget ? (
+            <>
+              Restore{" "}
+              <Text span fw={700}>
+                {restoreSnapshotTarget.name}
+              </Text>{" "}
+              onto this VM in-place. The VM will be stopped if running. This
+              overwrites current disk contents.
+            </>
+          ) : (
+            ""
+          )
         }
         onConfirm={() => {
           if (!restoreSnapshotTarget) return;

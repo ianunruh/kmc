@@ -91,6 +91,15 @@ export const KMC_ROUTER_AGENT_SCRIPT_KEY = "agent.py";
  */
 export const KMC_MAX_MULTUS_ATTACHMENTS = 8;
 
+/**
+ * Max secondary (non-root, non-cloudinit) data disks on a single VM.
+ * Applies to create-time extras and Storage-tab attach.
+ */
+export const KMC_MAX_EXTRA_DISKS = 8;
+
+/** Reserved volume/disk names that cannot be used for secondary disks. */
+export const KMC_RESERVED_VOLUME_NAMES = ["root", "cloudinit"] as const;
+
 /** Agent status annotations on the policy ConfigMap. */
 export const KMC_ANN_AGENT_STATUS = `${KMC_LABEL_NAMESPACE}/agent-status`;
 export const KMC_ANN_AGENT_OBSERVED_GENERATION = `${KMC_LABEL_NAMESPACE}/agent-observed-generation`;
