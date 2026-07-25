@@ -28,6 +28,7 @@ import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import {
   floatingIpCreatePath,
   formatDateTime,
+  routerPath,
   vmPath,
   vpcPath,
 } from "~/lib/format";
@@ -133,7 +134,8 @@ export default function RouterOverviewTab() {
     fd.set("sshKeyMode", sshMode);
     if (sshMode === "saved") fd.set("savedSshKeyId", savedKeyId);
     else fd.set("sshPublicKey", sshPaste.trim());
-    fetcher.submit(fd, { method: "post", action: ".." });
+    // Layout action shares this URL; ".." skips the layout, "." uses ?index (405).
+    fetcher.submit(fd, { method: "post", action: routerPath(router) });
   }
 
   return (
@@ -472,7 +474,10 @@ export default function RouterOverviewTab() {
                 fd.set("sshKeyMode", sshMode);
                 if (sshMode === "saved") fd.set("savedSshKeyId", savedKeyId);
                 else fd.set("sshPublicKey", sshPaste.trim());
-                fetcher.submit(fd, { method: "post", action: ".." });
+                fetcher.submit(fd, {
+                  method: "post",
+                  action: routerPath(router),
+                });
               }}
             >
               Enable external gateway

@@ -32,6 +32,7 @@ import {
   formatDateTime,
   routerPath,
   vmPath,
+  vpcPath,
   vpcRouterCreatePath,
   vpcsListPath,
 } from "~/lib/format";
@@ -399,12 +400,13 @@ export default function VpcOverviewTab() {
         loading={busy}
         onConfirm={() => {
           if (!disassociateTarget) return;
+          // Layout action shares this URL; ".." skips the layout, "." uses ?index (405).
           fetcher.submit(
             {
               intent: "disassociate",
               idOrPublic: disassociateTarget.id,
             },
-            { method: "post", action: ".." },
+            { method: "post", action: vpcPath(vpc) },
           );
           setDisassociateTarget(null);
         }}
@@ -438,7 +440,7 @@ export default function VpcOverviewTab() {
               intent: "release",
               idOrPublic: releaseTarget.id,
             },
-            { method: "post", action: ".." },
+            { method: "post", action: vpcPath(vpc) },
           );
           setReleaseTarget(null);
         }}
