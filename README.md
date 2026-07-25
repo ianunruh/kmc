@@ -173,7 +173,7 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 - **Extra disks + hotplug** — secondary blank or existing DataVolumes (scsi, up to 8) on Launch VM or VM **Storage** tab; attach/detach by updating the VirtualMachine spec (`hotpluggable: true` disks/volumes). Live attach needs KubeVirt **`DeclarativeHotplugVolumes`** (do not also enable deprecated `HotplugVolumes`). Detach can keep or delete the DataVolume. Guests see unformatted block devices — format/mount inside the guest.
 - **IPAM** — optional per-cluster IPv4 pools for Multus NADs; auto-allocate + netplan cloud-init on create
 - **VPCs** — self-service Multus networks from a cluster VLAN pool (`vlanPools`); optional private CIDR for IPAM
-- **Routers** — shared DHCP/DNS appliance per namespace (OpenStack-style); multi-VPC at create and day-2 Multus hotplug attach/detach; agent-owned private L3; external SNAT + floating IPs
+- **Routers** — shared DHCP/DNS appliance per namespace (OpenStack-style); multi-VPC at create and day-2 Multus hotplug attach/detach; agent-owned private L3; external SNAT + floating IPs + port forwards
 - **SSH keys** — signed-in users save named public keys (ConfigMap on the settings cluster); select when creating a VM
 - **Ingresses** — create/list/detail/delete HTTP Ingresses bound to a VM (companion ClusterIP Service selects `kubevirt.io/vm`)
 
@@ -234,7 +234,7 @@ OpenStack-style **shared routers** provide per-VPC gateway, DHCP, and DNS withou
 | ------------------------------------ | ---------------------------------------------------------------------- |
 | Router VM                            | Multus leg(s) on attached VPC(s) + pod NIC for the agent               |
 | Policy ConfigMap `kmc-router-<name>` | Interfaces, static DHCP leases, agent script (survives VM recreate)    |
-| In-guest agent                       | Owns private Multus L3 (`ip addr` by MAC); dnsmasq + FORWARD/SNAT/FIPs |
+| In-guest agent                       | Owns private Multus L3 (`ip addr` by MAC); dnsmasq + FORWARD/SNAT/FIPs/port forwards |
 
 **Flow**
 
@@ -244,10 +244,12 @@ OpenStack-style **shared routers** provide per-VPC gateway, DHCP, and DNS withou
 4. Guests get address / default route / DNS from the router (`<vm>.<vpc>.vpc.local`).
 5. **Attach more VPCs** later from router detail (Multus hotplug — no appliance recreate). **Detach** with lease/FIP safety rails (force optional).
 
-**External gateway + floating IPs**
+**External gateway + floating IPs + port forwards**
 
 - Optional **public Multus** on create, or **Enable external gateway** on the router detail page (recreates the appliance VM with a public NIC)
-- SNAT (MASQUERADE) for guest egress; **floating IPs** live on the router policy and are applied by the same agent
+- SNAT (MASQUERADE) for guest egress; **floating IPs** and **port forwards** live on the router policy and are applied by the same agent
+- **Floating IP** = full 1:1 DNAT/SNAT of a public address to one private VM
+- **Port forward** = map `publicIP:port` → `privateIP:port` (TCP/UDP) without giving the VM an entire public IP — multiple guests can share the router external primary (or a held public address)
 - Requires cluster `network.podCIDR` / `serviceCIDR` (and CA) so the agent can reach the apiserver over the pod NIC
 
 ```yaml
@@ -287,7 +289,7 @@ into the held state (leases are removed; public addresses are not released).
 - Bootstrap copy is written by cloud-init; runtime source of truth is ConfigMap `agent.py`
 - **Owns private Multus L3**: for each policy interface, waits for MAC, `ip link set up`, `ip addr replace gateway/prefix` (not cloud-init netplan)
 - Reports **Pending** while Multus hotplug NICs are missing; **Ready** when all private ifaces have L3 + dnsmasq
-- Watches the policy ConfigMap and applies DHCP/DNS, SNAT, and 1:1 DNAT/SNAT floating IPs
+- Watches the policy ConfigMap and applies DHCP/DNS, SNAT, 1:1 DNAT/SNAT floating IPs, and port-level DNAT
 - On each apply: rewrites static `dhcp-host` entries, **stops** dnsmasq, prunes the lease DB to MAC+IP pairs still in policy, then starts dnsmasq — so deleting a VM and recreating it can reuse the IPAM address with a new MAC (without this, dnsmasq keeps the old lease and logs `not using configured address … because it is leased to <old-mac>`)
 - Heartbeats via `kmc.ianunruh.com/agent-heartbeat-at` (~30s); kmc marks the agent **Stale** if the heartbeat is older than 90s
 - When kmc updates `agent.py`, the agent rewrites itself and re-execs
@@ -302,11 +304,13 @@ Cloud-init **netplan** on the router only configures the **pod** NIC (cluster ro
 
 **UI**
 
-- **Routers** — create (multi-VPC select) / detail (attach/detach VPC); enable external gateway; leases and floating IPs
+- **Routers** — create (multi-VPC select) / detail (attach/detach VPC); enable external gateway; leases, floating IPs, and port forwards
 - **Floating IPs** nav — list/filter all associations; disassociate / release
 - **Associate floating IP** (`/floating-ips/create`) — pick VPC (must have router + external) + target VM (or private IP)
+- **Port Forwards** nav — list/filter port maps; create / delete
+- **Create port forward** (`/port-forwards/create`) — protocol + public/private ports + target VM; public defaults to router external primary
 - **VPC detail** — router pointer, floating IP table, associate / disassociate
-- **VM detail** — floating IPs targeting this guest, associate (prefilled VPC) / disassociate
+- **VM detail (Networking)** — floating IPs and port forwards targeting this guest
 
 **Limits**
 
@@ -314,8 +318,10 @@ Cloud-init **netplan** on the router only configures the **pod** NIC (cluster ro
 - A VPC can attach to only one router (gateway IP ownership)
 - Cannot detach the last VPC (delete the router instead)
 - Setting external later requires an SSH key (new cloud-init) and **recreates** the appliance (brief downtime)
+- A public address cannot be both a full 1:1 floating IP and a port-forward host; delete port forwards (or disassociate the FIP) first
+- Releasing a held FIP is blocked while port forwards still use that public address
 
-**Policy sketch** (`policy.json` in the ConfigMap): `interfaces[]` (vpc, cidr, gateway, mac, domain, dhcp), `leases[]`, `external` (multusNetwork, primaryCidr, gateway, mac, snat), `floatingIPs[]`.
+**Policy sketch** (`policy.json` in the ConfigMap): `interfaces[]` (vpc, cidr, gateway, mac, domain, dhcp), `leases[]`, `external` (multusNetwork, primaryCidr, gateway, mac, snat), `floatingIPs[]`, `portForwards[]` (id, public, publicPort, private, privatePort, protocol, targetVm, vpc).
 
 ### Golden images
 

@@ -868,6 +868,28 @@ export interface FloatingIpAssociation {
   state: FloatingIpState;
 }
 
+/** TCP/UDP only — port forwards are per-protocol DNAT rules (not full 1:1 FIP). */
+export type PortForwardProtocol = "tcp" | "udp";
+
+/**
+ * Port-level DNAT through a router external gateway.
+ * Maps publicIP:publicPort → privateIP:privatePort without claiming a full FIP for the VM.
+ */
+export interface PortForwardAssociation {
+  id: string;
+  /** Public address hosting the listen port (no prefix). */
+  public: string;
+  publicPort: number;
+  /** Private VPC target address (no prefix). */
+  private: string;
+  privatePort: number;
+  protocol: PortForwardProtocol;
+  /** Optional target VM name (same namespace). */
+  targetVm?: string;
+  /** VPC that owns the private address. */
+  vpc?: string;
+}
+
 export interface VpcDetail extends VpcSummary {
   uid?: string;
   labels: Record<string, string>;
@@ -937,6 +959,8 @@ export interface RouterDetail extends RouterSummary {
   external?: RouterExternalInfo;
   leases: RouterLease[];
   floatingIps: FloatingIpAssociation[];
+  /** Port-level DNAT rules (share public IPs; alternative to full FIPs). */
+  portForwards: PortForwardAssociation[];
   agentObservedGeneration?: string;
   agentLastError?: string;
   agentAppliedAt?: string;
@@ -1038,6 +1062,35 @@ export interface ReleaseFloatingIpRequest {
   idOrPublic: string;
 }
 
+/** Create a port forward (publicIP:port → privateIP:port) on a router with external gateway. */
+export interface CreatePortForwardRequest {
+  cluster: ClusterId;
+  namespace: string;
+  vpcName: string;
+  protocol: PortForwardProtocol;
+  publicPort: number;
+  privatePort: number;
+  /** Private target IPv4 (no prefix). Defaults from targetVm IPAM when omitted. */
+  privateIpv4?: string;
+  /** Target VM name (same namespace); used to resolve private IP when not set. */
+  targetVm?: string;
+  /**
+   * Public listen address. Empty uses the router external primary IP.
+   * May be a held floating IP (or allocate via allocatePublic).
+   */
+  publicIpv4?: string;
+  /** When true and publicIpv4 is empty, allocate a new public IP (held FIP) for this mapping. */
+  allocatePublic?: boolean;
+}
+
+export interface DeletePortForwardRequest {
+  cluster: ClusterId;
+  namespace: string;
+  vpcName: string;
+  /** Port forward id. */
+  id: string;
+}
+
 /** Row for the top-level floating IP list (and embed on VPC/VM detail). */
 export interface FloatingIpSummary {
   cluster: ClusterId;
@@ -1069,6 +1122,52 @@ export interface FloatingIpEligibleVpc {
   floatingCount: number;
   /** Held public addresses available to re-associate without allocating. */
   heldPublicIps: string[];
+  /** Non-router attached VMs with private addresses. */
+  targetVms: Array<{
+    name: string;
+    allocatedIpv4?: string;
+  }>;
+}
+
+/** Row for the top-level port forward list (and embed on router/VM detail). */
+export interface PortForwardSummary {
+  cluster: ClusterId;
+  namespace: string;
+  vpcName: string;
+  id: string;
+  public: string;
+  publicPort: number;
+  private: string;
+  privatePort: number;
+  protocol: PortForwardProtocol;
+  targetVm?: string;
+  routerName?: string;
+  agentStatus?: RouterAgentStatus;
+  agentHeartbeatAt?: string;
+  policyConfigMap?: string;
+}
+
+/**
+ * VPC that can accept port forwards (same prereqs as floating IPs:
+ * shared router with external gateway).
+ */
+export interface PortForwardEligibleVpc {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  cidr?: string;
+  routerName?: string;
+  publicNetwork?: string;
+  /** Router external primary IPv4 (default public listen address). */
+  externalPrimaryIpv4?: string;
+  agentStatus?: RouterAgentStatus;
+  portForwardCount: number;
+  /**
+   * Public addresses usable for port forwards: router primary + held FIPs +
+   * publics already hosting other port forwards on this router.
+   * Full 1:1 associated FIPs are excluded.
+   */
+  publicIpv4Options: string[];
   /** Non-router attached VMs with private addresses. */
   targetVms: Array<{
     name: string;

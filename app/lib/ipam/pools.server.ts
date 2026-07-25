@@ -402,9 +402,15 @@ function collectFloatsFromPolicyCms(
     try {
       const doc = JSON.parse(raw) as {
         floatingIPs?: Array<{ public?: string }>;
+        portForwards?: Array<{ public?: string }>;
       };
       for (const f of doc.floatingIPs ?? []) {
         const addr = addressFromIpv4Annotation(f.public ?? "") ?? f.public?.trim();
+        if (!addr) continue;
+        if (containsIpv4(parsed, addr)) used.add(addr);
+      }
+      for (const pf of doc.portForwards ?? []) {
+        const addr = addressFromIpv4Annotation(pf.public ?? "") ?? pf.public?.trim();
         if (!addr) continue;
         if (containsIpv4(parsed, addr)) used.add(addr);
       }

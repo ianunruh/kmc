@@ -27,7 +27,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "9"
+AGENT_VERSION = "10"
 
 ENV_FILE = os.environ.get("KMC_ENV_FILE", "/etc/kmc/router-agent.env")
 STATE_DIR = Path(os.environ.get("KMC_STATE_DIR", "/var/lib/kmc"))
@@ -621,9 +621,10 @@ def ensure_float_addr(iface: str, pub: str) -> None:
 
 
 def apply_external_and_floats(doc: dict[str, Any], private_ifaces: list[str]) -> None:
-    """SNAT/MASQUERADE + floating IPs when external gateway is configured."""
+    """SNAT/MASQUERADE + floating IPs + port forwards when external gateway is set."""
     external = doc.get("external") or None
     floats = doc.get("floatingIPs") or []
+    port_forwards = doc.get("portForwards") or []
 
     # Clear float chains even without external so removals stick after clearExternal.
     ensure_float_chains()
@@ -646,6 +647,9 @@ def apply_external_and_floats(doc: dict[str, Any], private_ifaces: list[str]) ->
     public_if = if_by_mac(public_mac)
     if not public_if:
         raise RuntimeError(f"public NIC not found for {public_mac}")
+
+    # Primary external address is usually already on the NIC via cloud-init.
+    primary_pub = str(external.get("primaryCidr", "")).split("/")[0].strip()
 
     # Default route should already be on public via cloud-init netplan.
     # Ensure MASQUERADE for general egress when snat enabled.
@@ -718,6 +722,80 @@ def apply_external_and_floats(doc: dict[str, Any], private_ifaces: list[str]) ->
                 )
 
     new_floats: list[str] = []
+    seen_pub: set[str] = set()
+
+    def track_pub(pub: str) -> None:
+        if not pub or pub in seen_pub:
+            return
+        seen_pub.add(pub)
+        new_floats.append(f"{pub}/32")
+        # Primary is managed by netplan; still ensure secondary FIPs/port-VIP.
+        if pub != primary_pub:
+            ensure_float_addr(public_if, pub)
+        else:
+            # Announce primary so neighbors learn the router MAC (harmless if present).
+            send_garp(public_if, pub)
+
+    # Port-specific DNAT first (more specific than 1:1 float rules).
+    pf_count = 0
+    for pf in port_forwards:
+        if not isinstance(pf, dict):
+            continue
+        pub = str(pf.get("public", "")).split("/")[0].strip()
+        priv = str(pf.get("private", "")).split("/")[0].strip()
+        proto = str(pf.get("protocol", "tcp")).strip().lower()
+        if proto not in ("tcp", "udp"):
+            continue
+        try:
+            pub_port = int(pf.get("publicPort"))
+            priv_port = int(pf.get("privatePort"))
+        except (TypeError, ValueError):
+            continue
+        if not pub or not priv or not (1 <= pub_port <= 65535) or not (1 <= priv_port <= 65535):
+            continue
+        track_pub(pub)
+        iptables(
+            "-t",
+            "nat",
+            "-A",
+            "KMC_FLOAT_PRE",
+            "-p",
+            proto,
+            "-d",
+            f"{pub}/32",
+            "--dport",
+            str(pub_port),
+            "-j",
+            "DNAT",
+            "--to-destination",
+            f"{priv}:{priv_port}",
+        )
+        iptables(
+            "-A",
+            "KMC_FLOAT_FWD",
+            "-p",
+            proto,
+            "-d",
+            f"{priv}/32",
+            "--dport",
+            str(priv_port),
+            "-j",
+            "ACCEPT",
+        )
+        iptables(
+            "-A",
+            "KMC_FLOAT_FWD",
+            "-p",
+            proto,
+            "-s",
+            f"{priv}/32",
+            "--sport",
+            str(priv_port),
+            "-j",
+            "ACCEPT",
+        )
+        pf_count += 1
+
     for f in floats:
         if not isinstance(f, dict):
             continue
@@ -725,9 +803,9 @@ def apply_external_and_floats(doc: dict[str, Any], private_ifaces: list[str]) ->
         priv = str(f.get("private", "")).split("/")[0].strip()
         if not pub:
             continue
-        new_floats.append(f"{pub}/32")
-        ensure_float_addr(public_if, pub)
+        track_pub(pub)
         if not priv:
+            # Held: address on NIC, no 1:1 DNAT (may still host port forwards).
             continue
         iptables(
             "-t",
@@ -762,11 +840,17 @@ def apply_external_and_floats(doc: dict[str, Any], private_ifaces: list[str]) ->
         old_ip = old.split("/")[0]
         if any(nf.split("/")[0] == old_ip for nf in new_floats):
             continue
+        # Never remove the external primary from the NIC.
+        if primary_pub and old_ip == primary_pub:
+            continue
         run(["ip", "addr", "del", old, "dev", public_if], check=False)
         run(["ip", "addr", "del", f"{old_ip}/32", "dev", public_if], check=False)
 
     set_managed_floats(new_floats)
-    log(f"external on {public_if}: snat={snat} floats={len(new_floats)}")
+    log(
+        f"external on {public_if}: snat={snat} floats={len(floats)} "
+        f"portForwards={pf_count} managedAddrs={len(new_floats)}"
+    )
 
 
 def apply_policy(doc: dict[str, Any]) -> tuple[str, str, str]:
@@ -939,7 +1023,8 @@ def reconcile_once(*, force: bool = False) -> None:
     )
     log(
         f"applied status={status} generation={generation or '?'} "
-        f"floats={len(doc.get('floatingIPs') or [])}"
+        f"floats={len(doc.get('floatingIPs') or [])} "
+        f"portForwards={len(doc.get('portForwards') or [])}"
     )
 
 

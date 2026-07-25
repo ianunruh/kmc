@@ -60,6 +60,7 @@ import {
   emptyRouterPolicyDoc,
   ensureRouterControlPlane,
   floatingIpsFromRouterDoc,
+  portForwardsFromRouterDoc,
   getRouterPolicyConfigMap,
   interfacesFromDoc,
   leasesFromDoc,
@@ -300,6 +301,7 @@ export async function getRouter(
       : undefined,
     leases: leasesFromDoc(doc),
     floatingIps: floatingIpsFromRouterDoc(doc),
+    portForwards: portForwardsFromRouterDoc(doc),
     ...agent,
     vmName: name,
     vmStatus,
@@ -488,6 +490,7 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
         : null,
     leases: [],
     floatingIPs: [],
+    portForwards: [],
   };
 
   const controlPlane = await ensureRouterControlPlane({
@@ -1986,6 +1989,17 @@ export async function detachRouterVpc(
       return false;
     }
   });
+  const pfsForVpc = (doc.portForwards ?? []).filter((pf) => {
+    if (pf.vpc === vpcName) return true;
+    if (pf.vpc && pf.vpc !== vpcName) return false;
+    const iface = doc.interfaces.find((i) => i.vpc === vpcName);
+    if (!iface) return false;
+    try {
+      return containsIpv4(parseCidr(iface.cidr), pf.private.split("/")[0]!);
+    } catch {
+      return false;
+    }
+  });
 
   if (workloadLeases.length > 0 && !input.force) {
     throw new Error(
@@ -1995,6 +2009,11 @@ export async function detachRouterVpc(
   if (fipsForVpc.length > 0 && !input.force) {
     throw new Error(
       `VPC ${vpcName} still has ${fipsForVpc.length} active floating IP(s). Disassociate them first or force-detach (holds public addresses).`,
+    );
+  }
+  if (pfsForVpc.length > 0 && !input.force) {
+    throw new Error(
+      `VPC ${vpcName} still has ${pfsForVpc.length} port forward(s). Delete them first or force-detach.`,
     );
   }
 
@@ -2030,6 +2049,17 @@ export async function detachRouterVpc(
           protocol: f.protocol ?? "all",
           vpc: f.vpc ?? vpcName,
         };
+      });
+      d.portForwards = (d.portForwards ?? []).filter((pf) => {
+        if (pf.vpc === vpcName) return false;
+        if (pf.vpc && pf.vpc !== vpcName) return true;
+        const iface = doc.interfaces.find((i) => i.vpc === vpcName);
+        if (!iface) return true;
+        try {
+          return !containsIpv4(parseCidr(iface.cidr), pf.private.split("/")[0]!);
+        } catch {
+          return true;
+        }
       });
     },
     { bumpGeneration: true },

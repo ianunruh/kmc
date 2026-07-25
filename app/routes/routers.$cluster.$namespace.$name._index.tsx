@@ -13,7 +13,13 @@ import {
   Textarea,
   TextInput,
 } from "@mantine/core";
-import { IconLink, IconRefresh, IconUnlink, IconWorldWww } from "@tabler/icons-react";
+import {
+  IconArrowsRightLeft,
+  IconLink,
+  IconRefresh,
+  IconUnlink,
+  IconWorldWww,
+} from "@tabler/icons-react";
 import { useMemo, useState } from "react";
 import { Link, useFetcher, useRouteLoaderData } from "react-router";
 import type { loader as detailLoader } from "./routers.$cluster.$namespace.$name";
@@ -30,6 +36,7 @@ import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import {
   floatingIpCreatePath,
   formatDateTime,
+  portForwardCreatePath,
   routerPath,
   vmPath,
   vpcPath,
@@ -531,7 +538,7 @@ export default function RouterOverviewTab() {
               </Alert>
             )}
             <Checkbox
-              label="Force detach (drop leases; hold floating IPs)"
+              label="Force detach (drop leases/port forwards; hold floating IPs)"
               checked={detachForce}
               onChange={(e) => setDetachForce(e.currentTarget.checked)}
             />
@@ -583,7 +590,8 @@ export default function RouterOverviewTab() {
         ) : publicNetworks.length === 0 ? (
           <Text size="sm" c="dimmed">
             No public Multus networks with ipPools on this cluster. Add one in{" "}
-            <Code>clusters.yaml</Code> to enable external SNAT / floating IPs.
+            <Code>clusters.yaml</Code> to enable external SNAT / floating IPs / port
+            forwards.
           </Text>
         ) : router.vmMissing ? (
           <Text size="sm" c="dimmed">
@@ -713,6 +721,76 @@ export default function RouterOverviewTab() {
                   <Badge size="sm" variant="light">
                     {f.state}
                   </Badge>
+                </Table.Td>
+              </Table.Tr>
+            ))}
+          </ResourceTable>
+        )}
+      </DetailSection>
+
+      <DetailSection
+        title={`Port Forwards (${router.portForwards.length})`}
+        actions={
+          router.hasExternal ? (
+            <Button
+              component={Link}
+              to={portForwardCreatePath({
+                cluster: router.cluster,
+                namespace: router.namespace,
+                ...(router.vpcNames.length === 1 ? { vpc: router.vpcNames[0] } : {}),
+              })}
+              size="xs"
+              variant="light"
+              leftSection={<IconArrowsRightLeft size={14} />}
+              disabled={router.vpcNames.length === 0 || router.vmMissing}
+            >
+              Create port forward
+            </Button>
+          ) : undefined
+        }
+      >
+        {router.portForwards.length === 0 ? (
+          <Text size="sm" c="dimmed">
+            {router.hasExternal
+              ? "No port forwards yet. Map a public port to a VM without a full floating IP."
+              : "Enable an external gateway first."}
+          </Text>
+        ) : (
+          <ResourceTable
+            isEmpty={false}
+            headers={["Public", "Protocol", "Private", "VM"]}
+          >
+            {router.portForwards.map((pf) => (
+              <Table.Tr key={pf.id}>
+                <Table.Td>
+                  <Code>
+                    {pf.public}:{pf.publicPort}
+                  </Code>
+                </Table.Td>
+                <Table.Td>
+                  <Badge size="sm" variant="light" color="blue">
+                    {pf.protocol.toUpperCase()}
+                  </Badge>
+                </Table.Td>
+                <Table.Td>
+                  <Code>
+                    {pf.private}:{pf.privatePort}
+                  </Code>
+                </Table.Td>
+                <Table.Td>
+                  {pf.targetVm ? (
+                    <ResourceLink
+                      to={vmPath({
+                        cluster: router.cluster,
+                        namespace: router.namespace,
+                        name: pf.targetVm,
+                      })}
+                    >
+                      {pf.targetVm}
+                    </ResourceLink>
+                  ) : (
+                    "—"
+                  )}
                 </Table.Td>
               </Table.Tr>
             ))}

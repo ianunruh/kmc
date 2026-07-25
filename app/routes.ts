@@ -90,6 +90,9 @@ export default [
   route("floating-ips", "routes/floating-ips._index.tsx"),
   route("floating-ips/create", "routes/floating-ips.create.tsx"),
 
+  route("port-forwards", "routes/port-forwards._index.tsx"),
+  route("port-forwards/create", "routes/port-forwards.create.tsx"),
+
   route("namespaces", "routes/namespaces._index.tsx"),
   route("namespaces/create", "routes/namespaces.create.tsx"),
   route("namespaces/:cluster/:name/edit", "routes/namespaces.$cluster.$name.edit.tsx"),

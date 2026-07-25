@@ -3,11 +3,16 @@ import { getRequestSession } from "~/lib/auth/middleware.server";
 import type {
   AssociateFloatingIpRequest,
   ClusterId,
+  CreatePortForwardRequest,
   CreateVpcRequest,
+  DeletePortForwardRequest,
   DisassociateFloatingIpRequest,
   FloatingIpAssociation,
   FloatingIpEligibleVpc,
   FloatingIpSummary,
+  PortForwardAssociation,
+  PortForwardEligibleVpc,
+  PortForwardSummary,
   ReleaseFloatingIpRequest,
   UpdateVpcRequest,
   VpcAttachedVm,
@@ -62,10 +67,15 @@ import { listClusters } from "~/vms/vms.server";
 import { buildNetworkAttachmentDefinition } from "./template.server";
 import {
   associateRouterFloatingIp,
+  createRouterPortForward,
+  deleteRouterPortForward,
   disassociateRouterFloatingIp,
+  externalPrimaryIpv4FromDoc,
   getRouterPolicyConfigMap,
   listFloatingIpsForVm as listFloatingIpsForVmCore,
   listFloatingIpsFromRouterPolicies,
+  listPortForwardsForVm as listPortForwardsForVmCore,
+  listPortForwardsFromRouterPolicies,
   releaseRouterFloatingIp,
   summaryFromRouterPolicy,
   syncRouterAgentScript,
@@ -923,4 +933,182 @@ export async function listFloatingIpsForVm(
   privateAddresses: string[] = [],
 ): Promise<FloatingIpSummary[]> {
   return listFloatingIpsForVmCore(cluster, namespace, vmName, privateAddresses);
+}
+
+/**
+ * Create a port forward (publicIP:port → privateIP:port) via the VPC's shared router.
+ */
+export async function createPortForward(
+  input: CreatePortForwardRequest,
+): Promise<PortForwardAssociation> {
+  const vpc = await getVpc(input.cluster, input.namespace, input.vpcName);
+  if (!vpc.cidr?.trim()) {
+    throw new Error("VPC has no private CIDR");
+  }
+  if (!vpc.router?.hasExternal || !vpc.router.name) {
+    throw new Error(
+      "VPC has no router external gateway — enable an external gateway on the shared router first",
+    );
+  }
+  const rp = await getRouterPolicyConfigMap(
+    input.cluster,
+    input.namespace,
+    vpc.router.name,
+  );
+  const publicNet = rp?.doc?.external?.multusNetwork?.trim();
+  if (!publicNet) {
+    throw new Error(
+      `Router ${vpc.router.name} has no external Multus network in policy`,
+    );
+  }
+  return createRouterPortForward({
+    ...input,
+    routerName: vpc.router.name,
+    vpcCidr: vpc.cidr,
+    publicMultusNetwork: publicNet,
+  });
+}
+
+export async function deletePortForward(input: DeletePortForwardRequest): Promise<void> {
+  const vpc = await getVpc(input.cluster, input.namespace, input.vpcName);
+  if (!vpc.router?.name) {
+    throw new Error(
+      "VPC has no shared router — port forwards are managed by router policy",
+    );
+  }
+  await deleteRouterPortForward({
+    ...input,
+    routerName: vpc.router.name,
+  });
+}
+
+/** Cross-cluster port forward inventory. */
+export async function listPortForwards(clusterFilter?: ClusterId): Promise<{
+  items: PortForwardSummary[];
+  clusters: Awaited<ReturnType<typeof listClusters>>;
+}> {
+  const contexts = clusterFilter ? [clusterFilter] : getConfiguredContexts();
+  const clusters = await listClusters();
+  const byId = new Map(clusters.map((c) => [c.id, c]));
+  const items: PortForwardSummary[] = [];
+
+  await Promise.all(
+    contexts.map(async (id) => {
+      const cluster = byId.get(id);
+      if (cluster && !cluster.reachable) return;
+      try {
+        const rows = await listPortForwardsFromRouterPolicies(id);
+        items.push(...rows);
+      } catch (err) {
+        if (cluster) {
+          cluster.reachable = false;
+          cluster.error = formatError(err);
+        }
+      }
+    }),
+  );
+
+  items.sort((a, b) => {
+    const c = a.cluster.localeCompare(b.cluster);
+    if (c) return c;
+    const n = a.namespace.localeCompare(b.namespace);
+    if (n) return n;
+    const p = a.public.localeCompare(b.public);
+    if (p) return p;
+    return a.publicPort - b.publicPort;
+  });
+
+  return { items, clusters };
+}
+
+/**
+ * VPCs that can accept port forwards (router with external gateway).
+ */
+export async function listPortForwardEligibleVpcs(
+  clusterFilter?: ClusterId,
+): Promise<PortForwardEligibleVpc[]> {
+  const { items: vpcs } = await listVpcs(clusterFilter);
+  const out: PortForwardEligibleVpc[] = [];
+
+  await Promise.all(
+    vpcs.map(async (vpc) => {
+      if (!vpc.cidr?.trim()) return;
+      try {
+        const detail = await getVpc(vpc.cluster, vpc.namespace, vpc.name);
+        if (!detail.router?.hasExternal || !detail.router.name) return;
+
+        const rp = await getRouterPolicyConfigMap(
+          vpc.cluster,
+          vpc.namespace,
+          detail.router.name,
+        );
+        if (!rp?.doc) return;
+        const doc = rp.doc;
+        const externalPrimary = externalPrimaryIpv4FromDoc(doc);
+        const associatedPublics = new Set(
+          (doc.floatingIPs ?? [])
+            .filter((f) => f.private?.trim())
+            .map((f) => addressFromIpv4Annotation(f.public) ?? f.public),
+        );
+        const publicOpts = new Set<string>();
+        if (externalPrimary && !associatedPublics.has(externalPrimary)) {
+          publicOpts.add(externalPrimary);
+        }
+        for (const f of doc.floatingIPs ?? []) {
+          const pub = addressFromIpv4Annotation(f.public) ?? f.public;
+          if (!f.private?.trim() && pub) publicOpts.add(pub);
+        }
+        for (const pf of doc.portForwards ?? []) {
+          const pub = addressFromIpv4Annotation(pf.public) ?? pf.public;
+          if (pub && !associatedPublics.has(pub)) publicOpts.add(pub);
+        }
+        const pfs = (doc.portForwards ?? []).filter(
+          (pf) =>
+            pf.vpc === vpc.name ||
+            (!pf.vpc &&
+              pf.private &&
+              containsIpv4(parseCidr(vpc.cidr!), pf.private)),
+        );
+        out.push({
+          cluster: vpc.cluster,
+          namespace: vpc.namespace,
+          name: vpc.name,
+          cidr: vpc.cidr,
+          routerName: detail.router.name,
+          publicNetwork: doc.external?.multusNetwork,
+          externalPrimaryIpv4: externalPrimary,
+          agentStatus: detail.router.agentStatus,
+          portForwardCount: pfs.length,
+          publicIpv4Options: Array.from(publicOpts).sort(),
+          targetVms: detail.attachedVms
+            .filter((vm) => !vm.isRouter)
+            .map((vm) => ({
+              name: vm.name,
+              allocatedIpv4: vm.allocatedIpv4,
+            })),
+        });
+      } catch {
+        /* skip unreachable VPC */
+      }
+    }),
+  );
+
+  out.sort((a, b) => {
+    const c = a.cluster.localeCompare(b.cluster);
+    if (c) return c;
+    const n = a.namespace.localeCompare(b.namespace);
+    if (n) return n;
+    return a.name.localeCompare(b.name);
+  });
+  return out;
+}
+
+/** Port forwards targeting a VM (by name or private IPAM addresses). */
+export async function listPortForwardsForVm(
+  cluster: ClusterId,
+  namespace: string,
+  vmName: string,
+  privateAddresses: string[] = [],
+): Promise<PortForwardSummary[]> {
+  return listPortForwardsForVmCore(cluster, namespace, vmName, privateAddresses);
 }

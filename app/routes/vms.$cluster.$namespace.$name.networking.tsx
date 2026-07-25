@@ -6,8 +6,14 @@ import {
   Table,
   Text,
   Anchor,
+  Badge,
 } from "@mantine/core";
-import { IconPlus, IconWorld, IconWorldWww } from "@tabler/icons-react";
+import {
+  IconArrowsRightLeft,
+  IconPlus,
+  IconWorld,
+  IconWorldWww,
+} from "@tabler/icons-react";
 import { useState } from "react";
 import { Link, useFetcher } from "react-router";
 import type { Route } from "./+types/vms.$cluster.$namespace.$name.networking";
@@ -26,11 +32,22 @@ import {
   ingressHostUrl,
   ingressPath,
   ingressesListPath,
+  portForwardCreatePath,
+  portForwardsListPath,
   vpcPath,
 } from "~/lib/format";
-import type { FloatingIpSummary, IngressSummary } from "~/lib/types";
+import type {
+  FloatingIpSummary,
+  IngressSummary,
+  PortForwardSummary,
+} from "~/lib/types";
 import { listIngressesForVm } from "~/ingresses/ingresses.server";
-import { disassociateFloatingIp, listFloatingIpsForVm } from "~/vpcs/vpcs.server";
+import {
+  deletePortForward,
+  disassociateFloatingIp,
+  listFloatingIpsForVm,
+  listPortForwardsForVm,
+} from "~/vpcs/vpcs.server";
 import { getVm } from "~/vms/vms.server";
 import { addressFromIpv4Annotation } from "~/lib/ipam/cidr";
 import { useRefresh } from "~/lib/refresh";
@@ -57,6 +74,13 @@ export async function loader({ params }: Route.LoaderArgs) {
     floatingIps = [];
   }
 
+  let portForwards: PortForwardSummary[] = [];
+  try {
+    portForwards = await listPortForwardsForVm(cluster, namespace, name, privateAddrs);
+  } catch {
+    portForwards = [];
+  }
+
   let ingresses: IngressSummary[] = [];
   try {
     ingresses = await listIngressesForVm(cluster, namespace, name);
@@ -68,6 +92,7 @@ export async function loader({ params }: Route.LoaderArgs) {
 
   return {
     floatingIps,
+    portForwards,
     ingresses,
     vpcPrefill: vpcPrefill
       ? {
@@ -103,6 +128,20 @@ export async function action({ request, params }: Route.ActionArgs) {
       });
       return { ok: true, intent };
     }
+    if (intent === "delete-port-forward") {
+      const vpcName = String(form.get("vpcName") ?? "").trim();
+      const id = String(form.get("id") ?? "").trim();
+      if (!vpcName || !id) {
+        return { ok: false, error: "Missing port forward identity", intent };
+      }
+      await deletePortForward({
+        cluster,
+        namespace,
+        vpcName,
+        id,
+      });
+      return { ok: true, intent };
+    }
     return { ok: false, error: `Unknown intent: ${intent}`, intent };
   } catch (err) {
     return actionFailure(`vm.${intent}`, err, {
@@ -116,12 +155,13 @@ export async function action({ request, params }: Route.ActionArgs) {
 
 export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
   const { vm } = useVmDetail();
-  const { floatingIps, ingresses, vpcPrefill } = loaderData;
+  const { floatingIps, portForwards, ingresses, vpcPrefill } = loaderData;
   const fetcher = useFetcher<VmDetailActionResult>();
   const { refreshNow } = useRefresh();
   const [disassociateTarget, setDisassociateTarget] = useState<FloatingIpSummary | null>(
     null,
   );
+  const [deletePfTarget, setDeletePfTarget] = useState<PortForwardSummary | null>(null);
   const busy = fetcher.state !== "idle";
 
   useFetcherResult(fetcher, (data) => {
@@ -139,6 +179,10 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
         "Done",
         "Floating IP disassociated — public address is held (not released)",
       );
+      refreshNow();
+    }
+    if (data.ok && data.intent === "delete-port-forward") {
+      notifyActionSuccess("Done", "Port forward deleted");
       refreshNow();
     }
   });
@@ -330,6 +374,120 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
       </DetailSection>
 
       <DetailSection
+        title="Port Forwards"
+        actions={
+          <Group gap="xs">
+            <Button
+              component={Link}
+              to={portForwardsListPath({
+                cluster: vm.cluster,
+                namespace: vm.namespace,
+              })}
+              size="xs"
+              variant="subtle"
+              leftSection={<IconArrowsRightLeft size={14} />}
+            >
+              All port forwards
+            </Button>
+            {vpcPrefill && (
+              <Button
+                component={Link}
+                to={portForwardCreatePath({
+                  cluster: vpcPrefill.cluster,
+                  namespace: vpcPrefill.namespace,
+                  vpc: vpcPrefill.name,
+                  targetVm: vm.name,
+                })}
+                size="xs"
+                variant="light"
+                color="teal"
+                leftSection={<IconPlus size={14} />}
+              >
+                Create
+              </Button>
+            )}
+          </Group>
+        }
+      >
+        <Text size="sm" c="dimmed" mb="sm">
+          Public port mappings through a router external gateway (without a full floating
+          IP).
+        </Text>
+        {portForwards.length === 0 ? (
+          <Text size="sm" c="dimmed">
+            {vpcPrefill
+              ? "No port forwards targeting this VM."
+              : "Attach this VM to a VPC whose shared router has an external gateway to use port forwards."}
+          </Text>
+        ) : (
+          <Table.ScrollContainer
+            className="kmc-table-scroll"
+            minWidth={520}
+            type="native"
+          >
+            <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Public</Table.Th>
+                  <Table.Th>Protocol</Table.Th>
+                  <Table.Th>Private</Table.Th>
+                  <Table.Th>VPC</Table.Th>
+                  <Table.Th>Agent</Table.Th>
+                  <Table.Th />
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {portForwards.map((pf) => (
+                  <Table.Tr key={`${pf.vpcName}/${pf.id}`}>
+                    <Table.Td>
+                      <Code>
+                        {pf.public}:{pf.publicPort}
+                      </Code>
+                    </Table.Td>
+                    <Table.Td>
+                      <Badge size="sm" variant="light" color="blue">
+                        {pf.protocol.toUpperCase()}
+                      </Badge>
+                    </Table.Td>
+                    <Table.Td>
+                      <Code>
+                        {pf.private}:{pf.privatePort}
+                      </Code>
+                    </Table.Td>
+                    <Table.Td>
+                      <ResourceLink
+                        to={vpcPath({
+                          cluster: pf.cluster,
+                          namespace: pf.namespace,
+                          name: pf.vpcName,
+                        })}
+                      >
+                        {pf.vpcName}
+                      </ResourceLink>
+                    </Table.Td>
+                    <Table.Td>
+                      {pf.agentStatus ? <StatusBadge status={pf.agentStatus} /> : "—"}
+                    </Table.Td>
+                    <Table.Td>
+                      <Button
+                        size="compact-xs"
+                        variant="subtle"
+                        color="red"
+                        disabled={busy}
+                        onClick={() => setDeletePfTarget(pf)}
+                      >
+                        Delete
+                      </Button>
+                    </Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
+        )}
+      </DetailSection>
+
+      <DetailSection
         title="Ingresses"
         actions={
           <Group gap="xs">
@@ -466,6 +624,42 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
               </Code>{" "}
               on VPC <Code>{disassociateTarget.vpcName}</Code>? The public address stays
               reserved (held) until released from the floating IPs list or VPC page.
+            </>
+          ) : (
+            ""
+          )
+        }
+      />
+
+      <ConfirmActionModal
+        opened={deletePfTarget != null}
+        onClose={() => setDeletePfTarget(null)}
+        title="Delete port forward"
+        confirmLabel="Delete"
+        confirmColor="red"
+        loading={busy}
+        onConfirm={() => {
+          if (!deletePfTarget) return;
+          fetcher.submit(
+            {
+              intent: "delete-port-forward",
+              vpcName: deletePfTarget.vpcName,
+              id: deletePfTarget.id,
+            },
+            { method: "post" },
+          );
+          setDeletePfTarget(null);
+        }}
+        message={
+          deletePfTarget ? (
+            <>
+              Remove{" "}
+              <Code>
+                {deletePfTarget.protocol.toUpperCase()} {deletePfTarget.public}:
+                {deletePfTarget.publicPort} → {deletePfTarget.private}:
+                {deletePfTarget.privatePort}
+              </Code>
+              ?
             </>
           ) : (
             ""

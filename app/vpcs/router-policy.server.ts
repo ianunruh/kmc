@@ -2,9 +2,14 @@ import { formatError } from "~/lib/errors";
 import type {
   AssociateFloatingIpRequest,
   ClusterId,
+  CreatePortForwardRequest,
+  DeletePortForwardRequest,
   DisassociateFloatingIpRequest,
   FloatingIpAssociation,
   FloatingIpSummary,
+  PortForwardAssociation,
+  PortForwardProtocol,
+  PortForwardSummary,
   ReleaseFloatingIpRequest,
   RouterAgentStatus,
   RouterDetail,
@@ -94,6 +99,20 @@ export type RouterPolicyDoc = {
     targetVm?: string;
     vpc?: string;
     protocol?: string;
+  }>;
+  /**
+   * Port-level DNAT rules (publicIP:port → privateIP:port).
+   * Distinct from 1:1 floatingIPs so multiple guests can share one public address.
+   */
+  portForwards: Array<{
+    id: string;
+    public: string;
+    publicPort: number;
+    private: string;
+    privatePort: number;
+    protocol: PortForwardProtocol;
+    targetVm?: string;
+    vpc?: string;
   }>;
 };
 
@@ -316,7 +335,22 @@ export function emptyRouterPolicyDoc(
     external: null,
     leases: [],
     floatingIPs: [],
+    portForwards: [],
   };
+}
+
+function normalizePortForwardProtocol(raw: unknown): PortForwardProtocol | null {
+  const p = String(raw ?? "")
+    .trim()
+    .toLowerCase();
+  if (p === "tcp" || p === "udp") return p;
+  return null;
+}
+
+function normalizePortNumber(raw: unknown): number | null {
+  const n = typeof raw === "number" ? raw : Number(String(raw ?? "").trim());
+  if (!Number.isInteger(n) || n < 1 || n > 65535) return null;
+  return n;
 }
 
 export function parseRouterPolicyDoc(raw: string | undefined): RouterPolicyDoc | null {
@@ -330,6 +364,30 @@ export function parseRouterPolicyDoc(raw: string | undefined): RouterPolicyDoc |
     doc.interfaces = Array.isArray(doc.interfaces) ? doc.interfaces : [];
     doc.leases = Array.isArray(doc.leases) ? doc.leases : [];
     doc.floatingIPs = Array.isArray(doc.floatingIPs) ? doc.floatingIPs : [];
+    const rawPfs = Array.isArray(doc.portForwards) ? doc.portForwards : [];
+    doc.portForwards = rawPfs
+      .map((pf) => {
+        const protocol = normalizePortForwardProtocol(pf?.protocol);
+        const publicPort = normalizePortNumber(pf?.publicPort);
+        const privatePort = normalizePortNumber(pf?.privatePort);
+        const pub = String(pf?.public ?? "").trim();
+        const priv = String(pf?.private ?? "").trim();
+        const id = String(pf?.id ?? "").trim();
+        if (!protocol || !publicPort || !privatePort || !pub || !priv || !id) {
+          return null;
+        }
+        return {
+          id,
+          public: addressFromIpv4Annotation(pub) ?? pub,
+          publicPort,
+          private: addressFromIpv4Annotation(priv) ?? priv,
+          privatePort,
+          protocol,
+          ...(pf.targetVm?.trim() ? { targetVm: pf.targetVm.trim() } : {}),
+          ...(pf.vpc?.trim() ? { vpc: pf.vpc.trim() } : {}),
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => x != null);
     return doc;
   } catch {
     return null;
@@ -489,6 +547,30 @@ export function floatingIpsFromRouterDoc(
     targetVm: f.targetVm,
     state: f.private?.trim() ? ("associated" as const) : ("held" as const),
   }));
+}
+
+export function portForwardsFromRouterDoc(
+  doc: RouterPolicyDoc | null,
+): PortForwardAssociation[] {
+  if (!doc) return [];
+  return (doc.portForwards ?? []).map((pf) => ({
+    id: pf.id,
+    public: pf.public,
+    publicPort: pf.publicPort,
+    private: pf.private,
+    privatePort: pf.privatePort,
+    protocol: pf.protocol,
+    targetVm: pf.targetVm,
+    vpc: pf.vpc,
+  }));
+}
+
+/** Router external primary IPv4 (no prefix), when configured. */
+export function externalPrimaryIpv4FromDoc(doc: RouterPolicyDoc | null): string | undefined {
+  const raw = doc?.external?.primaryCidr?.trim();
+  if (!raw) return undefined;
+  const addr = addressFromIpv4Annotation(raw) ?? raw.split("/")[0]?.trim();
+  return addr || undefined;
 }
 
 /**
@@ -889,9 +971,11 @@ export async function upsertRouterLease(
 }
 
 /**
- * On VM delete (or failed create): drop DHCP leases for the guest and
- * disassociate any floating IPs that targeted it. Public addresses are retained
- * as **held** (same as manual disassociate) so they stay reserved for the VPC.
+ * On VM delete (or failed create): drop DHCP leases for the guest,
+ * disassociate any floating IPs that targeted it, and remove port forwards
+ * for that guest. Public FIP addresses are retained as **held** (same as
+ * manual disassociate) so they stay reserved for the VPC. Port forwards are
+ * deleted (they have no held state).
  */
 export async function removeRouterLeasesForVm(
   cluster: ClusterId,
@@ -929,7 +1013,8 @@ export async function removeRouterLeasesForVm(
     const hasFloat = (preview.floatingIPs ?? []).some(
       (f) => f.targetVm === vmName && Boolean(f.private?.trim()),
     );
-    if (!hasLease && !hasFloat) continue;
+    const hasPf = (preview.portForwards ?? []).some((pf) => pf.targetVm === vmName);
+    if (!hasLease && !hasFloat && !hasPf) continue;
     try {
       let disassociatedFloats = false;
       const next = await mutateRouterPolicyDoc(cluster, namespace, routerName, (doc) => {
@@ -962,8 +1047,16 @@ export async function removeRouterLeasesForVm(
           };
         });
 
+        const pfBefore = (doc.portForwards ?? []).length;
+        doc.portForwards = (doc.portForwards ?? []).filter((pf) => {
+          if (pf.targetVm === vmName) return false;
+          const priv = addressFromIpv4Annotation(pf.private) ?? pf.private;
+          return !(priv && vmLeaseIps.has(priv));
+        });
+        const pfChanged = doc.portForwards.length !== pfBefore;
+
         if (fipChanged) disassociatedFloats = true;
-        if (!leaseChanged && !fipChanged) return false;
+        if (!leaseChanged && !fipChanged && !pfChanged) return false;
       });
       // Secondary IPs on the router NIC stay (held floats); annotation lists all.
       if (disassociatedFloats) {
@@ -1350,6 +1443,14 @@ export async function associateRouterFloatingIp(
   if (input.publicIpv4?.trim()) {
     const wanted =
       addressFromIpv4Annotation(input.publicIpv4.trim()) ?? input.publicIpv4.trim();
+    const pfsOnPublic = (doc.portForwards ?? []).filter(
+      (pf) => (addressFromIpv4Annotation(pf.public) ?? pf.public) === wanted,
+    );
+    if (pfsOnPublic.length > 0) {
+      throw new Error(
+        `Public address ${wanted} has ${pfsOnPublic.length} port forward(s) — delete them before associating a full floating IP`,
+      );
+    }
     const heldIdx = doc.floatingIPs.findIndex((f) => {
       const pub = addressFromIpv4Annotation(f.public) ?? f.public;
       return pub === wanted && !f.private?.trim();
@@ -1425,6 +1526,14 @@ export async function associateRouterFloatingIp(
     )
   ) {
     throw new Error(`Public address ${publicAddr} is already a floating IP`);
+  }
+  const pfsOnNew = (doc.portForwards ?? []).filter(
+    (pf) => (addressFromIpv4Annotation(pf.public) ?? pf.public) === publicAddr,
+  );
+  if (pfsOnNew.length > 0) {
+    throw new Error(
+      `Public address ${publicAddr} has ${pfsOnNew.length} port forward(s) — delete them before associating a full floating IP`,
+    );
   }
 
   const id = `fip-${publicAddr.replace(/\./g, "-")}`;
@@ -1516,6 +1625,15 @@ export async function releaseRouterFloatingIp(
   if (!found) {
     throw new Error(`Floating IP "${input.idOrPublic.trim()}" not found on this router`);
   }
+  const pub = addressFromIpv4Annotation(found.entry.public) ?? found.entry.public;
+  const pfsOnPublic = (policy.doc.portForwards ?? []).filter(
+    (pf) => (addressFromIpv4Annotation(pf.public) ?? pf.public) === pub,
+  );
+  if (pfsOnPublic.length > 0) {
+    throw new Error(
+      `Cannot release ${pub}: ${pfsOnPublic.length} port forward(s) still use this public address`,
+    );
+  }
   policy.doc.floatingIPs = policy.doc.floatingIPs.filter((_, i) => i !== found.index);
   await replaceRouterPolicyDoc(
     input.cluster,
@@ -1530,6 +1648,300 @@ export async function releaseRouterFloatingIp(
     input.routerName,
     floatingIpsFromRouterDoc(policy.doc),
   );
+}
+
+function portForwardId(publicAddr: string, protocol: string, publicPort: number): string {
+  return `pf-${publicAddr.replace(/\./g, "-")}-${protocol}-${publicPort}`.slice(0, 63);
+}
+
+/**
+ * Create a port forward via router policy (requires external gateway).
+ * Default public address is the router external primary; held FIPs may be reused.
+ * Optionally allocate a new public IP as a held floating IP for shared port maps.
+ */
+export async function createRouterPortForward(
+  input: CreatePortForwardRequest & {
+    routerName: string;
+    vpcCidr: string;
+    publicMultusNetwork: string;
+  },
+): Promise<PortForwardAssociation> {
+  const protocol = normalizePortForwardProtocol(input.protocol);
+  if (!protocol) {
+    throw new Error('Protocol must be "tcp" or "udp"');
+  }
+  const publicPort = normalizePortNumber(input.publicPort);
+  const privatePort = normalizePortNumber(input.privatePort);
+  if (!publicPort || !privatePort) {
+    throw new Error("publicPort and privatePort must be integers 1–65535");
+  }
+
+  const policy = await getRouterPolicyConfigMap(
+    input.cluster,
+    input.namespace,
+    input.routerName,
+  );
+  if (!policy?.doc) {
+    throw new Error(`No router policy for ${input.namespace}/${input.routerName}`);
+  }
+  const doc = policy.doc;
+  if (!doc.external?.multusNetwork?.trim()) {
+    throw new Error(
+      `Router ${input.routerName} has no external gateway — set one before port forwards`,
+    );
+  }
+  if (!doc.interfaces.some((i) => i.vpc === input.vpcName)) {
+    throw new Error(`VPC ${input.vpcName} is not attached to router ${input.routerName}`);
+  }
+
+  const { privateIpv4, targetVm } = await resolvePrivateOnVpc(
+    input.cluster,
+    input.namespace,
+    input.vpcName,
+    input.vpcCidr,
+    { privateIpv4: input.privateIpv4, targetVm: input.targetVm },
+  );
+
+  const publicPool = findIpPoolForMultus(input.cluster, input.publicMultusNetwork);
+  if (!publicPool) {
+    throw new Error(`No ipPools entry for public Multus "${input.publicMultusNetwork}"`);
+  }
+  const prefix = parseCidr(publicPool.cidr).prefix;
+  const externalPrimary = externalPrimaryIpv4FromDoc(doc);
+
+  let publicAddr: string;
+  if (input.publicIpv4?.trim()) {
+    publicAddr =
+      addressFromIpv4Annotation(input.publicIpv4.trim()) ?? input.publicIpv4.trim();
+  } else if (input.allocatePublic) {
+    const alloc = await allocateIpv4ForMultus(
+      input.cluster,
+      input.publicMultusNetwork,
+      input.namespace,
+    );
+    if (!alloc) throw new Error("Could not allocate a public IP for port forwards");
+    publicAddr = alloc.address;
+    // Reserve as held FIP so IPAM + release lifecycle stay consistent.
+    if (
+      !doc.floatingIPs.some(
+        (f) => (addressFromIpv4Annotation(f.public) ?? f.public) === publicAddr,
+      )
+    ) {
+      doc.floatingIPs = [
+        ...doc.floatingIPs,
+        {
+          id: `fip-${publicAddr.replace(/\./g, "-")}`,
+          public: publicAddr,
+          prefix,
+          protocol: "all",
+          vpc: input.vpcName,
+        },
+      ];
+    }
+  } else if (externalPrimary) {
+    publicAddr = externalPrimary;
+  } else {
+    throw new Error(
+      "No public address: set publicIpv4, enable allocatePublic, or ensure the router has an external primary IP",
+    );
+  }
+
+  // External primary may sit on the public Multus; other publics must be in the pool.
+  if (publicAddr !== externalPrimary) {
+    if (!containsIpv4(parseCidr(publicPool.cidr), publicAddr)) {
+      throw new Error(`Public address ${publicAddr} is outside pool ${publicPool.cidr}`);
+    }
+  }
+
+  // Block full 1:1 FIP on this public (all traffic already DNAT'd elsewhere).
+  const associatedFip = doc.floatingIPs.find((f) => {
+    const pub = addressFromIpv4Annotation(f.public) ?? f.public;
+    return pub === publicAddr && Boolean(f.private?.trim());
+  });
+  if (associatedFip) {
+    throw new Error(
+      `Public address ${publicAddr} is a full floating IP for ${associatedFip.private} — use a held IP, the router primary, or disassociate first`,
+    );
+  }
+
+  // If user picked a specific non-primary address not yet reserved, allocate + hold it.
+  const alreadyReserved =
+    publicAddr === externalPrimary ||
+    doc.floatingIPs.some(
+      (f) => (addressFromIpv4Annotation(f.public) ?? f.public) === publicAddr,
+    ) ||
+    (doc.portForwards ?? []).some(
+      (pf) => (addressFromIpv4Annotation(pf.public) ?? pf.public) === publicAddr,
+    );
+  if (!alreadyReserved) {
+    await allocateIpv4ForMultus(
+      input.cluster,
+      input.publicMultusNetwork,
+      input.namespace,
+      { preferredAddress: publicAddr },
+    );
+    doc.floatingIPs = [
+      ...doc.floatingIPs,
+      {
+        id: `fip-${publicAddr.replace(/\./g, "-")}`,
+        public: publicAddr,
+        prefix,
+        protocol: "all",
+        vpc: input.vpcName,
+      },
+    ];
+  }
+
+  const conflict = (doc.portForwards ?? []).find((pf) => {
+    const pub = addressFromIpv4Annotation(pf.public) ?? pf.public;
+    return pub === publicAddr && pf.protocol === protocol && pf.publicPort === publicPort;
+  });
+  if (conflict) {
+    throw new Error(
+      `${protocol.toUpperCase()} ${publicAddr}:${publicPort} is already forwarded to ${conflict.private}:${conflict.privatePort}`,
+    );
+  }
+
+  const id = portForwardId(publicAddr, protocol, publicPort);
+  if ((doc.portForwards ?? []).some((pf) => pf.id === id)) {
+    throw new Error(`Port forward id ${id} already exists`);
+  }
+
+  const entry: RouterPolicyDoc["portForwards"][number] = {
+    id,
+    public: publicAddr,
+    publicPort,
+    private: privateIpv4,
+    privatePort,
+    protocol,
+    ...(targetVm ? { targetVm } : {}),
+    vpc: input.vpcName,
+  };
+  doc.portForwards = [...(doc.portForwards ?? []), entry];
+
+  await replaceRouterPolicyDoc(input.cluster, input.namespace, input.routerName, doc, {
+    bumpGeneration: true,
+  });
+  await syncRouterFloatingAnnotation(
+    input.cluster,
+    input.namespace,
+    input.routerName,
+    floatingIpsFromRouterDoc(doc),
+  );
+
+  return {
+    id,
+    public: publicAddr,
+    publicPort,
+    private: privateIpv4,
+    privatePort,
+    protocol,
+    targetVm,
+    vpc: input.vpcName,
+  };
+}
+
+export async function deleteRouterPortForward(
+  input: DeletePortForwardRequest & { routerName: string },
+): Promise<void> {
+  const policy = await getRouterPolicyConfigMap(
+    input.cluster,
+    input.namespace,
+    input.routerName,
+  );
+  if (!policy?.doc) {
+    throw new Error(`No router policy for ${input.namespace}/${input.routerName}`);
+  }
+  const id = input.id.trim();
+  if (!id) throw new Error("Port forward id is required");
+  const before = policy.doc.portForwards?.length ?? 0;
+  policy.doc.portForwards = (policy.doc.portForwards ?? []).filter((pf) => pf.id !== id);
+  if ((policy.doc.portForwards?.length ?? 0) === before) {
+    throw new Error(`Port forward "${id}" not found on this router`);
+  }
+  await replaceRouterPolicyDoc(
+    input.cluster,
+    input.namespace,
+    input.routerName,
+    policy.doc,
+    { bumpGeneration: true },
+  );
+}
+
+/** Port forwards from all router policy ConfigMaps. */
+export async function listPortForwardsFromRouterPolicies(
+  cluster: ClusterId,
+): Promise<PortForwardSummary[]> {
+  const { core } = getClusterClients(cluster);
+  const items: PortForwardSummary[] = [];
+  try {
+    const res = await core.listConfigMapForAllNamespaces({
+      labelSelector: KMC_ROUTER_POLICY_LABEL_SELECTOR,
+    });
+    for (const cm of res.items ?? []) {
+      const ns = cm.metadata?.namespace ?? "";
+      const routerName =
+        cm.metadata?.labels?.[KMC_LABEL_ROUTER]?.trim() ||
+        (cm.metadata?.name ?? "").replace(/^kmc-router-/, "");
+      const doc = parseRouterPolicyDoc(cm.data?.[KMC_ROUTER_POLICY_DATA_KEY]);
+      if (!ns || !routerName || !doc) continue;
+      const agent = agentInfoFromRouterAnnotations(cm.metadata?.annotations ?? {});
+      for (const pf of doc.portForwards ?? []) {
+        const privateAddr = pf.private?.trim() || "";
+        const vpcName =
+          pf.vpc?.trim() ||
+          doc.interfaces.find((i) => {
+            if (!privateAddr) return false;
+            try {
+              return containsIpv4(parseCidr(i.cidr), privateAddr);
+            } catch {
+              return false;
+            }
+          })?.vpc ||
+          doc.interfaces[0]?.vpc ||
+          "";
+        if (!vpcName) continue;
+        items.push({
+          cluster,
+          namespace: ns,
+          vpcName,
+          id: pf.id,
+          public: pf.public,
+          publicPort: pf.publicPort,
+          private: privateAddr,
+          privatePort: pf.privatePort,
+          protocol: pf.protocol,
+          targetVm: pf.targetVm,
+          routerName,
+          policyConfigMap: cm.metadata?.name,
+          agentStatus: agent.agentStatus,
+          agentHeartbeatAt: agent.agentHeartbeatAt,
+        });
+      }
+    }
+  } catch (err) {
+    console.error(`listPortForwardsFromRouterPolicies(${cluster}):`, formatError(err));
+  }
+  return items;
+}
+
+/** Port forwards that target a specific VM (by name or private IPAM address). */
+export async function listPortForwardsForVm(
+  cluster: ClusterId,
+  namespace: string,
+  vmName: string,
+  privateAddresses: string[] = [],
+): Promise<PortForwardSummary[]> {
+  const all = await listPortForwardsFromRouterPolicies(cluster);
+  const privSet = new Set(
+    privateAddresses.map((a) => addressFromIpv4Annotation(a) ?? a.trim()).filter(Boolean),
+  );
+  return all.filter((pf) => {
+    if (pf.namespace !== namespace) return false;
+    if (pf.targetVm && pf.targetVm === vmName) return true;
+    const priv = pf.private ? (addressFromIpv4Annotation(pf.private) ?? pf.private) : "";
+    return priv ? privSet.has(priv) : false;
+  });
 }
 
 /** Floating IPs from all router policy ConfigMaps. */

@@ -404,6 +404,42 @@ export function floatingIpCreatePath(
   return withSearch("/floating-ips/create", prefill);
 }
 
+export function portForwardsListPath(
+  filters: {
+    q?: string | null;
+    cluster?: string | null;
+    namespace?: string | null;
+    vpc?: string | null;
+  } = {},
+): string {
+  return withSearch("/port-forwards", filters);
+}
+
+export function portForwardCreatePath(
+  prefill: {
+    cluster?: string | null;
+    namespace?: string | null;
+    vpc?: string | null;
+    targetVm?: string | null;
+    publicIpv4?: string | null;
+    publicPort?: string | number | null;
+    privatePort?: string | number | null;
+    protocol?: string | null;
+  } = {},
+): string {
+  return withSearch("/port-forwards/create", {
+    ...prefill,
+    publicPort:
+      prefill.publicPort != null && prefill.publicPort !== ""
+        ? String(prefill.publicPort)
+        : null,
+    privatePort:
+      prefill.privatePort != null && prefill.privatePort !== ""
+        ? String(prefill.privatePort)
+        : null,
+  });
+}
+
 export function namespacePath(
   ns: Pick<{ cluster: string; name: string }, "cluster" | "name">,
 ): string {

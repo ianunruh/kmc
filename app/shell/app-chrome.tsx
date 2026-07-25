@@ -25,6 +25,7 @@ import {
   IconServer,
   IconTopologyStar3,
   IconUser,
+  IconArrowsRightLeft,
   IconWorldWww,
 } from "@tabler/icons-react";
 import { Form, Link, useLocation } from "react-router";
@@ -97,6 +98,12 @@ const NAV_SECTIONS: NavSection[] = [
         label: "Floating IPs",
         icon: IconWorldWww,
         match: (path: string) => path.startsWith("/floating-ips"),
+      },
+      {
+        to: "/port-forwards",
+        label: "Port Forwards",
+        icon: IconArrowsRightLeft,
+        match: (path: string) => path.startsWith("/port-forwards"),
       },
       {
         to: "/ingresses",
