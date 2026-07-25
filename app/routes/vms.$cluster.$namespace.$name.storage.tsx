@@ -236,9 +236,8 @@ type DataVolumesFetcherData = {
 
 const SCHEDULE_PRESET_OPTIONS = [
   ...SNAPSHOT_SCHEDULE_PRESETS.map((p) => ({ value: p.value, label: p.label })),
-  { value: "custom", label: "Custom cron…" },
+  { value: "custom", label: "Custom schedule…" },
 ];
-
 function schedulePresetValue(cron: string): string {
   return SNAPSHOT_SCHEDULE_PRESETS.some((p) => p.value === cron) ? cron : "custom";
 }
@@ -428,8 +427,8 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
             loading={intentBusy("attach-disk")}
             title={
               canAddDisk
-                ? "Attach a blank or existing DataVolume"
-                : `At most ${KMC_MAX_EXTRA_DISKS} secondary disks`
+                ? "Attach a new or existing disk"
+                : `You can attach up to ${KMC_MAX_EXTRA_DISKS} extra disks`
             }
             onClick={openAddDisk}
           >
@@ -438,12 +437,12 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
         }
       >
         <Text size="sm" c="dimmed" mb="sm">
-          Secondary disks use scsi (hotplug-friendly). New volumes appear as
-          unformatted block devices — partition and mount inside the guest.
+          Extra disks can be attached while the VM is running. New disks show up
+          raw in the guest — format and mount them yourself.
         </Text>
         {vm.volumes.length === 0 ? (
           <Text size="sm" c="dimmed">
-            No volumes
+            No disks yet.
           </Text>
         ) : (
           <Table.ScrollContainer
@@ -540,16 +539,16 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
       <DetailSection title="Filesystems">
         {!vm.hasVmi ? (
           <Text size="sm" c="dimmed">
-            No live VMI — guest filesystems are only available while the VM is running.
+            Start the VM to see guest disk usage.
           </Text>
         ) : !vm.guestAgent?.connected ? (
           <Text size="sm" c="dimmed">
-            Guest agent is not connected. Install and enable qemu-guest-agent to report
-            mount points and usage.
+            Guest agent is offline. Install qemu-guest-agent in the guest to show
+            mounts and free space.
           </Text>
         ) : !vm.guestAgent.filesystems?.length ? (
           <Text size="sm" c="dimmed">
-            No filesystem info reported by the guest agent.
+            The guest has not reported any filesystems yet.
           </Text>
         ) : (
           <Table.ScrollContainer
@@ -648,22 +647,19 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
                 loading={intentBusy("upsert-snapshot-schedule")}
                 onClick={openScheduleModal}
               >
-                Enable schedule
+                Set up schedule
               </Button>
             )}
           </Group>
         }
       >
         <Text size="sm" c="dimmed" mb="sm">
-          Automated KubeVirt snapshots via a Kubernetes CronJob in this
-          namespace. Retention prunes only scheduled snapshots (manual ones are
-          kept). Jobs use{" "}
-          <Code>ghcr.io/ianunruh/kmc:latest</Code> (override with{" "}
-          <Code>KMC_SNAPSHOT_JOB_IMAGE</Code>).
+          Take snapshots on a schedule and keep only the newest ones. Snapshots
+          you create by hand are never removed automatically.
         </Text>
         {!schedule ? (
           <Text size="sm" c="dimmed">
-            No schedule configured for this VM.
+            No automatic snapshots yet.
           </Text>
         ) : (
           <Stack gap="sm">
@@ -676,12 +672,12 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
                     variant="light"
                     color={schedule.enabled ? "teal" : "gray"}
                   >
-                    {schedule.enabled ? "Active" : "Paused"}
+                    {schedule.enabled ? "On" : "Paused"}
                   </Badge>
                 }
               />
               <DetailField
-                label="Cadence"
+                label="Frequency"
                 value={
                   <Text size="sm">
                     {scheduleCronLabel}
@@ -693,10 +689,9 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
                   </Text>
                 }
               />
-              <DetailField label="Retain" value={`${schedule.retain} scheduled`} />
               <DetailField
-                label="CronJob"
-                value={<Code>{schedule.cronJobName}</Code>}
+                label="Keep"
+                value={`Last ${schedule.retain} automatic`}
               />
             </Group>
             <Group gap="lg" wrap="wrap">
@@ -715,7 +710,7 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
                 }
               />
               <DetailField
-                label="Last snapshot"
+                label="Latest snapshot"
                 value={
                   schedule.lastSnapshot ? (
                     <Code>{schedule.lastSnapshot}</Code>
@@ -726,7 +721,7 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
               />
             </Group>
             {schedule.lastError ? (
-              <Alert color="orange" variant="light" title="Last run note">
+              <Alert color="orange" variant="light" title="Something went wrong">
                 <ClampedText size="sm" lineClamp={3}>
                   {schedule.lastError}
                 </ClampedText>
@@ -734,7 +729,7 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
             ) : null}
             {schedule.lastPruned ? (
               <Text size="xs" c="dimmed">
-                Last pruned: {schedule.lastPruned}
+                Cleaned up older automatic snapshots: {schedule.lastPruned}
               </Text>
             ) : null}
           </Stack>
@@ -761,19 +756,19 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
         }
       >
         <Text size="sm" c="dimmed" mb="sm">
-          Point-in-time disk backups (KubeVirt VirtualMachineSnapshot). Online
-          snapshots are more consistent when the guest agent is connected.
-          Attached secondary disks are included.
+          Capture the VM&apos;s disks so you can roll back later. Includes the
+          boot disk and any extra disks. Quality is better when the guest agent
+          is running.
         </Text>
         {vm.hasVmi && !vm.guestAgent?.connected && (
-          <Alert color="gray" variant="light" mb="sm" title="Guest agent not connected">
-            Online snapshots will be crash-consistent (like a power-off). Install
-            qemu-guest-agent for application-consistent freezes.
+          <Alert color="gray" variant="light" mb="sm" title="Guest agent offline">
+            Snapshots still work, but they are like a sudden power-off. Install
+            qemu-guest-agent for cleaner backups.
           </Alert>
         )}
         {snapshots.length === 0 ? (
           <Text size="sm" c="dimmed">
-            No snapshots for this VM yet.
+            No snapshots yet.
           </Text>
         ) : (
           <Table.ScrollContainer
@@ -785,10 +780,10 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
               <Table.Thead>
                 <Table.Tr>
                   <Table.Th>Name</Table.Th>
-                  <Table.Th>Kind</Table.Th>
-                  <Table.Th>Phase</Table.Th>
+                  <Table.Th>Source</Table.Th>
+                  <Table.Th>Status</Table.Th>
                   <Table.Th>Ready</Table.Th>
-                  <Table.Th>Indications</Table.Th>
+                  <Table.Th>Notes</Table.Th>
                   <Table.Th>Age</Table.Th>
                   <Table.Th />
                 </Table.Tr>
@@ -815,7 +810,7 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
                         }
                       >
                         {snap.snapshotKind === "scheduled" || snap.scheduleName
-                          ? "scheduled"
+                          ? "automatic"
                           : "manual"}
                       </Badge>
                     </Table.Td>
@@ -851,7 +846,15 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
                                     : "gray"
                               }
                             >
-                              {ind}
+                              {ind === "GuestAgent"
+                                ? "guest agent"
+                                : ind === "NoGuestAgent"
+                                  ? "no guest agent"
+                                  : ind === "QuiesceFailed"
+                                    ? "quiesce failed"
+                                    : ind === "Online"
+                                      ? "online"
+                                      : ind}
                             </Badge>
                           ))}
                         </Group>
@@ -871,8 +874,8 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
                           disabled={busy || !canRestoreVmSnapshot(snap)}
                           title={
                             canRestoreVmSnapshot(snap)
-                              ? "Restore disks from this snapshot (VM will stop)"
-                              : "Snapshot is not ready to restore"
+                              ? "Roll disks back to this snapshot (VM will stop)"
+                              : "This snapshot is not ready yet"
                           }
                           onClick={() => setRestoreSnapshotTarget(snap)}
                         >
@@ -905,12 +908,12 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
       >
         <Stack gap="md">
           <Text size="sm" c="dimmed">
-            Attach a persistent secondary disk to{" "}
+            Add another disk to{" "}
             <Text span fw={700}>
               {vm.name}
             </Text>
-            . Updates the VirtualMachine spec (declarative hotplug); the guest
-            sees it live when running, or on next start when stopped.
+            . If the VM is running, the disk appears live; if it is stopped, it
+            shows up on the next start.
           </Text>
           <SegmentedControl
             fullWidth
@@ -918,13 +921,13 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
             onChange={(v) => setDiskSource(v as VmDiskSourceMode)}
             data={[
               { label: "New blank disk", value: "blank" },
-              { label: "Existing DataVolume", value: "existingDataVolume" },
+              { label: "Existing disk", value: "existingDataVolume" },
             ]}
             disabled={busy}
           />
           <TextInput
-            label="Volume name"
-            description="Optional DNS label; default disk-1, disk-2, …"
+            label="Disk name"
+            description="Optional. Leave blank for disk-1, disk-2, …"
             placeholder="disk-1"
             value={diskVolumeName}
             onChange={(e) => setDiskVolumeName(e.currentTarget.value)}
@@ -953,15 +956,15 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
             </>
           ) : (
             <Select
-              label="DataVolume"
-              placeholder="Select reusable DataVolume"
+              label="Existing disk"
+              placeholder="Choose a disk in this project"
               searchable
               required
               data={dataVolumeOptions}
               value={diskExistingDv || null}
               onChange={(v) => setDiskExistingDv(v ?? "")}
               disabled={busy || dataVolumesFetcher.state === "loading"}
-              nothingFoundMessage="No reusable DataVolumes in this namespace"
+              nothingFoundMessage="No reusable disks in this project"
             />
           )}
           <Group justify="flex-end">
@@ -1010,15 +1013,14 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
       >
         <Stack gap="md">
           <Text size="sm">
-            Detach volume{" "}
+            Remove disk{" "}
             <Text span fw={700}>
               {detachTarget?.name}
             </Text>
             {detachTarget?.linkName ? (
               <>
                 {" "}
-                (DataVolume{" "}
-                <Code>{detachTarget.linkName}</Code>)
+                (<Code>{detachTarget.linkName}</Code>)
               </>
             ) : null}{" "}
             from this VM.
@@ -1030,13 +1032,13 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
             <Stack gap="xs">
               <Radio
                 value="keep"
-                label="Detach and keep DataVolume"
-                description="Disk remains in the namespace for reuse"
+                label="Detach and keep the disk"
+                description="You can attach it to a VM again later"
               />
               <Radio
                 value="delete"
-                label="Detach and delete DataVolume"
-                description="Permanently remove the backing disk"
+                label="Detach and delete the disk"
+                description="Permanently removes the stored data"
               />
             </Stack>
           </Radio.Group>
@@ -1080,21 +1082,21 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
       >
         <Stack gap="md">
           <Text size="sm">
-            Capture a point-in-time snapshot of{" "}
+            Save a backup of{" "}
             <Text span fw={700}>
-              {vm.cluster}/{vm.namespace}/{vm.name}
+              {vm.name}
             </Text>
-            . Leave the name empty to auto-generate one.
+            &apos;s disks right now. Leave the name blank to generate one.
           </Text>
           {vm.hasVmi && !vm.guestAgent?.connected && (
-            <Alert color="gray" variant="light" title="Crash-consistent">
-              Guest agent is not connected — this online snapshot will not freeze
-              filesystems.
+            <Alert color="gray" variant="light" title="Guest agent offline">
+              This snapshot will still work, but it is like a sudden power-off
+              rather than a clean filesystem freeze.
             </Alert>
           )}
           <TextInput
             label="Snapshot name"
-            description="DNS label; optional"
+            description="Optional"
             placeholder="auto: {vm}-{timestamp}"
             value={snapshotNameInput}
             onChange={(e) => setSnapshotNameInput(e.currentTarget.value)}
@@ -1134,7 +1136,7 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
         }
         title="Delete snapshot"
         confirmLabel="Delete snapshot"
-        warning="Volume snapshots backing this backup will be removed according to the VolumeSnapshotClass deletion policy."
+        warning="This permanently deletes the snapshot and its backup data."
         loading={busy}
         onClose={() => setDeleteSnapshotTarget(null)}
         onConfirm={() => {
@@ -1158,12 +1160,12 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
         message={
           restoreSnapshotTarget ? (
             <>
-              Restore{" "}
+              Roll this VM back to{" "}
               <Text span fw={700}>
                 {restoreSnapshotTarget.name}
-              </Text>{" "}
-              onto this VM in-place. The VM will be stopped if running. This
-              overwrites current disk contents.
+              </Text>
+              . The VM will stop if it is running, and current disk data will be
+              replaced.
             </>
           ) : (
             ""
@@ -1183,17 +1185,16 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
       <Modal
         opened={scheduleModalOpen}
         onClose={() => setScheduleModalOpen(false)}
-        title={schedule ? "Edit snapshot schedule" : "Enable snapshot schedule"}
+        title={schedule ? "Edit snapshot schedule" : "Set up snapshot schedule"}
         centered
       >
         <Stack gap="md">
           <Text size="sm" c="dimmed">
-            Creates a CronJob that runs the kmc snapshot worker on a schedule
-            (UTC). Only scheduled snapshots count toward retention; manual
-            snapshots are never auto-deleted.
+            Snapshots run on a timer (UTC). Only automatic ones count toward how
+            many you keep; manual snapshots are never cleaned up.
           </Text>
           <Select
-            label="Cadence"
+            label="How often"
             data={SCHEDULE_PRESET_OPTIONS}
             value={schedulePreset}
             onChange={(v) => {
@@ -1208,8 +1209,8 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
           />
           {schedulePreset === "custom" ? (
             <TextInput
-              label="Cron expression"
-              description="Standard 5-field cron (minute hour day month weekday), UTC"
+              label="Custom schedule"
+              description="Cron format (minute hour day month weekday), UTC"
               placeholder="0 3 * * *"
               value={scheduleCronCustom}
               onChange={(e) => setScheduleCronCustom(e.currentTarget.value)}
@@ -1218,8 +1219,8 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
             />
           ) : null}
           <NumberInput
-            label="Retain"
-            description={`Keep the newest N scheduled snapshots (${SNAPSHOT_SCHEDULE_RETAIN_MIN}–${SNAPSHOT_SCHEDULE_RETAIN_MAX})`}
+            label="How many to keep"
+            description={`Keep the newest automatic snapshots (${SNAPSHOT_SCHEDULE_RETAIN_MIN}–${SNAPSHOT_SCHEDULE_RETAIN_MAX})`}
             min={SNAPSHOT_SCHEDULE_RETAIN_MIN}
             max={SNAPSHOT_SCHEDULE_RETAIN_MAX}
             value={scheduleRetain}
@@ -1228,8 +1229,8 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
             allowDecimal={false}
           />
           <Switch
-            label="Schedule enabled"
-            description="When off, the CronJob is suspended (no new snapshots)"
+            label="Schedule is on"
+            description="Turn off to pause automatic snapshots without deleting the schedule"
             checked={scheduleEnabled}
             onChange={(e) => setScheduleEnabled(e.currentTarget.checked)}
             disabled={busy}
@@ -1285,7 +1286,7 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
         }
         title="Remove snapshot schedule"
         confirmLabel="Remove schedule"
-        warning="Deletes the CronJob and schedule ConfigMap. Existing VirtualMachineSnapshots are left in place."
+        warning="Stops automatic snapshots. Existing snapshots are kept."
         loading={busy}
         onClose={() => setScheduleDeleteOpen(false)}
         onConfirm={() => {

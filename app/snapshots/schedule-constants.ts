@@ -2,12 +2,11 @@
 
 /** Standard 5-field cron presets (UTC). */
 export const SNAPSHOT_SCHEDULE_PRESETS: Array<{ value: string; label: string }> = [
-  { value: "0 * * * *", label: "Hourly" },
+  { value: "0 * * * *", label: "Every hour" },
   { value: "0 */6 * * *", label: "Every 6 hours" },
-  { value: "0 3 * * *", label: "Daily at 03:00 UTC" },
-  { value: "0 3 * * 0", label: "Weekly (Sunday 03:00 UTC)" },
+  { value: "0 3 * * *", label: "Every day at 3:00 AM UTC" },
+  { value: "0 3 * * 0", label: "Every Sunday at 3:00 AM UTC" },
 ];
-
 export const SNAPSHOT_SCHEDULE_RETAIN_MIN = 1;
 export const SNAPSHOT_SCHEDULE_RETAIN_MAX = 30;
 export const SNAPSHOT_SCHEDULE_RETAIN_DEFAULT = 7;
