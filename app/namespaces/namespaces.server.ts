@@ -3,10 +3,16 @@ import type {
   ClusterId,
   CreateNamespaceRequest,
   NamespaceDetail,
+  NamespaceQuota,
+  NamespaceQuotaLimits,
   NamespaceSummary,
+  UpsertNamespaceQuotaRequest,
 } from "~/lib/types";
 import {
+  KMC_LABEL_RESOURCE,
   KMC_MANAGED_BY,
+  KMC_NAMESPACE_QUOTA_NAME,
+  KMC_RESOURCE_NAMESPACE_QUOTA,
   MANAGED_BY_LABEL,
   VM_ALLOWED_LABEL,
   VM_ALLOWED_LABEL_SELECTOR,
@@ -15,6 +21,16 @@ import { getClusterClients, getConfiguredContexts } from "~/lib/k8s/clients.serv
 import { toResourceYaml } from "~/lib/k8s/yaml.server";
 import { DNS1123_LABEL } from "~/lib/format";
 import { listClusters } from "~/vms/vms.server";
+import {
+  hardFromLimits,
+  hasAnyLimit,
+  type KubeResourceQuota,
+  mapResourceQuota,
+} from "./quota";
+import {
+  isValidByteQuantity,
+  isValidCpuQuantity,
+} from "./quantity";
 
 type KubeNamespace = {
   metadata?: {
@@ -126,6 +142,235 @@ async function countVms(cluster: ClusterId, namespace: string): Promise<number> 
   }
 }
 
+function isManagedQuota(rq: KubeResourceQuota): boolean {
+  const labels = rq.metadata?.labels ?? {};
+  return (
+    labels[MANAGED_BY_LABEL] === KMC_MANAGED_BY &&
+    labels[KMC_LABEL_RESOURCE] === KMC_RESOURCE_NAMESPACE_QUOTA
+  );
+}
+
+/** Lightweight guard: namespace exists and is vm-allowed (no quota/VM fan-out). */
+async function ensureVmAllowedNamespace(
+  cluster: ClusterId,
+  name: string,
+): Promise<void> {
+  const { core } = getClusterClients(cluster);
+  let ns: KubeNamespace;
+  try {
+    ns = (await core.readNamespace({ name })) as KubeNamespace;
+  } catch (err) {
+    if (isNotFound(err)) {
+      throw new Response("Namespace not found", { status: 404 });
+    }
+    throw new Error(formatError(err), { cause: err });
+  }
+  const labels = ns.metadata?.labels ?? {};
+  if (labels[VM_ALLOWED_LABEL] !== "true") {
+    throw new Response(
+      `Namespace is not labeled ${VM_ALLOWED_LABEL}=true`,
+      { status: 404 },
+    );
+  }
+}
+
+/** List all ResourceQuotas in a namespace; managed quota first when present. */
+export async function listNamespaceQuotas(
+  cluster: ClusterId,
+  namespace: string,
+): Promise<NamespaceQuota[]> {
+  const { core } = getClusterClients(cluster);
+  try {
+    const res = await core.listNamespacedResourceQuota({ namespace });
+    const items = (res.items ?? []) as KubeResourceQuota[];
+    const mapped = items.map((rq) => mapResourceQuota(rq, isManagedQuota(rq)));
+    mapped.sort((a, b) => {
+      if (a.managedByKmc !== b.managedByKmc) return a.managedByKmc ? -1 : 1;
+      if (a.name === KMC_NAMESPACE_QUOTA_NAME) return -1;
+      if (b.name === KMC_NAMESPACE_QUOTA_NAME) return 1;
+      return a.name.localeCompare(b.name);
+    });
+    return mapped;
+  } catch (err) {
+    // Listing is best-effort for capacity UI — don't fail the whole namespace.
+    if (isNotFound(err)) return [];
+    console.error(
+      `[namespace.quotas] list failed ${cluster}/${namespace}:`,
+      formatError(err),
+    );
+    return [];
+  }
+}
+
+function validateQuotaLimits(limits: NamespaceQuotaLimits): void {
+  if (limits.cpu != null && limits.cpu.trim()) {
+    if (!isValidCpuQuantity(limits.cpu)) {
+      throw new Error(
+        `Invalid CPU quota "${limits.cpu}" (use cores like 16 or millicores like 500m)`,
+      );
+    }
+  }
+  if (limits.memory != null && limits.memory.trim()) {
+    if (!isValidByteQuantity(limits.memory)) {
+      throw new Error(
+        `Invalid memory quota "${limits.memory}" (use a quantity like 64Gi)`,
+      );
+    }
+  }
+  if (limits.storage != null && limits.storage.trim()) {
+    if (!isValidByteQuantity(limits.storage)) {
+      throw new Error(
+        `Invalid storage quota "${limits.storage}" (use a quantity like 500Gi)`,
+      );
+    }
+  }
+  if (limits.vms != null) {
+    if (!Number.isFinite(limits.vms) || limits.vms < 0 || !Number.isInteger(limits.vms)) {
+      throw new Error("VM count quota must be a non-negative integer");
+    }
+  }
+  if (limits.pvcs != null) {
+    if (
+      !Number.isFinite(limits.pvcs) ||
+      limits.pvcs < 0 ||
+      !Number.isInteger(limits.pvcs)
+    ) {
+      throw new Error("PVC count quota must be a non-negative integer");
+    }
+  }
+  if (!hasAnyLimit(limits)) {
+    throw new Error("At least one quota limit is required");
+  }
+}
+
+function managedQuotaLabels(): Record<string, string> {
+  return {
+    [MANAGED_BY_LABEL]: KMC_MANAGED_BY,
+    [KMC_LABEL_RESOURCE]: KMC_RESOURCE_NAMESPACE_QUOTA,
+  };
+}
+
+/**
+ * Create or replace the kmc-managed ResourceQuota for a namespace.
+ * Only updates hard limits on the fixed `kmc-quota` object.
+ */
+export async function upsertNamespaceQuota(
+  input: UpsertNamespaceQuotaRequest,
+): Promise<NamespaceQuota> {
+  const cluster = input.cluster?.trim();
+  const name = input.name?.trim() ?? "";
+  if (!cluster || !name) throw new Error("cluster and name are required");
+  validateQuotaLimits(input.quota);
+
+  await ensureVmAllowedNamespace(cluster, name);
+
+  const hard = hardFromLimits(input.quota);
+  const { core } = getClusterClients(cluster);
+  const quotaName = KMC_NAMESPACE_QUOTA_NAME;
+
+  try {
+    const existing = (await core.readNamespacedResourceQuota({
+      name: quotaName,
+      namespace: name,
+    })) as KubeResourceQuota;
+
+    if (!isManagedQuota(existing)) {
+      throw new Error(
+        `ResourceQuota "${quotaName}" exists but is not managed by kmc — ` +
+          `rename or delete it before setting quotas in the console`,
+      );
+    }
+
+    const updated = (await core.replaceNamespacedResourceQuota({
+      name: quotaName,
+      namespace: name,
+      body: {
+        apiVersion: "v1",
+        kind: "ResourceQuota",
+        metadata: {
+          name: quotaName,
+          namespace: name,
+          resourceVersion: existing.metadata?.resourceVersion,
+          labels: {
+            ...(existing.metadata?.labels ?? {}),
+            ...managedQuotaLabels(),
+          },
+        },
+        spec: { hard },
+      },
+    })) as KubeResourceQuota;
+    return mapResourceQuota(updated, true);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("not managed by kmc")) {
+      throw err;
+    }
+    if (!isNotFound(err)) {
+      throw new Error(
+        `Failed to update ResourceQuota ${cluster}/${name}/${quotaName}: ${formatError(err)}`,
+        { cause: err },
+      );
+    }
+  }
+
+  try {
+    const created = (await core.createNamespacedResourceQuota({
+      namespace: name,
+      body: {
+        apiVersion: "v1",
+        kind: "ResourceQuota",
+        metadata: {
+          name: quotaName,
+          namespace: name,
+          labels: managedQuotaLabels(),
+        },
+        spec: { hard },
+      },
+    })) as KubeResourceQuota;
+    return mapResourceQuota(created, true);
+  } catch (err) {
+    throw new Error(
+      `Failed to create ResourceQuota ${cluster}/${name}/${quotaName}: ${formatError(err)}`,
+      { cause: err },
+    );
+  }
+}
+
+/** Delete the kmc-managed ResourceQuota (no-op if absent). */
+export async function deleteNamespaceQuota(
+  cluster: ClusterId,
+  name: string,
+): Promise<void> {
+  if (!cluster?.trim() || !name?.trim()) {
+    throw new Error("cluster and name are required");
+  }
+  await ensureVmAllowedNamespace(cluster, name);
+
+  const { core } = getClusterClients(cluster);
+  const quotaName = KMC_NAMESPACE_QUOTA_NAME;
+
+  try {
+    const existing = (await core.readNamespacedResourceQuota({
+      name: quotaName,
+      namespace: name,
+    })) as KubeResourceQuota;
+    if (!isManagedQuota(existing)) {
+      throw new Error(
+        `ResourceQuota "${quotaName}" exists but is not managed by kmc — delete it with kubectl`,
+      );
+    }
+    await core.deleteNamespacedResourceQuota({ name: quotaName, namespace: name });
+  } catch (err) {
+    if (isNotFound(err)) return;
+    if (err instanceof Error && err.message.includes("not managed by kmc")) {
+      throw err;
+    }
+    throw new Error(
+      `Failed to delete ResourceQuota ${cluster}/${name}/${quotaName}: ${formatError(err)}`,
+      { cause: err },
+    );
+  }
+}
+
 export async function getNamespace(
   cluster: ClusterId,
   name: string,
@@ -149,7 +394,14 @@ export async function getNamespace(
     );
   }
 
-  const vmCount = await countVms(cluster, name);
+  const [vmCount, quotas] = await Promise.all([
+    countVms(cluster, name),
+    listNamespaceQuotas(cluster, name),
+  ]);
+  const quota =
+    quotas.find((q) => q.managedByKmc) ??
+    quotas.find((q) => q.name === KMC_NAMESPACE_QUOTA_NAME) ??
+    null;
 
   return {
     ...mapSummary(cluster, ns),
@@ -161,6 +413,8 @@ export async function getNamespace(
       ),
     ),
     vmCount,
+    quota,
+    quotas,
   };
 }
 
@@ -187,6 +441,10 @@ export async function createNamespace(
   const name = input.name?.trim() ?? "";
   if (!cluster) throw new Error("cluster is required");
   validateName(name);
+
+  if (input.quota && hasAnyLimit(input.quota)) {
+    validateQuotaLimits(input.quota);
+  }
 
   const { core } = getClusterClients(cluster);
 
@@ -223,8 +481,24 @@ export async function createNamespace(
         },
       },
     })) as KubeNamespace;
+
+    if (input.quota && hasAnyLimit(input.quota)) {
+      try {
+        await upsertNamespaceQuota({ cluster, name, quota: input.quota });
+      } catch (quotaErr) {
+        // Namespace already exists — surface the quota error so the user can fix it.
+        throw new Error(
+          `Namespace created but ResourceQuota failed: ${formatError(quotaErr)}`,
+          { cause: quotaErr },
+        );
+      }
+    }
+
     return mapSummary(cluster, created);
   } catch (err) {
+    if (err instanceof Error && err.message.startsWith("Namespace created but")) {
+      throw err;
+    }
     if (isAlreadyExists(err)) {
       throw new Error(`Namespace "${name}" already exists`);
     }

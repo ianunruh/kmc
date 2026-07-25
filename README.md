@@ -178,6 +178,7 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 - **Data volumes** — list, create (blank / PVC clone / HTTP), detail, delete
 - **Images** — golden disks in `vm-images` (`KMC_IMAGE_NAMESPACE`): list, HTTP import (CDI DataVolume), set `cluster-preference` label, delete, Launch VM deep-link. Local file path remains `virtctl image-upload` (see below)
 - **Cluster instance types** — list, create, detail, edit, delete
+- **Namespaces (projects)** — list, create, detail, delete; optional **ResourceQuota** (`kmc-quota`) for CPU / memory / storage / VM / PVC hard limits with used-vs-capacity visualization on the detail page
 - **Events + YAML** on detail pages
 - **URL-driven list filters** — shareable views
 - Cross-links between resources

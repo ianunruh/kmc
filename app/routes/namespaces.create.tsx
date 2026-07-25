@@ -9,6 +9,13 @@ import { logServerError } from "~/lib/errors";
 import { namespacePath, validateDns1123Label } from "~/lib/format";
 import { VM_ALLOWED_LABEL } from "~/lib/k8s/constants";
 import { createNamespace } from "~/namespaces/namespaces.server";
+import {
+  DEFAULT_QUOTA_FORM,
+  NamespaceQuotaFormFields,
+  quotaLimitsFromForm,
+  validateQuotaFormFields,
+  type NamespaceQuotaFormValues,
+} from "~/namespaces/quota-form-fields";
 import { listClusters } from "~/vms/vms.server";
 
 export function meta(_args: Route.MetaArgs) {
@@ -23,9 +30,26 @@ export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();
   const cluster = String(form.get("cluster") ?? "").trim();
   const name = String(form.get("name") ?? "").trim();
+  const enableQuota = String(form.get("enableQuota") ?? "") === "true";
 
   try {
-    const created = await createNamespace({ cluster, name });
+    const quota = enableQuota
+      ? {
+          cpu: String(form.get("cpu") ?? "").trim() || undefined,
+          memory: String(form.get("memory") ?? "").trim() || undefined,
+          storage: String(form.get("storage") ?? "").trim() || undefined,
+          vms: (() => {
+            const raw = String(form.get("vms") ?? "").trim();
+            return raw === "" ? undefined : Number(raw);
+          })(),
+          pvcs: (() => {
+            const raw = String(form.get("pvcs") ?? "").trim();
+            return raw === "" ? undefined : Number(raw);
+          })(),
+        }
+      : undefined;
+
+    const created = await createNamespace({ cluster, name, quota });
     return redirect(namespacePath(created));
   } catch (err) {
     return {
@@ -33,6 +57,11 @@ export async function action({ request }: Route.ActionArgs) {
     };
   }
 }
+
+type CreateFormValues = {
+  cluster: string;
+  name: string;
+} & NamespaceQuotaFormValues;
 
 export default function CreateNamespacePage({
   loaderData,
@@ -45,14 +74,20 @@ export default function CreateNamespacePage({
 
   const reachable = clusters.filter((c) => c.reachable);
 
-  const form = useForm({
+  const form = useForm<CreateFormValues>({
     initialValues: {
       cluster: reachable[0]?.id ?? "",
       name: "",
+      ...DEFAULT_QUOTA_FORM,
     },
-    validate: {
-      cluster: (v) => (!v ? "Required" : null),
-      name: validateDns1123Label,
+    validate: (values) => {
+      const errors: Partial<Record<keyof CreateFormValues, string>> = {
+        ...validateQuotaFormFields(values),
+      };
+      if (!values.cluster) errors.cluster = "Required";
+      const nameErr = validateDns1123Label(values.name);
+      if (nameErr) errors.name = nameErr;
+      return errors;
     },
   });
 
@@ -63,13 +98,19 @@ export default function CreateNamespacePage({
   }, [actionData]);
 
   const onSubmit = form.onSubmit((values) => {
-    submit(
-      {
-        cluster: values.cluster,
-        name: values.name,
-      },
-      { method: "post" },
-    );
+    const fd = new FormData();
+    fd.set("cluster", values.cluster);
+    fd.set("name", values.name);
+    fd.set("enableQuota", values.enableQuota ? "true" : "false");
+    if (values.enableQuota) {
+      const limits = quotaLimitsFromForm(values);
+      if (limits.cpu) fd.set("cpu", limits.cpu);
+      if (limits.memory) fd.set("memory", limits.memory);
+      if (limits.storage) fd.set("storage", limits.storage);
+      if (limits.vms != null) fd.set("vms", String(limits.vms));
+      if (limits.pvcs != null) fd.set("pvcs", String(limits.pvcs));
+    }
+    submit(fd, { method: "post" });
   });
 
   return (
@@ -120,6 +161,13 @@ export default function CreateNamespacePage({
               </Text>{" "}
               so the namespace appears in VM / VPC create pickers.
             </Text>
+          </FormSection>
+
+          <FormSection title="Quotas">
+            <NamespaceQuotaFormFields
+              form={form}
+              description="Optional project capacity limits (ResourceQuota). You can also set these later from the namespace detail page."
+            />
           </FormSection>
 
           <FormActions>

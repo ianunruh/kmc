@@ -151,3 +151,15 @@ export const KMC_RESOURCE_VM_SNAPSHOT = "vm-snapshot";
  * (DataVolumes in the image namespace). Virtctl-uploaded images may omit this.
  */
 export const KMC_RESOURCE_IMAGE = "image";
+
+/**
+ * Value of kmc.ianunruh.com/resource for the per-namespace ResourceQuota that
+ * kmc creates/updates for project capacity limits.
+ */
+export const KMC_RESOURCE_NAMESPACE_QUOTA = "namespace-quota";
+
+/**
+ * Fixed name for the kmc-managed ResourceQuota in each vm-allowed namespace.
+ * One object keeps create/edit/capacity visualization simple.
+ */
+export const KMC_NAMESPACE_QUOTA_NAME = "kmc-quota";

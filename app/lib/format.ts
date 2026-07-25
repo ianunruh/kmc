@@ -410,6 +410,12 @@ export function namespacePath(
   return `/namespaces/${encodeURIComponent(ns.cluster)}/${encodeURIComponent(ns.name)}`;
 }
 
+export function namespaceEditPath(
+  ns: Pick<{ cluster: string; name: string }, "cluster" | "name">,
+): string {
+  return `${namespacePath(ns)}/edit`;
+}
+
 export function namespacesListPath(
   filters: {
     q?: string | null;

@@ -337,11 +337,80 @@ export interface NamespaceDetail extends NamespaceSummary {
   annotations: Record<string, string>;
   /** VirtualMachines in this namespace (same cluster) */
   vmCount: number;
+  /**
+   * kmc-managed ResourceQuota (`kmc-quota`) when present.
+   * Used for capacity visualization + edit form.
+   */
+  quota: NamespaceQuota | null;
+  /** All ResourceQuotas in the namespace (managed + external). */
+  quotas: NamespaceQuota[];
+}
+
+/**
+ * Hard limits for the kmc-managed namespace ResourceQuota.
+ * Empty / omitted fields are not set on the quota object.
+ */
+export interface NamespaceQuotaLimits {
+  /** `requests.cpu` — e.g. `16` or `8000m` */
+  cpu?: string;
+  /** `requests.memory` — e.g. `64Gi` */
+  memory?: string;
+  /** `requests.storage` — e.g. `500Gi` */
+  storage?: string;
+  /** `count/virtualmachines.kubevirt.io` */
+  vms?: number;
+  /** `persistentvolumeclaims` */
+  pvcs?: number;
+}
+
+export type NamespaceQuotaUnitKind =
+  | "cpu"
+  | "memory"
+  | "storage"
+  | "count"
+  | "other";
+
+/** One resource row from a ResourceQuota (hard + used). */
+export interface NamespaceQuotaResource {
+  /** Kubernetes resource name, e.g. `requests.cpu` */
+  name: string;
+  /** Human label for UI */
+  label: string;
+  hard?: string;
+  used?: string;
+  /**
+   * Used / hard as 0–100 when both quantities are parseable.
+   * Null when either side is missing or unparseable.
+   */
+  percent: number | null;
+  unitKind: NamespaceQuotaUnitKind;
+}
+
+export interface NamespaceQuota {
+  name: string;
+  managedByKmc: boolean;
+  hard: Record<string, string>;
+  used: Record<string, string>;
+  /** Ordered rows for capacity UI (known resources first). */
+  resources: NamespaceQuotaResource[];
+  /**
+   * Friendly limits extracted from hard (for edit form defaults).
+   * Only populated for the managed quota shape we understand.
+   */
+  limits: NamespaceQuotaLimits;
 }
 
 export interface CreateNamespaceRequest {
   cluster: ClusterId;
   name: string;
+  /** Optional hard limits applied as ResourceQuota `kmc-quota` on create. */
+  quota?: NamespaceQuotaLimits;
+}
+
+export interface UpsertNamespaceQuotaRequest {
+  cluster: ClusterId;
+  name: string;
+  quota: NamespaceQuotaLimits;
 }
 
 export interface InstanceTypeInfo {

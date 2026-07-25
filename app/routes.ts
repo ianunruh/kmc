@@ -92,6 +92,10 @@ export default [
 
   route("namespaces", "routes/namespaces._index.tsx"),
   route("namespaces/create", "routes/namespaces.create.tsx"),
+  route(
+    "namespaces/:cluster/:name/edit",
+    "routes/namespaces.$cluster.$name.edit.tsx",
+  ),
   route("namespaces/:cluster/:name", "routes/namespaces.$cluster.$name.tsx", [
     index("routes/namespaces.$cluster.$name._index.tsx"),
     route("yaml", "routes/namespaces.$cluster.$name.yaml.tsx"),
