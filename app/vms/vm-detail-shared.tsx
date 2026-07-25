@@ -53,6 +53,10 @@ export function intentSuccessLabel(intent?: string): string {
       return "snapshot delete";
     case "restore-snapshot":
       return "snapshot restore";
+    case "upsert-snapshot-schedule":
+      return "snapshot schedule save";
+    case "delete-snapshot-schedule":
+      return "snapshot schedule remove";
     case "attach-disk":
       return "disk attach";
     case "detach-disk":
@@ -70,6 +74,8 @@ export type VmDetailActionResult = {
   retainedDisks?: string[];
   snapshotName?: string;
   restoreName?: string;
+  scheduleName?: string;
+  scheduleEnabled?: boolean;
   volumeName?: string;
   dataVolumeName?: string;
   createdDataVolume?: boolean;

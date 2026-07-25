@@ -5,10 +5,12 @@ import {
   Code,
   Group,
   Modal,
+  NumberInput,
   Radio,
   SegmentedControl,
   Select,
   Stack,
+  Switch,
   Table,
   Text,
   TextInput,
@@ -21,20 +23,39 @@ import {
   ClampedText,
   ConfirmActionModal,
   ConfirmDeleteModal,
+  DetailField,
   DetailSection,
   ResourceLink,
 } from "~/ui";
 import { StatusBadge } from "~/ui/status-badge";
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
-import { canRestoreVmSnapshot, formatAge, formatBytes } from "~/lib/format";
+import {
+  canRestoreVmSnapshot,
+  formatAge,
+  formatBytes,
+  formatDateTime,
+} from "~/lib/format";
 import { KMC_MAX_EXTRA_DISKS } from "~/lib/k8s/constants";
 import type {
   ClusterCatalog,
   VmDiskSourceMode,
+  VmSnapshotScheduleSummary,
   VmSnapshotSummary,
   VmVolumeInfo,
 } from "~/lib/types";
+import {
+  cronPresetLabel,
+  SNAPSHOT_SCHEDULE_PRESETS,
+  SNAPSHOT_SCHEDULE_RETAIN_DEFAULT,
+  SNAPSHOT_SCHEDULE_RETAIN_MAX,
+  SNAPSHOT_SCHEDULE_RETAIN_MIN,
+} from "~/snapshots/schedule-constants";
+import {
+  deleteVmSnapshotSchedule,
+  getVmSnapshotSchedule,
+  upsertVmSnapshotSchedule,
+} from "~/snapshots/schedules.server";
 import {
   createVmRestore,
   createVmSnapshot,
@@ -63,7 +84,14 @@ export async function loader({ params }: Route.LoaderArgs) {
     snapshots = [];
   }
 
-  return { snapshots };
+  let schedule: VmSnapshotScheduleSummary | null = null;
+  try {
+    schedule = await getVmSnapshotSchedule(cluster, namespace, name);
+  } catch {
+    schedule = null;
+  }
+
+  return { snapshots, schedule };
 }
 
 export async function action({ request, params }: Route.ActionArgs) {
@@ -106,6 +134,35 @@ export async function action({ request, params }: Route.ActionArgs) {
         snapshotName,
       });
       return { ok: true, intent, snapshotName, restoreName: result.name };
+    }
+    if (intent === "upsert-snapshot-schedule") {
+      const cron = String(form.get("cron") ?? "").trim();
+      const retainRaw = Number(form.get("retain"));
+      const retain = Number.isFinite(retainRaw)
+        ? Math.trunc(retainRaw)
+        : SNAPSHOT_SCHEDULE_RETAIN_DEFAULT;
+      const enabled = form.get("enabled") !== "false";
+      const failureDeadline =
+        String(form.get("failureDeadline") ?? "").trim() || undefined;
+      const result = await upsertVmSnapshotSchedule({
+        cluster,
+        namespace,
+        vmName: name,
+        cron,
+        retain,
+        enabled,
+        failureDeadline,
+      });
+      return {
+        ok: true,
+        intent,
+        scheduleName: result.name,
+        scheduleEnabled: result.enabled,
+      };
+    }
+    if (intent === "delete-snapshot-schedule") {
+      await deleteVmSnapshotSchedule(cluster, namespace, name);
+      return { ok: true, intent };
     }
     if (intent === "attach-disk") {
       const sourceRaw = String(form.get("source") ?? "blank").trim();
@@ -177,9 +234,18 @@ type DataVolumesFetcherData = {
   }>;
 };
 
+const SCHEDULE_PRESET_OPTIONS = [
+  ...SNAPSHOT_SCHEDULE_PRESETS.map((p) => ({ value: p.value, label: p.label })),
+  { value: "custom", label: "Custom cron…" },
+];
+
+function schedulePresetValue(cron: string): string {
+  return SNAPSHOT_SCHEDULE_PRESETS.some((p) => p.value === cron) ? cron : "custom";
+}
+
 export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
   const { vm } = useVmDetail();
-  const { snapshots } = loaderData;
+  const { snapshots, schedule } = loaderData;
   const fetcher = useFetcher<VmDetailActionResult>();
   const catalogFetcher = useFetcher<ClusterCatalog>();
   const dataVolumesFetcher = useFetcher<DataVolumesFetcherData>();
@@ -190,6 +256,14 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
     useState<VmSnapshotSummary | null>(null);
   const [restoreSnapshotTarget, setRestoreSnapshotTarget] =
     useState<VmSnapshotSummary | null>(null);
+  const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
+  const [scheduleDeleteOpen, setScheduleDeleteOpen] = useState(false);
+  const [schedulePreset, setSchedulePreset] = useState("0 3 * * *");
+  const [scheduleCronCustom, setScheduleCronCustom] = useState("0 3 * * *");
+  const [scheduleRetain, setScheduleRetain] = useState<number | string>(
+    SNAPSHOT_SCHEDULE_RETAIN_DEFAULT,
+  );
+  const [scheduleEnabled, setScheduleEnabled] = useState(true);
   const [addDiskOpen, setAddDiskOpen] = useState(false);
   const [diskSource, setDiskSource] = useState<VmDiskSourceMode>("blank");
   const [diskVolumeName, setDiskVolumeName] = useState("");
@@ -254,6 +328,15 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
             ? `Restore ${data.restoreName} started from ${data.snapshotName ?? "snapshot"}`
             : "Restore started",
         );
+      } else if (data.intent === "upsert-snapshot-schedule") {
+        notifyActionSuccess(
+          "Done",
+          data.scheduleEnabled === false
+            ? "Snapshot schedule saved (paused)"
+            : "Snapshot schedule saved",
+        );
+      } else if (data.intent === "delete-snapshot-schedule") {
+        notifyActionSuccess("Done", "Snapshot schedule removed");
       } else if (data.intent === "attach-disk") {
         notifyActionSuccess(
           "Done",
@@ -308,6 +391,28 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
     setDiskExistingDv("");
     setAddDiskOpen(true);
   };
+
+  const openScheduleModal = () => {
+    if (schedule) {
+      setSchedulePreset(schedulePresetValue(schedule.cron));
+      setScheduleCronCustom(schedule.cron);
+      setScheduleRetain(schedule.retain);
+      setScheduleEnabled(schedule.enabled);
+    } else {
+      setSchedulePreset("0 3 * * *");
+      setScheduleCronCustom("0 3 * * *");
+      setScheduleRetain(SNAPSHOT_SCHEDULE_RETAIN_DEFAULT);
+      setScheduleEnabled(true);
+    }
+    setScheduleModalOpen(true);
+  };
+
+  const resolvedScheduleCron =
+    schedulePreset === "custom" ? scheduleCronCustom.trim() : schedulePreset;
+
+  const scheduleCronLabel = schedule
+    ? cronPresetLabel(schedule.cron) ?? schedule.cron
+    : null;
 
   return (
     <Stack gap="md">
@@ -508,6 +613,135 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
       </DetailSection>
 
       <DetailSection
+        title="Snapshot schedule"
+        actions={
+          <Group gap={6}>
+            {schedule ? (
+              <>
+                <Button
+                  size="xs"
+                  variant="light"
+                  disabled={busy}
+                  loading={intentBusy("upsert-snapshot-schedule")}
+                  onClick={openScheduleModal}
+                >
+                  Edit schedule
+                </Button>
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  color="red"
+                  disabled={busy}
+                  loading={intentBusy("delete-snapshot-schedule")}
+                  onClick={() => setScheduleDeleteOpen(true)}
+                >
+                  Remove
+                </Button>
+              </>
+            ) : (
+              <Button
+                size="xs"
+                variant="light"
+                color="teal"
+                leftSection={<IconPlus size={14} />}
+                disabled={busy}
+                loading={intentBusy("upsert-snapshot-schedule")}
+                onClick={openScheduleModal}
+              >
+                Enable schedule
+              </Button>
+            )}
+          </Group>
+        }
+      >
+        <Text size="sm" c="dimmed" mb="sm">
+          Automated KubeVirt snapshots via a Kubernetes CronJob in this
+          namespace. Retention prunes only scheduled snapshots (manual ones are
+          kept). Jobs use{" "}
+          <Code>ghcr.io/ianunruh/kmc:latest</Code> (override with{" "}
+          <Code>KMC_SNAPSHOT_JOB_IMAGE</Code>).
+        </Text>
+        {!schedule ? (
+          <Text size="sm" c="dimmed">
+            No schedule configured for this VM.
+          </Text>
+        ) : (
+          <Stack gap="sm">
+            <Group gap="lg" wrap="wrap">
+              <DetailField
+                label="Status"
+                value={
+                  <Badge
+                    size="sm"
+                    variant="light"
+                    color={schedule.enabled ? "teal" : "gray"}
+                  >
+                    {schedule.enabled ? "Active" : "Paused"}
+                  </Badge>
+                }
+              />
+              <DetailField
+                label="Cadence"
+                value={
+                  <Text size="sm">
+                    {scheduleCronLabel}
+                    {cronPresetLabel(schedule.cron) ? (
+                      <Text span size="xs" c="dimmed" ml={6}>
+                        ({schedule.cron})
+                      </Text>
+                    ) : null}
+                  </Text>
+                }
+              />
+              <DetailField label="Retain" value={`${schedule.retain} scheduled`} />
+              <DetailField
+                label="CronJob"
+                value={<Code>{schedule.cronJobName}</Code>}
+              />
+            </Group>
+            <Group gap="lg" wrap="wrap">
+              <DetailField
+                label="Last run"
+                value={
+                  schedule.lastRunAt ? formatDateTime(schedule.lastRunAt) : "—"
+                }
+              />
+              <DetailField
+                label="Last success"
+                value={
+                  schedule.lastSuccessAt
+                    ? formatDateTime(schedule.lastSuccessAt)
+                    : "—"
+                }
+              />
+              <DetailField
+                label="Last snapshot"
+                value={
+                  schedule.lastSnapshot ? (
+                    <Code>{schedule.lastSnapshot}</Code>
+                  ) : (
+                    "—"
+                  )
+                }
+              />
+            </Group>
+            {schedule.lastError ? (
+              <Alert color="orange" variant="light" title="Last run note">
+                <ClampedText size="sm" lineClamp={3}>
+                  {schedule.lastError}
+                </ClampedText>
+              </Alert>
+            ) : null}
+            {schedule.lastPruned ? (
+              <Text size="xs" c="dimmed">
+                Last pruned: {schedule.lastPruned}
+              </Text>
+            ) : null}
+          </Stack>
+        )}
+      </DetailSection>
+
+      <DetailSection
         title="Snapshots"
         actions={
           <Button
@@ -544,13 +778,14 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
         ) : (
           <Table.ScrollContainer
             className="kmc-table-scroll"
-            minWidth={640}
+            minWidth={700}
             type="native"
           >
             <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
               <Table.Thead>
                 <Table.Tr>
                   <Table.Th>Name</Table.Th>
+                  <Table.Th>Kind</Table.Th>
                   <Table.Th>Phase</Table.Th>
                   <Table.Th>Ready</Table.Th>
                   <Table.Th>Indications</Table.Th>
@@ -568,6 +803,21 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
                           {snap.error}
                         </ClampedText>
                       ) : null}
+                    </Table.Td>
+                    <Table.Td>
+                      <Badge
+                        size="sm"
+                        variant="light"
+                        color={
+                          snap.snapshotKind === "scheduled" || snap.scheduleName
+                            ? "violet"
+                            : "gray"
+                        }
+                      >
+                        {snap.snapshotKind === "scheduled" || snap.scheduleName
+                          ? "scheduled"
+                          : "manual"}
+                      </Badge>
                     </Table.Td>
                     <Table.Td>
                       <StatusBadge status={snap.phase} />
@@ -925,6 +1175,123 @@ export default function VmStorageTab({ loaderData }: Route.ComponentProps) {
           setRestoreSnapshotTarget(null);
           fetcher.submit(
             { intent: "restore-snapshot", snapshotName },
+            { method: "post" },
+          );
+        }}
+      />
+
+      <Modal
+        opened={scheduleModalOpen}
+        onClose={() => setScheduleModalOpen(false)}
+        title={schedule ? "Edit snapshot schedule" : "Enable snapshot schedule"}
+        centered
+      >
+        <Stack gap="md">
+          <Text size="sm" c="dimmed">
+            Creates a CronJob that runs the kmc snapshot worker on a schedule
+            (UTC). Only scheduled snapshots count toward retention; manual
+            snapshots are never auto-deleted.
+          </Text>
+          <Select
+            label="Cadence"
+            data={SCHEDULE_PRESET_OPTIONS}
+            value={schedulePreset}
+            onChange={(v) => {
+              const next = v ?? "0 3 * * *";
+              setSchedulePreset(next);
+              if (next !== "custom") {
+                setScheduleCronCustom(next);
+              }
+            }}
+            disabled={busy}
+            allowDeselect={false}
+          />
+          {schedulePreset === "custom" ? (
+            <TextInput
+              label="Cron expression"
+              description="Standard 5-field cron (minute hour day month weekday), UTC"
+              placeholder="0 3 * * *"
+              value={scheduleCronCustom}
+              onChange={(e) => setScheduleCronCustom(e.currentTarget.value)}
+              disabled={busy}
+              required
+            />
+          ) : null}
+          <NumberInput
+            label="Retain"
+            description={`Keep the newest N scheduled snapshots (${SNAPSHOT_SCHEDULE_RETAIN_MIN}–${SNAPSHOT_SCHEDULE_RETAIN_MAX})`}
+            min={SNAPSHOT_SCHEDULE_RETAIN_MIN}
+            max={SNAPSHOT_SCHEDULE_RETAIN_MAX}
+            value={scheduleRetain}
+            onChange={setScheduleRetain}
+            disabled={busy}
+            allowDecimal={false}
+          />
+          <Switch
+            label="Schedule enabled"
+            description="When off, the CronJob is suspended (no new snapshots)"
+            checked={scheduleEnabled}
+            onChange={(e) => setScheduleEnabled(e.currentTarget.checked)}
+            disabled={busy}
+          />
+          <Group justify="flex-end">
+            <Button
+              variant="default"
+              onClick={() => setScheduleModalOpen(false)}
+              disabled={busy}
+            >
+              Cancel
+            </Button>
+            <Button
+              loading={intentBusy("upsert-snapshot-schedule")}
+              onClick={() => {
+                const retainNum =
+                  typeof scheduleRetain === "number"
+                    ? scheduleRetain
+                    : Number(scheduleRetain);
+                if (!resolvedScheduleCron) return;
+                if (
+                  !Number.isFinite(retainNum) ||
+                  retainNum < SNAPSHOT_SCHEDULE_RETAIN_MIN ||
+                  retainNum > SNAPSHOT_SCHEDULE_RETAIN_MAX
+                ) {
+                  return;
+                }
+                setScheduleModalOpen(false);
+                fetcher.submit(
+                  {
+                    intent: "upsert-snapshot-schedule",
+                    cron: resolvedScheduleCron,
+                    retain: String(Math.trunc(retainNum)),
+                    enabled: scheduleEnabled ? "true" : "false",
+                  },
+                  { method: "post" },
+                );
+              }}
+            >
+              Save schedule
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      <ConfirmDeleteModal
+        opened={scheduleDeleteOpen}
+        resourceName={schedule?.name ?? "schedule"}
+        identity={
+          schedule
+            ? `${schedule.cluster}/${schedule.namespace}/${schedule.name}`
+            : ""
+        }
+        title="Remove snapshot schedule"
+        confirmLabel="Remove schedule"
+        warning="Deletes the CronJob and schedule ConfigMap. Existing VirtualMachineSnapshots are left in place."
+        loading={busy}
+        onClose={() => setScheduleDeleteOpen(false)}
+        onConfirm={() => {
+          setScheduleDeleteOpen(false);
+          fetcher.submit(
+            { intent: "delete-snapshot-schedule" },
             { method: "post" },
           );
         }}

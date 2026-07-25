@@ -147,6 +147,37 @@ export const KMC_ANN_DISK_SIZE = `${KMC_LABEL_NAMESPACE}/disk-size`;
 export const KMC_RESOURCE_VM_SNAPSHOT = "vm-snapshot";
 
 /**
+ * Value of kmc.ianunruh.com/resource for per-VM snapshot schedule ConfigMaps
+ * (policy + CronJob companion objects).
+ */
+export const KMC_RESOURCE_VM_SNAPSHOT_SCHEDULE = "vm-snapshot-schedule";
+
+/**
+ * Schedule ConfigMap name stamped on scheduled VirtualMachineSnapshots so
+ * retention prune only touches snaps from that schedule.
+ */
+export const KMC_LABEL_SCHEDULE = `${KMC_LABEL_NAMESPACE}/schedule`;
+
+/** `manual` | `scheduled` — how the snapshot was created. */
+export const KMC_LABEL_SNAPSHOT_KIND = `${KMC_LABEL_NAMESPACE}/snapshot-kind`;
+export const KMC_SNAPSHOT_KIND_MANUAL = "manual";
+export const KMC_SNAPSHOT_KIND_SCHEDULED = "scheduled";
+
+/** Schedule policy JSON key in the schedule ConfigMap. */
+export const KMC_SNAPSHOT_SCHEDULE_DATA_KEY = "schedule.json";
+
+/** Status annotations written by the CronJob runner on the schedule ConfigMap. */
+export const KMC_ANN_SCHEDULE_LAST_RUN_AT = `${KMC_LABEL_NAMESPACE}/last-run-at`;
+export const KMC_ANN_SCHEDULE_LAST_SUCCESS_AT = `${KMC_LABEL_NAMESPACE}/last-success-at`;
+export const KMC_ANN_SCHEDULE_LAST_SNAPSHOT = `${KMC_LABEL_NAMESPACE}/last-snapshot`;
+export const KMC_ANN_SCHEDULE_LAST_ERROR = `${KMC_LABEL_NAMESPACE}/last-error`;
+/** Snapshot names deleted during the last prune (comma-separated, truncated). */
+export const KMC_ANN_SCHEDULE_LAST_PRUNED = `${KMC_LABEL_NAMESPACE}/last-pruned`;
+
+/** List selector for kmc-managed snapshot schedule ConfigMaps. */
+export const KMC_SNAPSHOT_SCHEDULE_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_VM_SNAPSHOT_SCHEDULE}`;
+
+/**
  * Value of kmc.ianunruh.com/resource for golden images imported via kmc
  * (DataVolumes in the image namespace). Virtctl-uploaded images may omit this.
  */

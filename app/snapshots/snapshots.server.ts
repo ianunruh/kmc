@@ -7,9 +7,13 @@ import type {
 } from "~/lib/types";
 import {
   KMC_LABEL_RESOURCE,
+  KMC_LABEL_SCHEDULE,
+  KMC_LABEL_SNAPSHOT_KIND,
   KMC_LABEL_VM,
   KMC_MANAGED_BY,
   KMC_RESOURCE_VM_SNAPSHOT,
+  KMC_SNAPSHOT_KIND_MANUAL,
+  KMC_SNAPSHOT_KIND_SCHEDULED,
   MANAGED_BY_LABEL,
 } from "~/lib/k8s/constants";
 import { getClusterClients } from "~/lib/k8s/clients.server";
@@ -85,13 +89,19 @@ function mapSummary(cluster: ClusterId, snap: KubeVmSnapshot): VmSnapshotSummary
       ?.message ||
     snap.status?.conditions?.find((c) => c.type === "Failure")?.message;
 
+  const labels = snap.metadata?.labels ?? {};
+  const scheduleName = labels[KMC_LABEL_SCHEDULE]?.trim() || undefined;
+  const snapshotKind =
+    labels[KMC_LABEL_SNAPSHOT_KIND]?.trim() ||
+    (scheduleName ? KMC_SNAPSHOT_KIND_SCHEDULED : undefined);
+
   return {
     cluster,
     namespace: snap.metadata?.namespace ?? "default",
     name: snap.metadata?.name ?? "unknown",
     vmName:
       snap.spec?.source?.name?.trim() ||
-      snap.metadata?.labels?.[KMC_LABEL_VM]?.trim() ||
+      labels[KMC_LABEL_VM]?.trim() ||
       "",
     phase: snap.status?.phase ?? "Unknown",
     readyToUse: snap.status?.readyToUse === true,
@@ -99,6 +109,8 @@ function mapSummary(cluster: ClusterId, snap: KubeVmSnapshot): VmSnapshotSummary
     age: snap.metadata?.creationTimestamp ?? "",
     error: errMsg?.trim() || undefined,
     contentName: snap.status?.virtualMachineSnapshotContentName,
+    scheduleName,
+    snapshotKind,
   };
 }
 
@@ -179,17 +191,26 @@ export async function createVmSnapshot(
     throw new Error("snapshot name must be a DNS label (≤63 characters)");
   }
 
+  const scheduleName = input.scheduleName?.trim() || undefined;
+  const labels: Record<string, string> = {
+    [MANAGED_BY_LABEL]: KMC_MANAGED_BY,
+    [KMC_LABEL_VM]: input.vmName,
+    [KMC_LABEL_RESOURCE]: KMC_RESOURCE_VM_SNAPSHOT,
+    [KMC_LABEL_SNAPSHOT_KIND]: scheduleName
+      ? KMC_SNAPSHOT_KIND_SCHEDULED
+      : KMC_SNAPSHOT_KIND_MANUAL,
+  };
+  if (scheduleName) {
+    labels[KMC_LABEL_SCHEDULE] = scheduleName;
+  }
+
   const body: Record<string, unknown> = {
     apiVersion: `${SNAPSHOT_GROUP}/${SNAPSHOT_VERSION}`,
     kind: "VirtualMachineSnapshot",
     metadata: {
       name,
       namespace: input.namespace,
-      labels: {
-        [MANAGED_BY_LABEL]: KMC_MANAGED_BY,
-        [KMC_LABEL_VM]: input.vmName,
-        [KMC_LABEL_RESOURCE]: KMC_RESOURCE_VM_SNAPSHOT,
-      },
+      labels,
     },
     spec: {
       source: {
@@ -213,6 +234,153 @@ export async function createVmSnapshot(
       body,
     })) as KubeVmSnapshot;
     return mapSummary(input.cluster, created);
+  } catch (err) {
+    throw new Error(formatError(err), { cause: err });
+  }
+}
+
+/**
+ * Create a VirtualMachineSnapshot using a pre-built CustomObjectsApi client.
+ * Used by the in-cluster CronJob runner (no request-scoped actor).
+ */
+export async function createVmSnapshotWithClient(
+  custom: {
+    createNamespacedCustomObject: (args: {
+      group: string;
+      version: string;
+      namespace: string;
+      plural: string;
+      body: unknown;
+    }) => Promise<unknown>;
+  },
+  input: {
+    cluster: ClusterId;
+    namespace: string;
+    vmName: string;
+    name?: string;
+    failureDeadline?: string;
+    scheduleName: string;
+  },
+): Promise<VmSnapshotSummary> {
+  if (!input.namespace?.trim()) throw new Error("namespace is required");
+  if (!input.vmName?.trim()) throw new Error("vmName is required");
+  if (!input.scheduleName?.trim()) throw new Error("scheduleName is required");
+
+  const name = input.name?.trim()
+    ? dnsLabel(input.name.trim())
+    : defaultSnapshotName(input.vmName);
+
+  if (!name || name.length > 63) {
+    throw new Error("snapshot name must be a DNS label (≤63 characters)");
+  }
+
+  const body: Record<string, unknown> = {
+    apiVersion: `${SNAPSHOT_GROUP}/${SNAPSHOT_VERSION}`,
+    kind: "VirtualMachineSnapshot",
+    metadata: {
+      name,
+      namespace: input.namespace,
+      labels: {
+        [MANAGED_BY_LABEL]: KMC_MANAGED_BY,
+        [KMC_LABEL_VM]: input.vmName,
+        [KMC_LABEL_RESOURCE]: KMC_RESOURCE_VM_SNAPSHOT,
+        [KMC_LABEL_SNAPSHOT_KIND]: KMC_SNAPSHOT_KIND_SCHEDULED,
+        [KMC_LABEL_SCHEDULE]: input.scheduleName,
+      },
+    },
+    spec: {
+      source: {
+        apiGroup: "kubevirt.io",
+        kind: "VirtualMachine",
+        name: input.vmName,
+      },
+      ...(input.failureDeadline?.trim()
+        ? { failureDeadline: input.failureDeadline.trim() }
+        : {}),
+    },
+  };
+
+  try {
+    const created = (await custom.createNamespacedCustomObject({
+      group: SNAPSHOT_GROUP,
+      version: SNAPSHOT_VERSION,
+      namespace: input.namespace,
+      plural: SNAPSHOTS_PLURAL,
+      body,
+    })) as KubeVmSnapshot;
+    return mapSummary(input.cluster, created);
+  } catch (err) {
+    throw new Error(formatError(err), { cause: err });
+  }
+}
+
+/**
+ * List snapshots for a VM using a pre-built client (CronJob runner).
+ */
+export async function listVmSnapshotsWithClient(
+  custom: {
+    listNamespacedCustomObject: (args: {
+      group: string;
+      version: string;
+      namespace: string;
+      plural: string;
+    }) => Promise<unknown>;
+  },
+  cluster: ClusterId,
+  namespace: string,
+  vmName?: string,
+): Promise<VmSnapshotSummary[]> {
+  if (!namespace?.trim()) throw new Error("namespace is required");
+
+  try {
+    const res = (await custom.listNamespacedCustomObject({
+      group: SNAPSHOT_GROUP,
+      version: SNAPSHOT_VERSION,
+      namespace,
+      plural: SNAPSHOTS_PLURAL,
+    })) as { items?: KubeVmSnapshot[] };
+
+    let items = (res.items ?? []).map((s) => mapSummary(cluster, s));
+    const want = vmName?.trim();
+    if (want) {
+      items = items.filter((s) => s.vmName === want);
+    }
+    items.sort((a, b) => {
+      const ta = a.age || "";
+      const tb = b.age || "";
+      if (ta !== tb) return tb.localeCompare(ta);
+      return a.name.localeCompare(b.name);
+    });
+    return items;
+  } catch (err) {
+    throw new Error(formatError(err), { cause: err });
+  }
+}
+
+/**
+ * Delete a snapshot using a pre-built client (CronJob runner prune).
+ */
+export async function deleteVmSnapshotWithClient(
+  custom: {
+    deleteNamespacedCustomObject: (args: {
+      group: string;
+      version: string;
+      namespace: string;
+      plural: string;
+      name: string;
+    }) => Promise<unknown>;
+  },
+  namespace: string,
+  name: string,
+): Promise<void> {
+  try {
+    await custom.deleteNamespacedCustomObject({
+      group: SNAPSHOT_GROUP,
+      version: SNAPSHOT_VERSION,
+      namespace,
+      plural: SNAPSHOTS_PLURAL,
+      name,
+    });
   } catch (err) {
     throw new Error(formatError(err), { cause: err });
   }

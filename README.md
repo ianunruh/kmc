@@ -163,11 +163,13 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 | `KMC_USERNAME_PREFIX`      | `oidc:`                 | Match apiserver username prefix                                               |
 | `KMC_GROUPS_PREFIX`        | `oidc:`                 | Match apiserver groups prefix                                                 |
 | `KMC_CONSOLE_SSH_USER`     | `ubuntu`                | Guest username for browser SSH terminal                                       |
+| `KMC_SNAPSHOT_JOB_IMAGE`   | `ghcr.io/ianunruh/kmc:latest` | Container image for per-VM snapshot CronJobs (`scripts/snapshot-run.ts`) |
 
 ## Features (MVP)
 
-- **Virtual machines** — list, create, detail, edit (labels always; size / preference / run strategy when stopped), stop/start/restart/pause/unpause/delete, **snapshots / in-place restore** (KubeVirt `VirtualMachineSnapshot` / `VirtualMachineRestore` on the VM detail page), **serial console** (boot/debug) and **SSH terminal** (browser shell via platform key + port-forward)
+- **Virtual machines** — list, create, detail, edit (labels always; size / preference / run strategy when stopped), stop/start/restart/pause/unpause/delete, **snapshots / in-place restore** (KubeVirt `VirtualMachineSnapshot` / `VirtualMachineRestore` on the VM detail page), **snapshot schedules** (per-VM CronJob + retention on the Storage tab), **serial console** (boot/debug) and **SSH terminal** (browser shell via platform key + port-forward)
   - Cluster prereqs: CSI external-snapshotter + VolumeSnapshotClass for the VM storage driver; KubeVirt feature gate `Snapshot` enabled; API `snapshot.kubevirt.io/v1beta1`
+  - Snapshot schedules: CronJobs pull `ghcr.io/ianunruh/kmc:latest` by default (`KMC_SNAPSHOT_JOB_IMAGE`); kmc creates a ConfigMap + SA/Role + CronJob in the VM namespace that runs `scripts/snapshot-run.ts`
 - **Extra disks + hotplug** — secondary blank or existing DataVolumes (scsi, up to 8) on Launch VM or VM **Storage** tab; attach/detach by updating the VirtualMachine spec (`hotpluggable: true` disks/volumes). Live attach needs KubeVirt **`DeclarativeHotplugVolumes`** (do not also enable deprecated `HotplugVolumes`). Detach can keep or delete the DataVolume. Guests see unformatted block devices — format/mount inside the guest.
 - **IPAM** — optional per-cluster IPv4 pools for Multus NADs; auto-allocate + netplan cloud-init on create
 - **VPCs** — self-service Multus networks from a cluster VLAN pool (`vlanPools`); optional private CIDR for IPAM

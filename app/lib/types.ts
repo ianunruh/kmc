@@ -580,6 +580,10 @@ export interface VmSnapshotSummary {
   error?: string;
   /** VirtualMachineSnapshotContent name when bound */
   contentName?: string;
+  /** Present when created by a kmc snapshot schedule CronJob. */
+  scheduleName?: string;
+  /** `manual` | `scheduled` when labeled by kmc. */
+  snapshotKind?: string;
 }
 
 export interface CreateVmSnapshotRequest {
@@ -590,6 +594,11 @@ export interface CreateVmSnapshotRequest {
   name?: string;
   /** Optional failure deadline duration string (e.g. `5m`). */
   failureDeadline?: string;
+  /**
+   * When set, labels the snapshot as scheduled and stamps schedule identity
+   * for retention pruning.
+   */
+  scheduleName?: string;
 }
 
 export interface CreateVmRestoreRequest {
@@ -599,6 +608,44 @@ export interface CreateVmRestoreRequest {
   snapshotName: string;
   /** Optional; default `restore-{vm}-{yyyyMMdd-HHmmss}`. */
   name?: string;
+}
+
+// --- VM snapshot schedules (ConfigMap policy + CronJob) ---
+
+/** Per-VM automated snapshot policy (one schedule per VM in v1). */
+export interface VmSnapshotScheduleSummary {
+  cluster: ClusterId;
+  namespace: string;
+  /** ConfigMap name (stable identity). */
+  name: string;
+  vmName: string;
+  enabled: boolean;
+  /** Standard 5-field cron (UTC). */
+  cron: string;
+  /** Keep newest N scheduled snapshots for this schedule. */
+  retain: number;
+  failureDeadline?: string;
+  /** Companion CronJob name. */
+  cronJobName: string;
+  lastRunAt?: string;
+  lastSuccessAt?: string;
+  lastSnapshot?: string;
+  lastError?: string;
+  lastPruned?: string;
+}
+
+export interface UpsertVmSnapshotScheduleRequest {
+  cluster: ClusterId;
+  namespace: string;
+  vmName: string;
+  /** When false, CronJob is suspended. Default true. */
+  enabled?: boolean;
+  /** 5-field cron expression (UTC). */
+  cron: string;
+  /** Keep newest N scheduled snaps (1–30). */
+  retain: number;
+  /** Optional KubeVirt failureDeadline (e.g. `10m`). */
+  failureDeadline?: string;
 }
 
 // --- DataVolumes (cdi.kubevirt.io) ---
