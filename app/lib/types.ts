@@ -1287,10 +1287,18 @@ export interface UpdateVpcRequest {
 
 // --- Network topology (VPCs / Multus NADs ↔ VMs) ---
 
-export type TopologyNetworkKind = "vpc" | "multus" | "pod" | "ingress";
+export type TopologyNetworkKind =
+  | "vpc"
+  | "multus"
+  | "pod"
+  | "ingress"
+  | "loadbalancer";
 
 export interface TopologyNetworkNode {
-  /** Stable id: `cluster/namespace/name`, `…/__pod__`, or `…/__ingress__` */
+  /**
+   * Stable id: `cluster/namespace/name`, `…/__pod__`, `…/__ingress__`,
+   * or `…/__loadbalancer__`.
+   */
   id: string;
   kind: TopologyNetworkKind;
   cluster: ClusterId;
@@ -1313,6 +1321,8 @@ export interface TopologyVmNode {
   floatingIpv4?: string[];
   /** Ingress hostnames bound to this VM (kmc-managed Ingress via pod network). */
   ingressHosts?: string[];
+  /** LoadBalancer VIPs / names exposing this VM on the pod network. */
+  loadBalancerAddresses?: string[];
 }
 
 export interface TopologyEdge {
@@ -1325,9 +1335,10 @@ export interface TopologyEdge {
    * `attachment` (default): Multus/pod NIC on the VM.
    * `floating`: 1:1 public→private DNAT via a router external gateway.
    * `ingress`: HTTP(S) exposure via Ingress on the pod network.
+   * `loadbalancer`: L4 Service type LoadBalancer on the pod network.
    */
-  role?: "attachment" | "floating" | "ingress";
-  /** Optional display label (e.g. floating public address, ingress host). */
+  role?: "attachment" | "floating" | "ingress" | "loadbalancer";
+  /** Optional display label (e.g. floating public address, ingress host, VIP). */
   label?: string;
 }
 

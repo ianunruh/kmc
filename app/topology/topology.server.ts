@@ -14,6 +14,7 @@ import {
   KMC_ANN_MEMBER_VMS,
   KMC_BACKEND_LABEL_SELECTOR,
   KMC_INGRESS_LABEL_SELECTOR,
+  KMC_LABEL_BACKEND_GROUP,
   KMC_LABEL_RESOURCE,
   KMC_LABEL_VM,
   KMC_LABEL_VLAN,
@@ -23,6 +24,10 @@ import {
   MANAGED_BY_LABEL,
 } from "~/lib/k8s/constants";
 import { getClusterClients, getConfiguredContexts } from "~/lib/k8s/clients.server";
+import {
+  labelsMatchSelector,
+  membershipFromServiceMeta,
+} from "~/backends/membership";
 import type {
   ClusterId,
   NetworkTopology,
@@ -59,6 +64,7 @@ type KubeVm = {
   metadata?: {
     name?: string;
     namespace?: string;
+    labels?: Record<string, string>;
     annotations?: Record<string, string>;
   };
   status?: {
@@ -68,6 +74,7 @@ type KubeVm = {
   };
   spec?: {
     template?: {
+      metadata?: { labels?: Record<string, string> };
       spec?: {
         networks?: Array<{
           name?: string;
@@ -75,6 +82,24 @@ type KubeVm = {
           multus?: { networkName?: string };
         }>;
       };
+    };
+  };
+};
+
+type KubeBackendService = {
+  metadata?: {
+    name?: string;
+    namespace?: string;
+    labels?: Record<string, string>;
+    annotations?: Record<string, string>;
+  };
+  spec?: {
+    type?: string;
+    selector?: Record<string, string>;
+  };
+  status?: {
+    loadBalancer?: {
+      ingress?: Array<{ ip?: string; hostname?: string }>;
     };
   };
 };
@@ -89,6 +114,68 @@ function podNodeId(cluster: string, namespace: string): string {
 
 function ingressNodeId(cluster: string, namespace: string): string {
   return nodeId(cluster, namespace, "__ingress__");
+}
+
+function loadBalancerNodeId(cluster: string, namespace: string): string {
+  return nodeId(cluster, namespace, "__loadbalancer__");
+}
+
+function externalAddress(svc: KubeBackendService): string | undefined {
+  const lb = svc.status?.loadBalancer?.ingress?.[0];
+  if (!lb) return undefined;
+  return lb.hostname || lb.ip || undefined;
+}
+
+/**
+ * Resolve VM names selected by a kmc backend Service (single-vm, group, labels).
+ * `vmLabelsByKey` is namespace/name → pod-template-ish labels for label selectors.
+ */
+function targetVmsFromBackend(
+  svc: KubeBackendService,
+  vmLabelsByKey: Map<string, Record<string, string>>,
+  namespace: string,
+): string[] {
+  const names = new Set<string>();
+  const membership = membershipFromServiceMeta(
+    svc.metadata?.labels,
+    svc.metadata?.annotations,
+  );
+
+  if (membership.mode === "single-vm") {
+    names.add(membership.vmName);
+  } else if (membership.mode === "group") {
+    for (const n of membership.vmNames) names.add(n);
+    // Live stamp may include VMs not in the create-time annotation
+    const groupId = membership.groupId;
+    if (groupId) {
+      for (const [key, labels] of vmLabelsByKey) {
+        if (!key.startsWith(`${namespace}/`)) continue;
+        if (labels[KMC_LABEL_BACKEND_GROUP] === groupId) {
+          names.add(key.slice(namespace.length + 1));
+        }
+      }
+    }
+  } else if (membership.mode === "labels") {
+    for (const [key, labels] of vmLabelsByKey) {
+      if (!key.startsWith(`${namespace}/`)) continue;
+      if (labelsMatchSelector(labels, membership.matchLabels)) {
+        names.add(key.slice(namespace.length + 1));
+      }
+    }
+  } else {
+    // Fallback: annotation + classic selector
+    const members = (svc.metadata?.annotations?.[KMC_ANN_MEMBER_VMS] ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const m of members) names.add(m);
+    const labeled = svc.metadata?.labels?.[KMC_LABEL_VM]?.trim();
+    if (labeled) names.add(labeled);
+    const selVm = svc.spec?.selector?.["kubevirt.io/vm"]?.trim();
+    if (selVm) names.add(selVm);
+  }
+
+  return Array.from(names).sort();
 }
 
 /**
@@ -200,6 +287,8 @@ async function loadClusterTopology(
   // Index VMs for floating-IP attachment (by name and private IPAM addresses).
   const vmByNsName = new Map<string, TopologyVmNode>();
   const vmIdsByPrivate = new Map<string, string>(); // ns|addr -> vmId
+  /** namespace/name → labels for Service selector matching (LB / multi-member). */
+  const vmLabelsByKey = new Map<string, Record<string, string>>();
 
   for (const vm of vmRes.items ?? []) {
     const name = vm.metadata?.name;
@@ -218,6 +307,11 @@ async function loadClusterTopology(
     };
     vms.push(node);
     vmByNsName.set(`${namespace}/${name}`, node);
+    vmLabelsByKey.set(`${namespace}/${name}`, {
+      ...(vm.metadata?.labels ?? {}),
+      ...(vm.spec?.template?.metadata?.labels ?? {}),
+      "kubevirt.io/vm": name,
+    });
 
     const ann = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
     if (ann) {
@@ -353,48 +447,35 @@ async function loadClusterTopology(
     );
   }
 
-  // Ingresses: one synthetic "ingress" node per namespace + edges to target VMs.
-  // Multi-member: resolve targets via single-vm label, group member annotation,
-  // or companion backend Service selector (kubevirt.io/vm).
+  // kmc backend Services (Ingress companions + LoadBalancers)
+  let backendServices: KubeBackendService[] = [];
   try {
-    const { networking, core } = getClusterClients(cluster);
-    const [ingRes, svcRes] = await Promise.all([
-      networking.listIngressForAllNamespaces({
-        labelSelector: KMC_INGRESS_LABEL_SELECTOR,
-      }),
-      core
-        .listServiceForAllNamespaces({
-          labelSelector: KMC_BACKEND_LABEL_SELECTOR,
-        })
-        .catch(() => ({ items: [] as unknown[] })),
-    ]);
+    const { core } = getClusterClients(cluster);
+    const svcRes = await core.listServiceForAllNamespaces({
+      labelSelector: KMC_BACKEND_LABEL_SELECTOR,
+    });
+    backendServices = (svcRes.items ?? []) as KubeBackendService[];
+  } catch (err) {
+    console.error(
+      `topology backends (${cluster}):`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 
-    const backendByKey = new Map<
-      string,
-      {
-        labels?: Record<string, string>;
-        annotations?: Record<string, string>;
-        selector?: Record<string, string>;
-      }
-    >();
-    for (const svc of (svcRes.items ?? []) as Array<{
-      metadata?: {
-        name?: string;
-        namespace?: string;
-        labels?: Record<string, string>;
-        annotations?: Record<string, string>;
-      };
-      spec?: { selector?: Record<string, string> };
-    }>) {
-      const sn = svc.metadata?.name;
-      const sns = svc.metadata?.namespace;
-      if (!sn || !sns) continue;
-      backendByKey.set(`${sns}/${sn}`, {
-        labels: svc.metadata?.labels,
-        annotations: svc.metadata?.annotations,
-        selector: svc.spec?.selector,
-      });
-    }
+  const backendByKey = new Map<string, KubeBackendService>();
+  for (const svc of backendServices) {
+    const sn = svc.metadata?.name;
+    const sns = svc.metadata?.namespace;
+    if (!sn || !sns) continue;
+    backendByKey.set(`${sns}/${sn}`, svc);
+  }
+
+  // Ingresses: one synthetic "ingress" node per namespace + edges to target VMs.
+  try {
+    const { networking } = getClusterClients(cluster);
+    const ingRes = await networking.listIngressForAllNamespaces({
+      labelSelector: KMC_INGRESS_LABEL_SELECTOR,
+    });
 
     for (const ing of (ingRes.items ?? []) as KubeIngress[]) {
       const name = ing.metadata?.name;
@@ -419,13 +500,13 @@ async function loadClusterTopology(
 
       const backend = backendByKey.get(`${namespace}/${name}`);
       if (backend) {
-        const members = (backend.annotations?.[KMC_ANN_MEMBER_VMS] ?? "")
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-        for (const m of members) targetVmNames.add(m);
-        const selVm = backend.selector?.["kubevirt.io/vm"]?.trim();
-        if (selVm) targetVmNames.add(selVm);
+        for (const m of targetVmsFromBackend(
+          backend,
+          vmLabelsByKey,
+          namespace,
+        )) {
+          targetVmNames.add(m);
+        }
       }
 
       if (targetVmNames.size === 0) continue;
@@ -471,10 +552,67 @@ async function loadClusterTopology(
     );
   }
 
+  // Load balancers: synthetic node per namespace (right column, under ingress).
+  try {
+    for (const svc of backendServices) {
+      if ((svc.spec?.type ?? "ClusterIP") !== "LoadBalancer") continue;
+      const name = svc.metadata?.name;
+      const namespace = svc.metadata?.namespace;
+      if (!name || !namespace) continue;
+
+      const targetVmNames = targetVmsFromBackend(
+        svc,
+        vmLabelsByKey,
+        namespace,
+      );
+      if (targetVmNames.length === 0) continue;
+
+      const vip = externalAddress(svc);
+      const edgeLabel = vip ?? name;
+
+      const lid = loadBalancerNodeId(cluster, namespace);
+      if (!networksById.has(lid)) {
+        networksById.set(lid, {
+          id: lid,
+          kind: "loadbalancer",
+          cluster,
+          namespace,
+          name: "load balancers",
+          exists: true,
+        });
+      }
+
+      for (const vmName of targetVmNames) {
+        const target = vmByNsName.get(`${namespace}/${vmName}`);
+        if (!target) continue;
+
+        const addr = vip ?? name;
+        const existing = target.loadBalancerAddresses ?? [];
+        if (!existing.includes(addr)) {
+          target.loadBalancerAddresses = [...existing, addr];
+        }
+
+        edges.push({
+          id: `lb:${lid}->${target.id}:${name}`,
+          networkId: lid,
+          vmId: target.id,
+          role: "loadbalancer",
+          label: edgeLabel,
+        });
+      }
+    }
+  } catch (err) {
+    console.error(
+      `topology load balancers (${cluster}):`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
   const kindOrder = (k: TopologyNetworkNode["kind"]) => {
     if (k === "pod") return 0;
     if (k === "ingress") return 1;
-    return 2;
+    if (k === "loadbalancer") return 2;
+    return 3;
   };
 
   const networks = Array.from(networksById.values()).sort((a, b) => {
@@ -531,7 +669,8 @@ export async function listNetworkTopology(clusterFilter?: ClusterId): Promise<{
   const kindOrder = (k: TopologyNetworkNode["kind"]) => {
     if (k === "pod") return 0;
     if (k === "ingress") return 1;
-    return 2;
+    if (k === "loadbalancer") return 2;
+    return 3;
   };
 
   networks.sort((a, b) => {
