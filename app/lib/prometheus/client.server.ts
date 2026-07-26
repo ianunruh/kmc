@@ -43,10 +43,23 @@ async function promFetch<T>(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    // Do not follow redirects: SSO/oauth2-proxy frontends 302 to login pages,
+    // and those often respond 406 to Accept: application/json (GitHub OAuth).
     const res = await fetch(url, {
       signal: controller.signal,
       headers: { Accept: "application/json" },
+      redirect: "manual",
     });
+    if (res.status >= 300 && res.status < 400) {
+      const location = res.headers.get("location") ?? "";
+      const hint =
+        /oauth|sso|login/i.test(location)
+          ? " (SSO frontend — set prometheusUrl to an in-cluster Prometheus service instead)"
+          : "";
+      throw new Error(
+        `Prometheus redirected HTTP ${res.status}${location ? ` → ${location.slice(0, 160)}` : ""}${hint}`,
+      );
+    }
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new Error(

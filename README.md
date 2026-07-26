@@ -94,7 +94,9 @@ clusters:
     apiServer: https://kubernetes.den1.kcloud.zone:6443
     caData: LS0t...
     tokenFile: config/secrets/homelab.token
-    # Optional — enables VM metrics graphs (KubeVirt VMI metrics)
+    # Optional — enables VM/database metrics graphs (KubeVirt / CNPG)
+    # Prefer in-cluster URLs when the public hostname is SSO-gated:
+    #   http://kube-prometheus-stack-prometheus.monitoring.svc:9090
     prometheusUrl: https://prometheus.example.com
     # Optional — scan-derived IPv4 pools for Multus bridge networks
     ipPools:
