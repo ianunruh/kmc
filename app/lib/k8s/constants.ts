@@ -67,6 +67,20 @@ export const KMC_INGRESS_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY}
 /** Max VMs that can be added to a backend group at create time. */
 export const KMC_MAX_BACKEND_GROUP_VMS = 32;
 
+/** Value of kmc.ianunruh.com/resource for CloudNativePG Cluster databases. */
+export const KMC_RESOURCE_DATABASE = "database";
+
+/** Size preset stamped on kmc-managed databases (`small` | `medium` | `large`). */
+export const KMC_LABEL_SIZE = `${KMC_LABEL_NAMESPACE}/size`;
+
+/** List selector for kmc-managed CNPG Clusters (create path stamps these). */
+export const KMC_DATABASE_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_DATABASE}`;
+
+/** CloudNativePG Cluster API (postgresql.cnpg.io). */
+export const CNPG_GROUP = "postgresql.cnpg.io";
+export const CNPG_VERSION = "v1";
+export const CNPG_CLUSTER_PLURAL = "clusters";
+
 /** Value of kmc.ianunruh.com/resource for self-service VPC NADs. */
 export const KMC_RESOURCE_VPC = "vpc";
 

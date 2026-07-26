@@ -155,7 +155,7 @@ export function vmPath(vm: Pick<VmSummary, "cluster" | "namespace" | "name">): s
 }
 
 /** Common detail subpages (overview is the bare resource URL). */
-export type DetailSubTab = "overview" | "events" | "yaml";
+export type DetailSubTab = "overview" | "access" | "events" | "yaml";
 
 /** Append a detail tab segment to a resource path (`overview` → base). */
 export function detailTabPath(base: string, tab: string = "overview"): string {
@@ -199,6 +199,36 @@ export function dataVolumePath(
   >,
 ): string {
   return `/datavolumes/${encodeURIComponent(dv.cluster)}/${encodeURIComponent(dv.namespace)}/${encodeURIComponent(dv.name)}`;
+}
+
+export function databasePath(
+  db: Pick<
+    { cluster: string; namespace: string; name: string },
+    "cluster" | "namespace" | "name"
+  >,
+): string {
+  return `/databases/${encodeURIComponent(db.cluster)}/${encodeURIComponent(db.namespace)}/${encodeURIComponent(db.name)}`;
+}
+
+export function databasesListPath(
+  filters: {
+    q?: string | null;
+    cluster?: string | null;
+    namespace?: string | null;
+    status?: string | null;
+  } = {},
+): string {
+  return withSearch("/databases", filters);
+}
+
+export function databaseCreatePath(
+  prefill: {
+    cluster?: string | null;
+    namespace?: string | null;
+    name?: string | null;
+  } = {},
+): string {
+  return withSearch("/databases/create", prefill);
 }
 
 /** Snapshot is restorable when Ready and readyToUse. */

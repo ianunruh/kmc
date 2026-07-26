@@ -14,6 +14,7 @@ const STATUS_COLORS: Record<string, string> = {
   Stopping: "orange",
   Terminating: "orange",
   Stale: "orange",
+  NotReady: "orange",
   Stopped: "gray",
   Error: "red",
   Failed: "red",

@@ -1341,6 +1341,120 @@ export interface UpdateVpcRequest {
   dns?: string[];
 }
 
+// --- Databases (CloudNativePG Cluster) ---
+
+/**
+ * Short status for badges (derived from Ready condition / phase).
+ * Raw CNPG phase stays on `phase` for detail.
+ */
+export type DatabaseStatus =
+  | "Ready"
+  | "Provisioning"
+  | "NotReady"
+  | "Failed"
+  | "Unknown"
+  | string;
+
+/** Create-form size tiers → fixed CPU/memory/storage (see databases/options.ts). */
+export type DatabaseSizePreset = "small" | "medium" | "large";
+
+export interface DatabaseSummary {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  /** Derived short status for list badges. */
+  status: DatabaseStatus;
+  /** Raw CNPG `status.phase` (e.g. "Cluster in healthy state"). */
+  phase: string;
+  instances: number;
+  readyInstances: number;
+  /** Postgres version from image tag or majorVersion (e.g. `17.5`). */
+  postgresVersion?: string;
+  imageName?: string;
+  storageSize?: string;
+  storageClass?: string;
+  currentPrimary?: string;
+  age: string;
+  /** True when stamped with kmc ownership labels. */
+  managedByKmc: boolean;
+}
+
+/**
+ * Connection material from a CNPG-managed Secret (`<cluster>-app` or
+ * `<cluster>-superuser`). Passwords are only loaded on detail (not list).
+ */
+export interface DatabaseRoleCredentials {
+  role: "app" | "superuser";
+  secretName: string;
+  host?: string;
+  /** In-cluster FQDN (`host.namespace.svc`) when constructible. */
+  hostFqdn?: string;
+  port?: string;
+  database?: string;
+  username?: string;
+  password?: string;
+  /** Short-host URI from the secret (`uri` key). */
+  uri?: string;
+  /** FQDN URI from the secret (`fqdn-uri` key). */
+  fqdnUri?: string;
+  /**
+   * Secret missing / unreadable. Credentials fields stay empty so the UI
+   * can still show service DNS.
+   */
+  error?: string;
+}
+
+export interface DatabaseDetail extends DatabaseSummary {
+  uid?: string;
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
+  conditions: VmCondition[];
+  /** CNPG write service name (typically `<name>-rw`). */
+  writeService?: string;
+  /** CNPG read service name (typically `<name>-r`). */
+  readService?: string;
+  /** Convention `<name>-ro` when multi-instance. */
+  readOnlyService?: string;
+  targetPrimary?: string;
+  enableSuperuserAccess?: boolean;
+  /** Bootstrap database name when initdb was used. */
+  databaseName?: string;
+  /** Bootstrap owner role when initdb was used. */
+  owner?: string;
+  cpuRequest?: string;
+  memoryRequest?: string;
+  cpuLimit?: string;
+  memoryLimit?: string;
+  /** Instance pod names from status.instanceNames. */
+  instanceNames?: string[];
+  /** Healthy instance names from status.instancesStatus.healthy. */
+  healthyInstances?: string[];
+  /** Size preset from `kmc.ianunruh.com/size` when present. */
+  sizePreset?: DatabaseSizePreset;
+  /** Application user credentials (`<name>-app` Secret). */
+  appCredentials?: DatabaseRoleCredentials;
+  /**
+   * Superuser credentials when `enableSuperuserAccess` is true
+   * (`<name>-superuser` Secret).
+   */
+  superuserCredentials?: DatabaseRoleCredentials;
+}
+
+export interface CreateDatabaseRequest {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  /** Size tier (resources + default storage). */
+  size: DatabaseSizePreset;
+  /** Desired instances: 1 (dev) or 3 (HA). */
+  instances: number;
+  /** Postgres major version key from the allowlist (e.g. `17`). */
+  postgresVersion: string;
+  storageClass?: string;
+  /** Override storage size from the size preset (e.g. `50Gi`). */
+  storageSize?: string;
+}
+
 // --- Network topology (VPCs / Multus NADs ↔ VMs) ---
 
 export type TopologyNetworkKind =

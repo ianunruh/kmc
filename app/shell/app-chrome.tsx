@@ -28,6 +28,7 @@ import {
   IconArrowsRightLeft,
   IconWorldWww,
   IconCloudComputing,
+  IconStack2,
 } from "@tabler/icons-react";
 import { Form, Link, useLocation } from "react-router";
 import type { ReactNode } from "react";
@@ -76,6 +77,17 @@ const NAV_SECTIONS: NavSection[] = [
         label: "SSH Keys",
         icon: IconKey,
         match: (path: string) => path.startsWith("/ssh-keys"),
+      },
+    ],
+  },
+  {
+    label: "Data",
+    items: [
+      {
+        to: "/databases",
+        label: "Databases",
+        icon: IconStack2,
+        match: (path: string) => path.startsWith("/databases"),
       },
     ],
   },

@@ -1,5 +1,5 @@
 import { ActionIcon, Code, Group, Text, Tooltip } from "@mantine/core";
-import { IconCheck, IconCopy } from "@tabler/icons-react";
+import { IconCheck, IconCopy, IconEye, IconEyeOff } from "@tabler/icons-react";
 import { useState, type ReactNode } from "react";
 
 async function copyText(text: string): Promise<boolean> {
@@ -82,6 +82,49 @@ export function CopyableValue({
         </Text>
       )}
       <CopyButton value={text} size="xs" />
+    </Group>
+  );
+}
+
+/**
+ * Sensitive value (password / URI with password). Hidden by default; copy
+ * always uses the full secret. Reveal toggles on-screen text only.
+ */
+export function RevealableValue({
+  value,
+  mask = "••••••••••••",
+  size = "sm",
+}: {
+  value: string;
+  /** Placeholder when hidden. */
+  mask?: string;
+  size?: "xs" | "sm";
+}) {
+  const [revealed, setRevealed] = useState(false);
+  const text = value.trim();
+  if (!text) {
+    return (
+      <Text size={size} c="dimmed">
+        —
+      </Text>
+    );
+  }
+
+  return (
+    <Group gap={4} wrap="nowrap" style={{ minWidth: 0 }}>
+      <Code style={{ wordBreak: "break-all" }}>{revealed ? text : mask}</Code>
+      <Tooltip label={revealed ? "Hide" : "Reveal"} withArrow>
+        <ActionIcon
+          variant="subtle"
+          color="gray"
+          size="xs"
+          aria-label={revealed ? "Hide value" : "Reveal value"}
+          onClick={() => setRevealed((v) => !v)}
+        >
+          {revealed ? <IconEyeOff size={14} /> : <IconEye size={14} />}
+        </ActionIcon>
+      </Tooltip>
+      <CopyButton value={text} size="xs" label="Copy" />
     </Group>
   );
 }

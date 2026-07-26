@@ -42,6 +42,19 @@ export default [
     ],
   ),
 
+  route("databases", "routes/databases._index.tsx"),
+  route("databases/create", "routes/databases.create.tsx"),
+  route(
+    "databases/:cluster/:namespace/:name",
+    "routes/databases.$cluster.$namespace.$name.tsx",
+    [
+      index("routes/databases.$cluster.$namespace.$name._index.tsx"),
+      route("access", "routes/databases.$cluster.$namespace.$name.access.tsx"),
+      route("events", "routes/databases.$cluster.$namespace.$name.events.tsx"),
+      route("yaml", "routes/databases.$cluster.$namespace.$name.yaml.tsx"),
+    ],
+  ),
+
   route("images", "routes/images._index.tsx"),
   route("images/create", "routes/images.create.tsx"),
   route("images/:cluster/:name/edit", "routes/images.$cluster.$name.edit.tsx"),
