@@ -98,6 +98,9 @@ clusters:
     # Prefer in-cluster URLs when the public hostname is SSO-gated:
     #   http://kube-prometheus-stack-prometheus.monitoring.svc:9090
     prometheusUrl: https://prometheus.example.com
+    # Optional — public S3 API for Object Storage (ObjectBucketClaim) UI
+    # e.g. https://s3.kcloud.zone (homelab), https://s3.kcloud.io (prod)
+    objectStorageEndpoint: https://s3.example.com
     # Optional — scan-derived IPv4 pools for Multus bridge networks
     ipPools:
       - id: public

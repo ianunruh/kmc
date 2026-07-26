@@ -81,6 +81,24 @@ export const CNPG_GROUP = "postgresql.cnpg.io";
 export const CNPG_VERSION = "v1";
 export const CNPG_CLUSTER_PLURAL = "clusters";
 
+/** Value of kmc.ianunruh.com/resource for ObjectBucketClaim (S3 via Ceph/Rook). */
+export const KMC_RESOURCE_OBJECT_BUCKET = "object-bucket";
+
+/** List selector for kmc-managed ObjectBucketClaims. */
+export const KMC_OBJECT_BUCKET_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_OBJECT_BUCKET}`;
+
+/** Object Bucket Claim API (objectbucket.io) — Rook Ceph RGW provisioner. */
+export const OBC_GROUP = "objectbucket.io";
+export const OBC_VERSION = "v1alpha1";
+export const OBC_CLAIM_PLURAL = "objectbucketclaims";
+export const OBC_BUCKET_PLURAL = "objectbuckets";
+
+/**
+ * StorageClass provisioner substring for object-bucket classes
+ * (e.g. `rook-ceph.ceph.rook.io/bucket`).
+ */
+export const OBJECT_BUCKET_PROVISIONER_HINT = "/bucket";
+
 /** Value of kmc.ianunruh.com/resource for self-service VPC NADs. */
 export const KMC_RESOURCE_VPC = "vpc";
 

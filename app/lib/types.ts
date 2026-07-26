@@ -1455,6 +1455,88 @@ export interface CreateDatabaseRequest {
   storageSize?: string;
 }
 
+// --- Object Storage (ObjectBucketClaim / Ceph RGW) ---
+
+/**
+ * Short status for badges (from OBC `status.phase`).
+ * Common values: Bound, Pending, Released, Failed.
+ */
+export type ObjectBucketStatus =
+  | "Bound"
+  | "Pending"
+  | "Released"
+  | "Failed"
+  | "Unknown"
+  | string;
+
+export interface ObjectBucketSummary {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  /** Derived short status for list badges (usually same as phase). */
+  status: ObjectBucketStatus;
+  /** Raw OBC `status.phase`. */
+  phase: string;
+  /**
+   * Effective bucket name when known: status/spec `bucketName`, else the
+   * generate prefix while provisioning.
+   */
+  bucketName?: string;
+  storageClass?: string;
+  /** Bound ObjectBucket name (`obc-<ns>-<claim>`). */
+  objectBucketName?: string;
+  age: string;
+  /** True when stamped with kmc ownership labels. */
+  managedByKmc: boolean;
+}
+
+/**
+ * Connection material from the OBC ConfigMap + Secret (same name as claim).
+ * Secrets only on detail, not list.
+ */
+export interface ObjectBucketCredentials {
+  secretName: string;
+  configMapName: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  bucketHost?: string;
+  bucketPort?: string;
+  bucketName?: string;
+  bucketRegion?: string;
+  bucketSubRegion?: string;
+  /** Constructed endpoint (`http(s)://host:port`). */
+  endpoint?: string;
+  /**
+   * ConfigMap/Secret missing or unreadable. Fields stay empty so the UI can
+   * still show claim metadata.
+   */
+  error?: string;
+}
+
+export interface ObjectBucketDetail extends ObjectBucketSummary {
+  uid?: string;
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
+  /** Exact bucket name from spec when set (not generate). */
+  requestedBucketName?: string;
+  /** generateBucketName prefix from spec when set. */
+  generateBucketName?: string;
+  credentials?: ObjectBucketCredentials;
+}
+
+export interface CreateObjectBucketRequest {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  /** Object-bucket StorageClass (e.g. ceph-object-hdd). */
+  storageClass: string;
+  /**
+   * Exact S3 bucket name. When omitted, the provisioner generates a unique
+   * name from the claim name (`generateBucketName`).
+   */
+  bucketName?: string;
+}
+
 // --- Network topology (VPCs / Multus NADs ↔ VMs) ---
 
 export type TopologyNetworkKind =

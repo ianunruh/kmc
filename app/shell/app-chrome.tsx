@@ -29,6 +29,7 @@ import {
   IconWorldWww,
   IconCloudComputing,
   IconStack2,
+  IconBucket,
 } from "@tabler/icons-react";
 import { Form, Link, useLocation } from "react-router";
 import type { ReactNode } from "react";
@@ -88,6 +89,12 @@ const NAV_SECTIONS: NavSection[] = [
         label: "Databases",
         icon: IconStack2,
         match: (path: string) => path.startsWith("/databases"),
+      },
+      {
+        to: "/object-storage",
+        label: "Object Storage",
+        icon: IconBucket,
+        match: (path: string) => path.startsWith("/object-storage"),
       },
     ],
   },

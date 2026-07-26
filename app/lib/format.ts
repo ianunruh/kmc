@@ -260,6 +260,36 @@ export function databaseCreatePath(
   return withSearch("/databases/create", prefill);
 }
 
+export function objectStoragePath(
+  bucket: Pick<
+    { cluster: string; namespace: string; name: string },
+    "cluster" | "namespace" | "name"
+  >,
+): string {
+  return `/object-storage/${encodeURIComponent(bucket.cluster)}/${encodeURIComponent(bucket.namespace)}/${encodeURIComponent(bucket.name)}`;
+}
+
+export function objectStorageListPath(
+  filters: {
+    q?: string | null;
+    cluster?: string | null;
+    namespace?: string | null;
+    status?: string | null;
+  } = {},
+): string {
+  return withSearch("/object-storage", filters);
+}
+
+export function objectStorageCreatePath(
+  prefill: {
+    cluster?: string | null;
+    namespace?: string | null;
+    name?: string | null;
+  } = {},
+): string {
+  return withSearch("/object-storage/create", prefill);
+}
+
 /** Snapshot is restorable when Ready and readyToUse. */
 export function canRestoreVmSnapshot(
   snap: Pick<{ phase: string; readyToUse: boolean }, "phase" | "readyToUse">,

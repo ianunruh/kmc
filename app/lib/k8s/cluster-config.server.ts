@@ -93,6 +93,11 @@ export type ClusterIdentity = {
   tokenEnv?: string;
   /** Base URL for Prometheus HTTP API (e.g. https://prometheus.example.com). */
   prometheusUrl?: string;
+  /**
+   * Public S3 API base URL for ObjectBucketClaim access
+   * (e.g. https://s3.kcloud.zone). In-cluster RGW DNS still comes from the OBC ConfigMap.
+   */
+  objectStorageEndpoint?: string;
   /** Optional underlay CIDRs for shared router pod NIC + agent. */
   network?: ClusterNetworkConfig;
   /** Optional IPv4 pools for Multus bridge networks. */
@@ -118,6 +123,7 @@ type ClustersFile = {
     tokenFile?: string;
     tokenEnv?: string;
     prometheusUrl?: string;
+    objectStorageEndpoint?: string;
     network?: {
       podCIDR?: string | string[];
       serviceCIDR?: string | string[];
@@ -186,6 +192,11 @@ function loadFromYaml(path: string): {
       tokenFile: raw.tokenFile,
       tokenEnv: raw.tokenEnv,
       prometheusUrl: raw.prometheusUrl?.trim() || undefined,
+      objectStorageEndpoint: normalizeHttpEndpoint(
+        raw.objectStorageEndpoint,
+        raw.id,
+        "objectStorageEndpoint",
+      ),
       network: parseClusterNetwork(raw.network, raw.id),
       ipPools: parseIpPools(raw.ipPools, raw.id),
       vlanPools: parseVlanPools(raw.vlanPools, raw.id),
@@ -409,6 +420,42 @@ export function getClusterPrometheusUrl(id: ClusterId): string | null {
 
 export function hasClusterPrometheus(id: ClusterId): boolean {
   return getClusterPrometheusUrl(id) != null;
+}
+
+/**
+ * Public S3 endpoint for Object Storage UI (from clusters.yaml).
+ * Does not include a trailing slash.
+ */
+export function getClusterObjectStorageEndpoint(
+  id: ClusterId,
+): string | null {
+  const url = getClusterIdentity(id)?.objectStorageEndpoint?.trim();
+  return url || null;
+}
+
+/** Trim + require absolute http(s) URL; strip trailing slash. */
+function normalizeHttpEndpoint(
+  raw: string | undefined,
+  clusterId: string,
+  field: string,
+): string | undefined {
+  const v = raw?.trim();
+  if (!v) return undefined;
+  let url: URL;
+  try {
+    url = new URL(v);
+  } catch {
+    throw new Error(
+      `Cluster "${clusterId}": ${field} "${v}" is not a valid URL`,
+    );
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(
+      `Cluster "${clusterId}": ${field} must be http(s) (got "${v}")`,
+    );
+  }
+  // Drop trailing slash for consistent --endpoint-url usage
+  return v.replace(/\/+$/, "");
 }
 
 function loadRegistry(): {

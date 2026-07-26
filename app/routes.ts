@@ -59,6 +59,19 @@ export default [
     ],
   ),
 
+  route("object-storage", "routes/object-storage._index.tsx"),
+  route("object-storage/create", "routes/object-storage.create.tsx"),
+  route(
+    "object-storage/:cluster/:namespace/:name",
+    "routes/object-storage.$cluster.$namespace.$name.tsx",
+    [
+      index("routes/object-storage.$cluster.$namespace.$name._index.tsx"),
+      route("access", "routes/object-storage.$cluster.$namespace.$name.access.tsx"),
+      route("events", "routes/object-storage.$cluster.$namespace.$name.events.tsx"),
+      route("yaml", "routes/object-storage.$cluster.$namespace.$name.yaml.tsx"),
+    ],
+  ),
+
   route("images", "routes/images._index.tsx"),
   route("images/create", "routes/images.create.tsx"),
   route("images/:cluster/:name/edit", "routes/images.$cluster.$name.edit.tsx"),
