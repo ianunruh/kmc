@@ -39,6 +39,7 @@ interface KubeService {
   };
   spec?: {
     type?: string;
+    externalTrafficPolicy?: string;
     ports?: Array<{
       name?: string;
       port?: number;
@@ -114,6 +115,7 @@ function mapSummary(
     namespace: svc.metadata?.namespace ?? "default",
     name: svc.metadata?.name ?? "unknown",
     serviceType: svc.spec?.type ?? "ClusterIP",
+    externalTrafficPolicy: svc.spec?.externalTrafficPolicy,
     membership,
     vmName: membership.mode === "single-vm" ? membership.vmName : undefined,
     ports: mapPorts(svc.spec?.ports),

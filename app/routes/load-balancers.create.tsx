@@ -279,8 +279,11 @@ export default function CreateLoadBalancerPage({
 
       <Alert color="gray" variant="light" title="How this works">
         Same backend membership as Ingress (single VM, group, or labels), but
-        the Service type is <code>LoadBalancer</code>. The cluster controller
-        assigns the external VIP. Need HTTP host/path routing instead?{" "}
+        the Service type is <code>LoadBalancer</code> with{" "}
+        <code>externalTrafficPolicy: Local</code> (required for MetalLB/BGP
+        return-path correctness on this platform). The guest must listen on the{" "}
+        <strong>pod/masquerade</strong> interface, not only Multus. Need HTTP
+        host/path routing instead?{" "}
         <Text component={Link} to={ingressPrefill} size="sm" c="blue.4" span>
           Create an Ingress
         </Text>

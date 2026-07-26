@@ -68,6 +68,10 @@ export default function LoadBalancerOverviewTab() {
               value={lb.externalAddress ?? "Pending"}
             />
             <DetailField
+              label="Traffic policy"
+              value={lb.externalTrafficPolicy ?? "Cluster"}
+            />
+            <DetailField
               label="Endpoints"
               value={
                 lb.endpointsTotal != null

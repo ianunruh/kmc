@@ -47,6 +47,11 @@ export function buildServiceManifest(input: CreateBackendRequest) {
     },
     spec: {
       type: serviceType,
+      // Local matches common MetalLB/BGP clusters and avoids broken return-path
+      // hairpins seen with Cluster policy (TCP connects, HTTP hangs).
+      ...(serviceType === "LoadBalancer"
+        ? { externalTrafficPolicy: "Local" as const }
+        : {}),
       selector,
       ports: input.ports.map((p, i) => ({
         name: p.name?.trim() || `port-${i}`,

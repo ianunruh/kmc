@@ -796,6 +796,8 @@ export interface BackendSummary {
   namespace: string;
   name: string;
   serviceType: string;
+  /** LoadBalancer only; kmc defaults new LBs to Local. */
+  externalTrafficPolicy?: string;
   membership: BackendMembership | { mode: "unknown" };
   /** Single-vm convenience (undefined for other modes). */
   vmName?: string;
