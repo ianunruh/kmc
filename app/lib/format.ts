@@ -319,6 +319,25 @@ export function ingressesListPath(
   return withSearch("/ingresses", filters);
 }
 
+export function loadBalancerPath(
+  lb: Pick<
+    { cluster: string; namespace: string; name: string },
+    "cluster" | "namespace" | "name"
+  >,
+): string {
+  return `/load-balancers/${encodeURIComponent(lb.cluster)}/${encodeURIComponent(lb.namespace)}/${encodeURIComponent(lb.name)}`;
+}
+
+export function loadBalancersListPath(
+  filters: {
+    q?: string | null;
+    cluster?: string | null;
+    namespace?: string | null;
+  } = {},
+): string {
+  return withSearch("/load-balancers", filters);
+}
+
 export function vpcPath(
   vpc: Pick<
     { cluster: string; namespace: string; name: string },

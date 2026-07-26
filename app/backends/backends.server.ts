@@ -480,6 +480,79 @@ export async function getBackend(
   return mapSummary(cluster, svc, endpoints);
 }
 
+export interface BackendDetail extends BackendSummary {
+  matchedVms: BackendMatchedVm[];
+}
+
+export async function getBackendDetail(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+): Promise<BackendDetail> {
+  const summary = await getBackend(cluster, namespace, name);
+  const matchedVms = await listVmsMatchingSelector(
+    cluster,
+    namespace,
+    summary.selector,
+  ).catch(() => [] as BackendMatchedVm[]);
+  return { ...summary, matchedVms };
+}
+
+/** LoadBalancer-typed kmc backends only. */
+export async function listLoadBalancers(clusterFilter?: ClusterId): Promise<{
+  items: BackendSummary[];
+  clusters: Awaited<ReturnType<typeof listClusters>>;
+}> {
+  const { items, clusters } = await listBackends(clusterFilter);
+  return {
+    items: items.filter((b) => b.serviceType === "LoadBalancer"),
+    clusters,
+  };
+}
+
+export async function createLoadBalancer(
+  input: Omit<CreateBackendRequest, "serviceType">,
+): Promise<BackendSummary> {
+  return createBackend({ ...input, serviceType: "LoadBalancer" });
+}
+
+export async function getLoadBalancer(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+): Promise<BackendDetail> {
+  const detail = await getBackendDetail(cluster, namespace, name);
+  if (detail.serviceType !== "LoadBalancer") {
+    throw new Response("Load balancer not found", { status: 404 });
+  }
+  return detail;
+}
+
+export async function deleteLoadBalancer(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+): Promise<void> {
+  const svc = await readServiceOptional(cluster, namespace, name);
+  if (!svc) return;
+  if ((svc.spec?.type ?? "ClusterIP") !== "LoadBalancer") {
+    throw new Error(
+      `Service "${namespace}/${name}" is not a LoadBalancer backend`,
+    );
+  }
+  await deleteBackend(cluster, namespace, name);
+}
+
+/** LoadBalancer backends that select this VM. */
+export async function listLoadBalancersForVm(
+  cluster: ClusterId,
+  namespace: string,
+  vmName: string,
+): Promise<BackendSummary[]> {
+  const all = await listBackendsForVm(cluster, namespace, vmName);
+  return all.filter((b) => b.serviceType === "LoadBalancer");
+}
+
 export async function getBackendYaml(
   cluster: ClusterId,
   namespace: string,

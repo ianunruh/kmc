@@ -27,6 +27,7 @@ import {
   IconUser,
   IconArrowsRightLeft,
   IconWorldWww,
+  IconCloudComputing,
 } from "@tabler/icons-react";
 import { Form, Link, useLocation } from "react-router";
 import type { ReactNode } from "react";
@@ -110,6 +111,12 @@ const NAV_SECTIONS: NavSection[] = [
         label: "Ingresses",
         icon: IconRoute,
         match: (path: string) => path.startsWith("/ingresses"),
+      },
+      {
+        to: "/load-balancers",
+        label: "Load Balancers",
+        icon: IconCloudComputing,
+        match: (path: string) => path.startsWith("/load-balancers"),
       },
       {
         to: "/topology",

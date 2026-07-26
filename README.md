@@ -207,7 +207,7 @@ For **pod-network** VMs, kmc can create a Kubernetes Ingress that routes to the 
 
 **Delete** removes both the Ingress and the companion Service; the VM is left intact.
 
-**Multi-member backends:** Create Ingress can bind a single VM, a **VM group** (kmc stamps `kmc.ianunruh.com/backend-group` on member pod templates), or a **label selector** on virt-launcher pods. The companion Service is the shared primitive (L4 LoadBalancer will reuse it).
+**Multi-member backends:** Create Ingress or **Load Balancer** can bind a single VM, a **VM group** (kmc stamps `kmc.ianunruh.com/backend-group` on member pod templates), or a **label selector** on virt-launcher pods. Ingress uses ClusterIP + Ingress; Load Balancers use Service `type: LoadBalancer` (MetalLB / cloud LB for the VIP).
 
 ### VPCs (self-service Multus + VLAN)
 

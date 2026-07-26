@@ -63,6 +63,13 @@ export default [
     ],
   ),
 
+  route("load-balancers", "routes/load-balancers._index.tsx"),
+  route("load-balancers/create", "routes/load-balancers.create.tsx"),
+  route(
+    "load-balancers/:cluster/:namespace/:name",
+    "routes/load-balancers.$cluster.$namespace.$name.tsx",
+  ),
+
   route("vpcs", "routes/vpcs._index.tsx"),
   route("vpcs/create", "routes/vpcs.create.tsx"),
   route(

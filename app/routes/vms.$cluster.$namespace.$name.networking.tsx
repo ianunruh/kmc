@@ -10,6 +10,7 @@ import {
 } from "@mantine/core";
 import {
   IconArrowsRightLeft,
+  IconCloudComputing,
   IconPlus,
   IconWorld,
   IconWorldWww,
@@ -32,15 +33,19 @@ import {
   ingressHostUrl,
   ingressPath,
   ingressesListPath,
+  loadBalancerPath,
+  loadBalancersListPath,
   portForwardCreatePath,
   portForwardsListPath,
   vpcPath,
 } from "~/lib/format";
 import type {
+  BackendSummary,
   FloatingIpSummary,
   IngressSummary,
   PortForwardSummary,
 } from "~/lib/types";
+import { listLoadBalancersForVm } from "~/backends/backends.server";
 import { listIngressesForVm } from "~/ingresses/ingresses.server";
 import {
   deletePortForward,
@@ -88,12 +93,20 @@ export async function loader({ params }: Route.LoaderArgs) {
     ingresses = [];
   }
 
+  let loadBalancers: BackendSummary[] = [];
+  try {
+    loadBalancers = await listLoadBalancersForVm(cluster, namespace, name);
+  } catch {
+    loadBalancers = [];
+  }
+
   const vpcPrefill = vm.networks.find((n) => n.vpc)?.vpc;
 
   return {
     floatingIps,
     portForwards,
     ingresses,
+    loadBalancers,
     vpcPrefill: vpcPrefill
       ? {
           cluster,
@@ -155,7 +168,8 @@ export async function action({ request, params }: Route.ActionArgs) {
 
 export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
   const { vm } = useVmDetail();
-  const { floatingIps, portForwards, ingresses, vpcPrefill } = loaderData;
+  const { floatingIps, portForwards, ingresses, loadBalancers, vpcPrefill } =
+    loaderData;
   const fetcher = useFetcher<VmDetailActionResult>();
   const { refreshNow } = useRefresh();
   const [disassociateTarget, setDisassociateTarget] = useState<FloatingIpSummary | null>(
@@ -586,6 +600,95 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
                     <Table.Td>
                       <Text size="sm" c="dimmed">
                         {formatAge(ing.age)}
+                      </Text>
+                    </Table.Td>
+                  </Table.Tr>
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
+        )}
+      </DetailSection>
+
+      <DetailSection
+        title="Load Balancers"
+        actions={
+          <Group gap="xs">
+            <Button
+              component={Link}
+              to={loadBalancersListPath({
+                cluster: vm.cluster,
+                namespace: vm.namespace,
+              })}
+              size="xs"
+              variant="subtle"
+              leftSection={<IconCloudComputing size={14} />}
+            >
+              All load balancers
+            </Button>
+            <Button
+              component={Link}
+              to="/load-balancers/create"
+              size="xs"
+              variant="light"
+              color="grape"
+              leftSection={<IconPlus size={14} />}
+            >
+              Create
+            </Button>
+          </Group>
+        }
+      >
+        <Text size="sm" c="dimmed" mb="sm">
+          L4 Service type LoadBalancer exposing this VM on the pod network.
+        </Text>
+        {loadBalancers.length === 0 ? (
+          <Text size="sm" c="dimmed">
+            No load balancers select this VM.
+          </Text>
+        ) : (
+          <Table.ScrollContainer
+            className="kmc-table-scroll"
+            minWidth={480}
+            type="native"
+          >
+            <Table className="kmc-table" verticalSpacing="xs" withRowBorders>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Name</Table.Th>
+                  <Table.Th>External</Table.Th>
+                  <Table.Th>Ports</Table.Th>
+                  <Table.Th>Age</Table.Th>
+                </Table.Tr>
+              </Table.Thead>
+              <Table.Tbody>
+                {loadBalancers.map((lb) => (
+                  <Table.Tr key={lb.name}>
+                    <Table.Td>
+                      <ResourceLink to={loadBalancerPath(lb)}>
+                        {lb.name}
+                      </ResourceLink>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text size="sm" c={lb.externalAddress ? undefined : "dimmed"}>
+                        {lb.externalAddress ?? "Pending"}
+                      </Text>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text size="sm" c="dimmed">
+                        {lb.ports.length > 0
+                          ? lb.ports
+                              .map(
+                                (p) =>
+                                  `${p.port}→${p.targetPort}/${p.protocol ?? "TCP"}`,
+                              )
+                              .join(", ")
+                          : "—"}
+                      </Text>
+                    </Table.Td>
+                    <Table.Td>
+                      <Text size="sm" c="dimmed">
+                        {formatAge(lb.age)}
                       </Text>
                     </Table.Td>
                   </Table.Tr>
