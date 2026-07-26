@@ -14,6 +14,7 @@ import type {
   PortForwardEligibleVpc,
   PortForwardSummary,
   ReleaseFloatingIpRequest,
+  ReserveFloatingIpRequest,
   UpdateVpcRequest,
   VpcAttachedVm,
   VpcDetail,
@@ -77,6 +78,7 @@ import {
   listPortForwardsForVm as listPortForwardsForVmCore,
   listPortForwardsFromRouterPolicies,
   releaseRouterFloatingIp,
+  reserveRouterFloatingIp,
   summaryFromRouterPolicy,
   syncRouterAgentScript,
 } from "./router-policy.server";
@@ -448,9 +450,10 @@ export async function getVpc(
       : Promise.resolve(null),
   ]);
 
-  // Shared router pointer + floating IPs from router policy
+  // Shared router pointer + floating IPs / port forwards from router policy
   let router: VpcDetail["router"];
   let floatingIps: FloatingIpAssociation[] = [];
+  let portForwards: PortForwardAssociation[] = [];
   const routerNameAnn = nad.metadata?.annotations?.[KMC_ANN_ROUTER]?.trim();
   if (routerNameAnn) {
     try {
@@ -492,6 +495,30 @@ export async function getVpc(
             state: (f.private?.trim() ? "associated" : "held") as
               | "associated"
               | "held",
+          }));
+        portForwards = (rp.doc?.portForwards ?? [])
+          .filter((pf) => {
+            if (pf.vpc === name) return true;
+            if (!pf.vpc && pf.private && summary.cidr) {
+              try {
+                return containsIpv4(parseCidr(summary.cidr), pf.private);
+              } catch {
+                return false;
+              }
+            }
+            return false;
+          })
+          .map((pf) => ({
+            id: pf.id,
+            public: pf.public,
+            publicPort: pf.publicPort,
+            private: pf.private,
+            privatePort: pf.privatePort,
+            protocol: (pf.protocol === "udp" ? "udp" : "tcp") as
+              | "tcp"
+              | "udp",
+            targetVm: pf.targetVm,
+            vpc: pf.vpc ?? name,
           }));
       } else {
         router = {
@@ -537,6 +564,7 @@ export async function getVpc(
         }
       : undefined,
     floatingIps,
+    portForwards,
   };
 }
 
@@ -764,6 +792,42 @@ export async function associateFloatingIp(
     routerName: vpc.router.name,
     vpcCidr: vpc.cidr,
     publicMultusNetwork: publicNet,
+  });
+}
+
+/**
+ * Reserve a public Multus address for this VPC without associating a private target.
+ */
+export async function reserveFloatingIp(
+  input: ReserveFloatingIpRequest,
+): Promise<FloatingIpAssociation> {
+  const vpc = await getVpc(input.cluster, input.namespace, input.vpcName);
+  if (!vpc.cidr?.trim()) {
+    throw new Error("VPC has no private CIDR");
+  }
+  if (!vpc.router?.hasExternal || !vpc.router.name) {
+    throw new Error(
+      "VPC has no router external gateway — enable an external gateway on the shared router first",
+    );
+  }
+  const rp = await getRouterPolicyConfigMap(
+    input.cluster,
+    input.namespace,
+    vpc.router.name,
+  );
+  const publicNet = rp?.doc?.external?.multusNetwork?.trim();
+  if (!publicNet) {
+    throw new Error(
+      `Router ${vpc.router.name} has no external Multus network in policy`,
+    );
+  }
+  return reserveRouterFloatingIp({
+    cluster: input.cluster,
+    namespace: input.namespace,
+    vpcName: input.vpcName,
+    routerName: vpc.router.name,
+    publicMultusNetwork: publicNet,
+    publicIpv4: input.publicIpv4,
   });
 }
 

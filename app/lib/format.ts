@@ -298,6 +298,15 @@ export function ingressPath(
   return `/ingresses/${encodeURIComponent(ing.cluster)}/${encodeURIComponent(ing.namespace)}/${encodeURIComponent(ing.name)}`;
 }
 
+export function ingressEditPath(
+  ing: Pick<
+    { cluster: string; namespace: string; name: string },
+    "cluster" | "namespace" | "name"
+  >,
+): string {
+  return `${ingressPath(ing)}/edit`;
+}
+
 /** Absolute http(s) URL for an Ingress host based on TLS coverage. */
 export function ingressHostUrl(
   host: string,
@@ -319,6 +328,20 @@ export function ingressesListPath(
   return withSearch("/ingresses", filters);
 }
 
+export function ingressCreatePath(
+  prefill: {
+    cluster?: string | null;
+    namespace?: string | null;
+    vmName?: string | null;
+    name?: string | null;
+    host?: string | null;
+    /** Existing backend Service name (expose-existing). */
+    existingService?: string | null;
+  } = {},
+): string {
+  return withSearch("/ingresses/create", prefill);
+}
+
 export function loadBalancerPath(
   lb: Pick<
     { cluster: string; namespace: string; name: string },
@@ -326,6 +349,15 @@ export function loadBalancerPath(
   >,
 ): string {
   return `/load-balancers/${encodeURIComponent(lb.cluster)}/${encodeURIComponent(lb.namespace)}/${encodeURIComponent(lb.name)}`;
+}
+
+export function loadBalancerEditPath(
+  lb: Pick<
+    { cluster: string; namespace: string; name: string },
+    "cluster" | "namespace" | "name"
+  >,
+): string {
+  return `${loadBalancerPath(lb)}/edit`;
 }
 
 export function loadBalancersListPath(
@@ -336,6 +368,30 @@ export function loadBalancersListPath(
   } = {},
 ): string {
   return withSearch("/load-balancers", filters);
+}
+
+export function loadBalancerCreatePath(
+  prefill: {
+    cluster?: string | null;
+    namespace?: string | null;
+    vmName?: string | null;
+    name?: string | null;
+    servicePort?: string | number | null;
+    targetPort?: string | number | null;
+    protocol?: string | null;
+  } = {},
+): string {
+  return withSearch("/load-balancers/create", {
+    ...prefill,
+    servicePort:
+      prefill.servicePort != null && prefill.servicePort !== ""
+        ? String(prefill.servicePort)
+        : null,
+    targetPort:
+      prefill.targetPort != null && prefill.targetPort !== ""
+        ? String(prefill.targetPort)
+        : null,
+  });
 }
 
 export function vpcPath(
@@ -405,6 +461,8 @@ export function floatingIpsListPath(
     cluster?: string | null;
     namespace?: string | null;
     vpc?: string | null;
+    /** associated | held */
+    state?: string | null;
   } = {},
 ): string {
   return withSearch("/floating-ips", filters);
@@ -418,6 +476,8 @@ export function floatingIpCreatePath(
     targetVm?: string | null;
     /** Prefer a held public address when re-associating. */
     publicIpv4?: string | null;
+    /** `associate` (default) or `reserve` (hold without private mapping). */
+    mode?: "associate" | "reserve" | null;
   } = {},
 ): string {
   return withSearch("/floating-ips/create", prefill);

@@ -46,6 +46,8 @@ const KIND_LABELS: Record<TopologyNetworkNode["kind"], string> = {
 
 /** Floating IP (public Multus → private target) edges. */
 const FLOATING_EDGE_COLOR = "#fab005";
+/** Port forward edges (public Multus:port → private). */
+const PORTFORWARD_EDGE_COLOR = "#fd7e14";
 /** Ingress (pod network → VM) edges. */
 const INGRESS_EDGE_COLOR = "#cc5de8";
 /** LoadBalancer VIP edges. */
@@ -296,11 +298,35 @@ export function NetworkGraph({
             w={16}
             h={0}
             style={{
+              borderTop: `2px dashed ${PORTFORWARD_EDGE_COLOR}`,
+            }}
+          />
+          <Text size="xs" c="dimmed">
+            Port forward
+          </Text>
+        </Group>
+        <Group gap={6}>
+          <Box
+            w={16}
+            h={0}
+            style={{
               borderTop: `2px dashed ${INGRESS_EDGE_COLOR}`,
             }}
           />
           <Text size="xs" c="dimmed">
             Ingress
+          </Text>
+        </Group>
+        <Group gap={6}>
+          <Box
+            w={16}
+            h={0}
+            style={{
+              borderTop: `2px dashed ${LOADBALANCER_EDGE_COLOR}`,
+            }}
+          />
+          <Text size="xs" c="dimmed">
+            Load balancer
           </Text>
         </Group>
         <Text size="xs" c="dimmed">
@@ -368,31 +394,36 @@ export function NetworkGraph({
             if (!netPos || !vmPos) return null;
             const net = networkById.get(e.networkId);
             const isFloating = e.role === "floating";
+            const isPortForward = e.role === "portforward";
             const isIngress = e.role === "ingress";
             const isLoadBalancer = e.role === "loadbalancer";
             const fromRightCol =
               net != null && RIGHT_COL_KINDS.has(net.kind);
-            // Fan FIP / Ingress / LB so they don't sit on attachment edges.
+            // Fan FIP / PF / Ingress / LB so they don't sit on attachment edges.
             const curveBias = isFloating
               ? -22
-              : isIngress
-                ? 22
-                : isLoadBalancer
-                  ? 40
-                  : 0;
+              : isPortForward
+                ? -36
+                : isIngress
+                  ? 22
+                  : isLoadBalancer
+                    ? 40
+                    : 0;
             // Left nets → into VM left; right-column nodes leave the VM right edge.
             const d = fromRightCol
               ? edgePath(vmPos, netPos, true, curveBias)
               : edgePath(netPos, vmPos, true, curveBias);
             const stroke = isFloating
               ? FLOATING_EDGE_COLOR
-              : isIngress
-                ? INGRESS_EDGE_COLOR
-                : isLoadBalancer
-                  ? LOADBALANCER_EDGE_COLOR
-                  : net
-                    ? KIND_COLORS[net.kind]
-                    : "#868e96";
+              : isPortForward
+                ? PORTFORWARD_EDGE_COLOR
+                : isIngress
+                  ? INGRESS_EDGE_COLOR
+                  : isLoadBalancer
+                    ? LOADBALANCER_EDGE_COLOR
+                    : net
+                      ? KIND_COLORS[net.kind]
+                      : "#868e96";
             return (
               <path
                 key={e.id}
@@ -401,7 +432,9 @@ export function NetworkGraph({
                 stroke={stroke}
                 strokeWidth={related?.edgeIds.has(e.id) ? 2.25 : 1.5}
                 strokeDasharray={
-                  isFloating || isIngress || isLoadBalancer ? "5 4" : undefined
+                  isFloating || isPortForward || isIngress || isLoadBalancer
+                    ? "5 4"
+                    : undefined
                 }
                 opacity={edgeOpacity(e.id)}
                 style={{ transition: "opacity 120ms ease, stroke-width 120ms ease" }}

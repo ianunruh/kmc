@@ -1,4 +1,12 @@
-import { Alert, Button, Code, Select, Stack, Text, TextInput } from "@mantine/core";
+import {
+  Alert,
+  Button,
+  Code,
+  Select,
+  Stack,
+  Text,
+  TextInput,
+} from "@mantine/core";
 import { useForm } from "@mantine/form";
 import { useEffect, useMemo } from "react";
 import { Link, redirect, useNavigation, useSubmit } from "react-router";
@@ -8,15 +16,20 @@ import { notifyActionError } from "~/lib/action-feedback";
 import { logServerError } from "~/lib/errors";
 import { floatingIpsListPath, vpcPath } from "~/lib/format";
 import { getSearchParam } from "~/lib/search-params";
-import { associateFloatingIp, listFloatingIpEligibleVpcs } from "~/vpcs/vpcs.server";
+import {
+  associateFloatingIp,
+  listFloatingIpEligibleVpcs,
+  reserveFloatingIp,
+} from "~/vpcs/vpcs.server";
 
 export function meta(_args: Route.MetaArgs) {
-  return [{ title: "Associate floating IP · kmc" }];
+  return [{ title: "Floating IP · kmc" }];
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
   const url = new URL(request.url);
   const eligible = await listFloatingIpEligibleVpcs();
+  const modeParam = getSearchParam(url.searchParams, "mode");
   return {
     eligible,
     prefill: {
@@ -25,12 +38,16 @@ export async function loader({ request }: Route.LoaderArgs) {
       vpc: getSearchParam(url.searchParams, "vpc") ?? "",
       targetVm: getSearchParam(url.searchParams, "targetVm") ?? "",
       publicIpv4: getSearchParam(url.searchParams, "publicIpv4") ?? "",
+      mode: (modeParam === "reserve" ? "reserve" : "associate") as
+        | "associate"
+        | "reserve",
     },
   };
 }
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();
+  const mode = String(form.get("mode") ?? "associate").trim();
   const cluster = String(form.get("cluster") ?? "").trim();
   const namespace = String(form.get("namespace") ?? "").trim();
   const vpcName = String(form.get("vpcName") ?? "").trim();
@@ -41,11 +58,23 @@ export async function action({ request }: Route.ActionArgs) {
   if (!cluster || !namespace || !vpcName) {
     return { error: "Cluster, namespace, and VPC are required" };
   }
-  if (!targetVm && !privateIpv4) {
-    return { error: "Select a target VM or enter a private IPv4" };
-  }
 
   try {
+    if (mode === "reserve") {
+      await reserveFloatingIp({
+        cluster,
+        namespace,
+        vpcName,
+        publicIpv4,
+      });
+      return redirect(
+        floatingIpsListPath({ cluster, namespace, vpc: vpcName, state: "held" }),
+      );
+    }
+
+    if (!targetVm && !privateIpv4) {
+      return { error: "Select a target VM or enter a private IPv4" };
+    }
     await associateFloatingIp({
       cluster,
       namespace,
@@ -54,22 +83,29 @@ export async function action({ request }: Route.ActionArgs) {
       privateIpv4,
       publicIpv4,
     });
-    return redirect(floatingIpsListPath({ cluster, namespace, vpc: vpcName }));
+    return redirect(
+      floatingIpsListPath({ cluster, namespace, vpc: vpcName, state: "associated" }),
+    );
   } catch (err) {
     return {
-      error: logServerError("floatingIp.associate", err, {
-        cluster,
-        namespace,
-        vpcName,
-        targetVm,
-        privateIpv4,
-        publicIpv4,
-      }),
+      error: logServerError(
+        mode === "reserve" ? "floatingIp.reserve" : "floatingIp.associate",
+        err,
+        {
+          cluster,
+          namespace,
+          vpcName,
+          targetVm,
+          privateIpv4,
+          publicIpv4,
+          mode,
+        },
+      ),
     };
   }
 }
 
-export default function AssociateFloatingIpPage({
+export default function FloatingIpCreatePage({
   loaderData,
   actionData,
 }: Route.ComponentProps) {
@@ -80,9 +116,12 @@ export default function AssociateFloatingIpPage({
 
   useEffect(() => {
     if (actionData && "error" in actionData && actionData.error) {
-      notifyActionError("Associate failed", actionData.error);
+      notifyActionError(
+        prefill.mode === "reserve" ? "Reserve failed" : "Associate failed",
+        actionData.error,
+      );
     }
-  }, [actionData]);
+  }, [actionData, prefill.mode]);
 
   const form = useForm({
     initialValues: {
@@ -95,17 +134,24 @@ export default function AssociateFloatingIpPage({
       privateIpv4: "",
       publicIpv4: prefill.publicIpv4,
       targetMode: (prefill.targetVm ? "vm" : "vm") as "vm" | "ip",
+      mode: prefill.mode as "associate" | "reserve",
     },
     validate: {
       cluster: (v) => (!v ? "Required" : null),
       vpcKey: (v) => (!v ? "Required" : null),
-      targetVm: (v, values) => (values.targetMode === "vm" && !v ? "Select a VM" : null),
+      targetVm: (v, values) =>
+        values.mode === "associate" && values.targetMode === "vm" && !v
+          ? "Select a VM"
+          : null,
       privateIpv4: (v, values) =>
-        values.targetMode === "ip" && !v.trim() ? "Private IPv4 is required" : null,
+        values.mode === "associate" &&
+        values.targetMode === "ip" &&
+        !v.trim()
+          ? "Private IPv4 is required"
+          : null,
     },
   });
 
-  // Sync cluster from vpcKey
   const selected = useMemo(() => {
     const key = form.values.vpcKey;
     if (!key) return null;
@@ -144,7 +190,6 @@ export default function AssociateFloatingIpPage({
     }));
   }, [selected]);
 
-  // Default first eligible when empty
   useEffect(() => {
     if (!form.values.cluster && clusterOptions[0]) {
       form.setFieldValue("cluster", clusterOptions[0]);
@@ -160,13 +205,16 @@ export default function AssociateFloatingIpPage({
   const onSubmit = form.onSubmit((values) => {
     if (!selected) return;
     const fd = new FormData();
+    fd.set("mode", values.mode);
     fd.set("cluster", selected.cluster);
     fd.set("namespace", selected.namespace);
     fd.set("vpcName", selected.name);
-    if (values.targetMode === "vm") {
-      fd.set("targetVm", values.targetVm);
-    } else {
-      fd.set("privateIpv4", values.privateIpv4.trim());
+    if (values.mode === "associate") {
+      if (values.targetMode === "vm") {
+        fd.set("targetVm", values.targetVm);
+      } else {
+        fd.set("privateIpv4", values.privateIpv4.trim());
+      }
     }
     if (values.publicIpv4.trim()) {
       fd.set("publicIpv4", values.publicIpv4.trim());
@@ -175,16 +223,25 @@ export default function AssociateFloatingIpPage({
   });
 
   const blocked = eligible.length === 0;
+  const isReserve = form.values.mode === "reserve";
 
   return (
     <Stack gap="md" pb={80}>
       <PageHeader
-        title="Associate floating IP"
-        description="Map a public Multus address through a router external gateway to a private VM (1:1 DNAT/SNAT)."
+        title={isReserve ? "Reserve floating IP" : "Associate floating IP"}
+        description={
+          isReserve
+            ? "Hold a public Multus address for a VPC without mapping a private target. Associate later when ready."
+            : "Map a public Multus address through a router external gateway to a private VM (1:1 DNAT/SNAT)."
+        }
       />
 
       {actionData && "error" in actionData && actionData.error && (
-        <Alert color="red" title="Associate failed" variant="light">
+        <Alert
+          color="red"
+          title={isReserve ? "Reserve failed" : "Associate failed"}
+          variant="light"
+        >
           {actionData.error}
         </Alert>
       )}
@@ -199,6 +256,30 @@ export default function AssociateFloatingIpPage({
 
       <form onSubmit={onSubmit}>
         <Stack gap="md">
+          <FormSection title="Action">
+            <Select
+              label="Mode"
+              data={[
+                {
+                  value: "associate",
+                  label: "Associate — map public → private now",
+                },
+                {
+                  value: "reserve",
+                  label: "Reserve — hold public address only",
+                },
+              ]}
+              disabled={blocked}
+              value={form.values.mode}
+              onChange={(v) =>
+                form.setFieldValue(
+                  "mode",
+                  v === "reserve" ? "reserve" : "associate",
+                )
+              }
+            />
+          </FormSection>
+
           <FormSection title="VPC">
             <Select
               label="Cluster"
@@ -236,43 +317,53 @@ export default function AssociateFloatingIpPage({
             )}
           </FormSection>
 
-          <FormSection title="Target">
-            <Select
-              label="Target mode"
-              data={[
-                { value: "vm", label: "VM (from IPAM)" },
-                { value: "ip", label: "Private IPv4" },
-              ]}
-              disabled={blocked}
-              {...form.getInputProps("targetMode")}
-            />
-            {form.values.targetMode === "vm" ? (
+          {!isReserve && (
+            <FormSection title="Target">
               <Select
-                label="Target VM"
-                description="Private address is taken from kmc IPAM for this VPC attachment."
-                data={vmOptions}
-                searchable
-                required
-                disabled={blocked || !selected}
-                {...form.getInputProps("targetVm")}
-              />
-            ) : (
-              <TextInput
-                label="Private IPv4"
-                description="Must be inside the VPC CIDR."
-                placeholder="10.0.0.50"
-                required
+                label="Target mode"
+                data={[
+                  { value: "vm", label: "VM (from IPAM)" },
+                  { value: "ip", label: "Private IPv4" },
+                ]}
                 disabled={blocked}
-                {...form.getInputProps("privateIpv4")}
+                {...form.getInputProps("targetMode")}
               />
-            )}
-          </FormSection>
+              {form.values.targetMode === "vm" ? (
+                <Select
+                  label="Target VM"
+                  description="Private address is taken from kmc IPAM for this VPC attachment."
+                  data={vmOptions}
+                  searchable
+                  required
+                  disabled={blocked || !selected}
+                  {...form.getInputProps("targetVm")}
+                />
+              ) : (
+                <TextInput
+                  label="Private IPv4"
+                  description="Must be inside the VPC CIDR."
+                  placeholder="10.0.0.50"
+                  required
+                  disabled={blocked}
+                  {...form.getInputProps("privateIpv4")}
+                />
+              )}
+            </FormSection>
+          )}
 
           <FormSection title="Public address">
-            {(selected?.heldPublicIps.length ?? 0) > 0 ? (
+            {isReserve ? (
+              <TextInput
+                label="Public IPv4 (optional)"
+                description="Leave empty to allocate the next free address from the router’s public Multus pool. The address is held for this VPC until associated or released."
+                placeholder="auto"
+                disabled={blocked}
+                {...form.getInputProps("publicIpv4")}
+              />
+            ) : (selected?.heldPublicIps.length ?? 0) > 0 ? (
               <Select
                 label="Public IPv4"
-                description="Clear to allocate a new free address. Held entries were disassociated but not released."
+                description="Pick a held address or clear to allocate a new free address."
                 placeholder="Allocate new from pool"
                 data={publicOptions}
                 searchable
@@ -302,7 +393,7 @@ export default function AssociateFloatingIpPage({
               Cancel
             </Button>
             <Button type="submit" color="teal" loading={submitting} disabled={blocked}>
-              Associate
+              {isReserve ? "Reserve" : "Associate"}
             </Button>
           </FormActions>
         </Stack>

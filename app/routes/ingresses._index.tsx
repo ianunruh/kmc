@@ -1,8 +1,10 @@
 import {
   ActionIcon,
   Alert,
+  Anchor,
   Button,
   Checkbox,
+  Group,
   Menu,
   Select,
   Stack,
@@ -40,10 +42,13 @@ import {
 import { actionFailure } from "~/lib/errors";
 import {
   formatAge,
+  ingressEditPath,
+  ingressHostUrl,
   ingressPath,
   ingressesListPath,
   vmPath,
 } from "~/lib/format";
+import { CopyButton } from "~/ui";
 import { clusterFromRequest } from "~/lib/search-params";
 import { matchesQuery, useListFilters } from "~/lib/use-list-filters";
 import { deleteIngress, listIngresses } from "~/ingresses/ingresses.server";
@@ -262,7 +267,7 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
               "Namespace",
               "Hosts",
               "Backend",
-              "Class",
+              "Endpoints",
               "Age",
               "",
             ]}
@@ -304,9 +309,31 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
                     </ResourceLink>
                   </Table.Td>
                   <Table.Td>
-                    <Text size="sm">
-                      {ing.hosts.length > 0 ? ing.hosts.join(", ") : "—"}
-                    </Text>
+                    {ing.hosts.length === 0 ? (
+                      <Text size="sm" c="dimmed">
+                        —
+                      </Text>
+                    ) : (
+                      <Group gap="xs" wrap="wrap">
+                        {ing.hosts.map((host) => (
+                          <Group key={host} gap={2} wrap="nowrap">
+                            <Anchor
+                              href={ingressHostUrl(host, ing.tlsHosts)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              size="sm"
+                            >
+                              {host}
+                            </Anchor>
+                            <CopyButton
+                              value={ingressHostUrl(host, ing.tlsHosts)}
+                              label="Copy URL"
+                              size="xs"
+                            />
+                          </Group>
+                        ))}
+                      </Group>
+                    )}
                   </Table.Td>
                   <Table.Td>
                     {ing.membershipMode === "group" ? (
@@ -335,8 +362,18 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
                     )}
                   </Table.Td>
                   <Table.Td>
-                    <Text size="sm" c="dimmed">
-                      {ing.className ?? "—"}
+                    <Text
+                      size="sm"
+                      c={
+                        ing.endpointsTotal != null &&
+                        (ing.endpointsReady ?? 0) === 0
+                          ? "orange"
+                          : "dimmed"
+                      }
+                    >
+                      {ing.endpointsTotal != null
+                        ? `${ing.endpointsReady ?? 0}/${ing.endpointsTotal}`
+                        : "—"}
                     </Text>
                   </Table.Td>
                   <Table.Td>
@@ -360,6 +397,9 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
                       <Menu.Dropdown>
                         <Menu.Item component={Link} to={ingressPath(ing)}>
                           Open
+                        </Menu.Item>
+                        <Menu.Item component={Link} to={ingressEditPath(ing)}>
+                          Edit
                         </Menu.Item>
                         <Menu.Item
                           color="red"

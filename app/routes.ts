@@ -54,6 +54,10 @@ export default [
   route("ingresses", "routes/ingresses._index.tsx"),
   route("ingresses/create", "routes/ingresses.create.tsx"),
   route(
+    "ingresses/:cluster/:namespace/:name/edit",
+    "routes/ingresses.$cluster.$namespace.$name.edit.tsx",
+  ),
+  route(
     "ingresses/:cluster/:namespace/:name",
     "routes/ingresses.$cluster.$namespace.$name.tsx",
     [
@@ -65,6 +69,10 @@ export default [
 
   route("load-balancers", "routes/load-balancers._index.tsx"),
   route("load-balancers/create", "routes/load-balancers.create.tsx"),
+  route(
+    "load-balancers/:cluster/:namespace/:name/edit",
+    "routes/load-balancers.$cluster.$namespace.$name.edit.tsx",
+  ),
   route(
     "load-balancers/:cluster/:namespace/:name",
     "routes/load-balancers.$cluster.$namespace.$name.tsx",

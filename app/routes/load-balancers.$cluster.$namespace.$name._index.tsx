@@ -1,6 +1,7 @@
 import { Badge, Code, SimpleGrid, Stack, Text } from "@mantine/core";
 import { useRouteLoaderData } from "react-router";
 import {
+  CopyableValue,
   DetailField,
   DetailSection,
   ResourceLink,
@@ -65,7 +66,13 @@ export default function LoadBalancerOverviewTab() {
             />
             <DetailField
               label="External address"
-              value={lb.externalAddress ?? "Pending"}
+              value={
+                lb.externalAddress ? (
+                  <CopyableValue value={lb.externalAddress} />
+                ) : (
+                  "Pending"
+                )
+              }
             />
             <DetailField
               label="Traffic policy"

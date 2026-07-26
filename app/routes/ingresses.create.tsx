@@ -1,6 +1,7 @@
 import {
   Alert,
   Button,
+  Checkbox,
   NumberInput,
   Select,
   Stack,
@@ -14,9 +15,17 @@ import type { Route } from "./+types/ingresses.create";
 import { notifyActionError } from "~/lib/action-feedback";
 import { FormActions, FormSection, PageHeader } from "~/ui";
 import { logServerError } from "~/lib/errors";
-import { ingressPath, validateDns1123Label } from "~/lib/format";
+import {
+  ingressPath,
+  loadBalancerCreatePath,
+  validateDns1123Label,
+} from "~/lib/format";
 import { createIngress } from "~/ingresses/ingresses.server";
-import { BackendMembershipFields } from "~/backends/membership-fields";
+import { listBackends } from "~/backends/backends.server";
+import {
+  BackendMembershipFields,
+  multusWarningVms,
+} from "~/backends/membership-fields";
 import {
   groupMembership,
   labelsMembership,
@@ -27,6 +36,7 @@ import { getSearchParam } from "~/lib/search-params";
 import { listClusters } from "~/vms/vms.server";
 import type {
   BackendMembershipMode,
+  BackendSummary,
   ClusterCatalog,
   CreateIngressRequest,
   IngressPathType,
@@ -47,14 +57,25 @@ export function meta(_args: Route.MetaArgs) {
 
 export async function loader({ request }: Route.LoaderArgs) {
   const url = new URL(request.url);
+  const cluster = getSearchParam(url.searchParams, "cluster") ?? "";
+  let existingBackends: BackendSummary[] = [];
+  try {
+    const { items } = await listBackends(cluster || undefined);
+    existingBackends = items;
+  } catch {
+    existingBackends = [];
+  }
+
   return {
     clusters: await listClusters(),
+    existingBackends,
     prefill: {
-      cluster: getSearchParam(url.searchParams, "cluster") ?? "",
+      cluster,
       namespace: getSearchParam(url.searchParams, "namespace") ?? "",
       vmName: getSearchParam(url.searchParams, "vmName") ?? "",
       host: getSearchParam(url.searchParams, "host") ?? "",
       name: getSearchParam(url.searchParams, "name") ?? "",
+      existingService: getSearchParam(url.searchParams, "existingService") ?? "",
     },
   };
 }
@@ -78,26 +99,33 @@ export async function action({ request }: Route.ActionArgs) {
   const targetPortRaw = String(form.get("targetPort") ?? "80").trim();
   const ingressClassName =
     String(form.get("ingressClassName") ?? "").trim() || undefined;
+  const existingServiceName =
+    String(form.get("existingServiceName") ?? "").trim() || undefined;
+  const tlsSecretName =
+    String(form.get("tlsSecretName") ?? "").trim() || undefined;
+  const useExisting = form.get("useExistingService") === "true";
 
   const servicePort = Number(servicePortRaw);
   const targetPort = Number(targetPortRaw);
 
   try {
     let membership;
-    if (membershipMode === "single-vm") {
-      if (!vmName) throw new Error("target VM is required");
-      membership = singleVmMembership(vmName);
-    } else if (membershipMode === "group") {
-      const vmNames = vmNamesRaw
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
-      if (vmNames.length === 0) throw new Error("select at least one VM");
-      membership = groupMembership(name, vmNames);
-    } else if (membershipMode === "labels") {
-      membership = labelsMembership(parseMatchLabelsText(matchLabelsText));
-    } else {
-      throw new Error(`Unsupported membership mode: ${membershipMode}`);
+    if (!useExisting || !existingServiceName) {
+      if (membershipMode === "single-vm") {
+        if (!vmName) throw new Error("target VM is required");
+        membership = singleVmMembership(vmName);
+      } else if (membershipMode === "group") {
+        const vmNames = vmNamesRaw
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        if (vmNames.length === 0) throw new Error("select at least one VM");
+        membership = groupMembership(name, vmNames);
+      } else if (membershipMode === "labels") {
+        membership = labelsMembership(parseMatchLabelsText(matchLabelsText));
+      } else {
+        throw new Error(`Unsupported membership mode: ${membershipMode}`);
+      }
     }
 
     const payload: CreateIngressRequest = {
@@ -111,6 +139,8 @@ export async function action({ request }: Route.ActionArgs) {
       servicePort: Number.isFinite(servicePort) ? servicePort : 80,
       targetPort: Number.isFinite(targetPort) ? targetPort : 80,
       ingressClassName,
+      existingServiceName: useExisting ? existingServiceName : undefined,
+      tlsSecretName,
     };
 
     await createIngress(payload);
@@ -132,7 +162,7 @@ export default function CreateIngressPage({
   loaderData,
   actionData,
 }: Route.ComponentProps) {
-  const { clusters, prefill } = loaderData;
+  const { clusters, prefill, existingBackends } = loaderData;
   const navigation = useNavigation();
   const submit = useSubmit();
   const catalogFetcher = useFetcher<ClusterCatalog>();
@@ -154,19 +184,29 @@ export default function CreateIngressPage({
       servicePort: 80,
       targetPort: 80,
       ingressClassName: "",
+      useExistingService: Boolean(prefill.existingService),
+      existingServiceName: prefill.existingService,
+      tlsSecretName: "",
     },
     validate: {
       cluster: (v) => (!v ? "Required" : null),
       namespace: (v) => (!v ? "Required" : null),
       name: validateDns1123Label,
       vmName: (v, values) =>
-        values.membershipMode === "single-vm" && !v ? "Required" : null,
+        !values.useExistingService &&
+        values.membershipMode === "single-vm" &&
+        !v
+          ? "Required"
+          : null,
       vmNames: (v, values) =>
-        values.membershipMode === "group" && (!v || v.length === 0)
+        !values.useExistingService &&
+        values.membershipMode === "group" &&
+        (!v || v.length === 0)
           ? "Select at least one VM"
           : null,
       matchLabelsText: (v, values) => {
-        if (values.membershipMode !== "labels") return null;
+        if (values.useExistingService || values.membershipMode !== "labels")
+          return null;
         if (!v?.trim()) return "Required";
         try {
           parseMatchLabelsText(v);
@@ -175,6 +215,8 @@ export default function CreateIngressPage({
           return err instanceof Error ? err.message : "Invalid labels";
         }
       },
+      existingServiceName: (v, values) =>
+        values.useExistingService && !v?.trim() ? "Required" : null,
       host: (v) => {
         if (!v?.trim()) return "Required";
         if (/\s/.test(v)) return "Host must not contain spaces";
@@ -220,6 +262,7 @@ export default function CreateIngressPage({
   );
 
   const onSubmit = form.onSubmit((values) => {
+    if (multusBlocked) return;
     submit(
       {
         cluster: values.cluster,
@@ -235,25 +278,51 @@ export default function CreateIngressPage({
         servicePort: String(values.servicePort),
         targetPort: String(values.targetPort),
         ingressClassName: values.ingressClassName,
+        useExistingService: values.useExistingService ? "true" : "false",
+        existingServiceName: values.existingServiceName,
+        tlsSecretName: values.tlsSecretName,
       },
       { method: "post" },
     );
   });
 
-  const lbPrefill = useMemo(() => {
-    const p = new URLSearchParams();
-    if (form.values.cluster) p.set("cluster", form.values.cluster);
-    if (form.values.namespace) p.set("namespace", form.values.namespace);
-    if (form.values.vmName) p.set("vmName", form.values.vmName);
-    if (form.values.name) p.set("name", form.values.name);
-    const q = p.toString();
-    return q ? `/load-balancers/create?${q}` : "/load-balancers/create";
-  }, [
-    form.values.cluster,
-    form.values.namespace,
-    form.values.vmName,
-    form.values.name,
-  ]);
+  const lbPrefill = useMemo(
+    () =>
+      loadBalancerCreatePath({
+        cluster: form.values.cluster || null,
+        namespace: form.values.namespace || null,
+        vmName: form.values.vmName || null,
+        name: form.values.name || null,
+      }),
+    [
+      form.values.cluster,
+      form.values.namespace,
+      form.values.vmName,
+      form.values.name,
+    ],
+  );
+
+  const multusBlocked =
+    !form.values.useExistingService &&
+    multusWarningVms(
+      form.values.membershipMode,
+      vms,
+      form.values.vmName,
+      form.values.vmNames,
+    ).length > 0;
+
+  const backendOptions = useMemo(() => {
+    return existingBackends
+      .filter(
+        (b) =>
+          (!form.values.cluster || b.cluster === form.values.cluster) &&
+          (!form.values.namespace || b.namespace === form.values.namespace),
+      )
+      .map((b) => ({
+        value: b.name,
+        label: `${b.name} · ${b.serviceType}${b.externalAddress ? ` · ${b.externalAddress}` : ""}`,
+      }));
+  }, [existingBackends, form.values.cluster, form.values.namespace]);
 
   return (
     <Stack gap="md" pb={80}>
@@ -323,27 +392,65 @@ export default function CreateIngressPage({
             />
           </FormSection>
 
-          <FormSection title="Backend membership">
-            <BackendMembershipFields
-              membershipMode={form.values.membershipMode}
-              onMembershipModeChange={(mode) =>
-                form.setFieldValue("membershipMode", mode)
+          <FormSection title="Backend">
+            <Checkbox
+              label="Use existing Service (expose-existing)"
+              description="Point this Ingress at a kmc Load Balancer or backend Service instead of creating a companion ClusterIP"
+              checked={form.values.useExistingService}
+              onChange={(e) =>
+                form.setFieldValue("useExistingService", e.currentTarget.checked)
               }
-              namespace={form.values.namespace}
-              vmName={form.values.vmName}
-              onVmNameChange={(name) => form.setFieldValue("vmName", name)}
-              vmNameError={form.errors.vmName}
-              vmNames={form.values.vmNames}
-              onVmNamesChange={(names) => form.setFieldValue("vmNames", names)}
-              vmNamesError={form.errors.vmNames}
-              matchLabelsText={form.values.matchLabelsText}
-              onMatchLabelsTextChange={(text) =>
-                form.setFieldValue("matchLabelsText", text)
-              }
-              matchLabelsError={form.errors.matchLabelsText}
-              vmOptions={vms}
-              vmsLoading={vmsFetcher.state !== "idle"}
             />
+            {form.values.useExistingService ? (
+              <Select
+                label="Existing Service"
+                placeholder={
+                  form.values.namespace
+                    ? "Select backend Service"
+                    : "Select namespace first"
+                }
+                data={backendOptions}
+                searchable
+                required
+                disabled={!form.values.namespace}
+                value={form.values.existingServiceName || null}
+                error={form.errors.existingServiceName}
+                onChange={(v) => {
+                  form.setFieldValue("existingServiceName", v ?? "");
+                  const match = existingBackends.find(
+                    (b) =>
+                      b.name === v &&
+                      b.namespace === form.values.namespace &&
+                      b.cluster === form.values.cluster,
+                  );
+                  if (match?.ports[0]) {
+                    form.setFieldValue("servicePort", match.ports[0].port);
+                  }
+                }}
+                nothingFoundMessage="No kmc backends in this namespace"
+              />
+            ) : (
+              <BackendMembershipFields
+                membershipMode={form.values.membershipMode}
+                onMembershipModeChange={(mode) =>
+                  form.setFieldValue("membershipMode", mode)
+                }
+                namespace={form.values.namespace}
+                vmName={form.values.vmName}
+                onVmNameChange={(name) => form.setFieldValue("vmName", name)}
+                vmNameError={form.errors.vmName}
+                vmNames={form.values.vmNames}
+                onVmNamesChange={(names) => form.setFieldValue("vmNames", names)}
+                vmNamesError={form.errors.vmNames}
+                matchLabelsText={form.values.matchLabelsText}
+                onMatchLabelsTextChange={(text) =>
+                  form.setFieldValue("matchLabelsText", text)
+                }
+                matchLabelsError={form.errors.matchLabelsText}
+                vmOptions={vms}
+                vmsLoading={vmsFetcher.state !== "idle"}
+              />
+            )}
           </FormSection>
 
           <FormSection title="Routing">
@@ -372,25 +479,37 @@ export default function CreateIngressPage({
             />
             <NumberInput
               label="Service port"
-              description="Port exposed by the ClusterIP Service"
+              description={
+                form.values.useExistingService
+                  ? "Port on the existing Service"
+                  : "Port exposed by the ClusterIP Service"
+              }
               min={1}
               max={65535}
               required
               {...form.getInputProps("servicePort")}
             />
-            <NumberInput
-              label="Target port"
-              description="Port on the virt-launcher pod / guest"
-              min={1}
-              max={65535}
-              required
-              {...form.getInputProps("targetPort")}
-            />
+            {!form.values.useExistingService && (
+              <NumberInput
+                label="Target port"
+                description="Port on the virt-launcher pod / guest"
+                min={1}
+                max={65535}
+                required
+                {...form.getInputProps("targetPort")}
+              />
+            )}
             <TextInput
               label="Ingress class"
               description="Optional ingressClassName (cluster default if empty)"
               placeholder="nginx"
               {...form.getInputProps("ingressClassName")}
+            />
+            <TextInput
+              label="TLS secret"
+              description="Optional Kubernetes TLS secret name in this namespace (enables https for the host)"
+              placeholder="my-app-tls"
+              {...form.getInputProps("tlsSecretName")}
             />
           </FormSection>
 
@@ -398,7 +517,7 @@ export default function CreateIngressPage({
             <Button component={Link} to="/ingresses" variant="default">
               Cancel
             </Button>
-            <Button type="submit" loading={submitting}>
+            <Button type="submit" loading={submitting} disabled={multusBlocked}>
               Create Ingress
             </Button>
           </FormActions>

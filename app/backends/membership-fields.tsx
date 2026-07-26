@@ -151,12 +151,14 @@ export function BackendMembershipFields({
       )}
 
       {multus.length > 0 && (
-        <Alert color="yellow" variant="light" title="Multus network">
+        <Alert color="orange" variant="light" title="Multus-only guest(s)">
           {multus.length === 1
-            ? `${multus[0].name} uses Multus, not the pod network.`
-            : `${multus.length} selected VMs use Multus.`}{" "}
-          The Service selects virt-launcher pod IPs — Multus guest addresses are
-          not used as backends.
+            ? `${multus[0].name} has no pod/masquerade NIC.`
+            : `${multus.length} selected VMs have no pod/masquerade NIC.`}{" "}
+          Ingress and Load Balancer select virt-launcher pod IPs only — traffic
+          will not reach Multus guest addresses. Dual-home the VM (include pod
+          network) before creating, or use Floating IP / Port Forward on the VPC
+          plane.
         </Alert>
       )}
     </>

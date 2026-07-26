@@ -24,6 +24,7 @@ import {
   BulkActionBar,
   ConfirmActionModal,
   ConsolePaper,
+  CopyableValue,
   FilterBar,
   PageHeader,
   ResourceLink,
@@ -399,9 +400,10 @@ export default function PortForwardsPage({ loaderData }: Route.ComponentProps) {
                     />
                   </Table.Td>
                   <Table.Td>
-                    <Code>
-                      {f.public}:{f.publicPort}
-                    </Code>
+                    <CopyableValue
+                      value={`${f.public}:${f.publicPort}`}
+                      display={`${f.public}:${f.publicPort}`}
+                    />
                   </Table.Td>
                   <Table.Td>
                     <Badge size="sm" variant="light" color="blue">
@@ -409,9 +411,10 @@ export default function PortForwardsPage({ loaderData }: Route.ComponentProps) {
                     </Badge>
                   </Table.Td>
                   <Table.Td>
-                    <Code>
-                      {f.private}:{f.privatePort}
-                    </Code>
+                    <CopyableValue
+                      value={`${f.private}:${f.privatePort}`}
+                      display={`${f.private}:${f.privatePort}`}
+                    />
                   </Table.Td>
                   <Table.Td>
                     {f.targetVm ? (

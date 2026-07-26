@@ -8,7 +8,7 @@ import {
   Stack,
   Title,
 } from "@mantine/core";
-import { IconArrowLeft, IconTrash } from "@tabler/icons-react";
+import { IconArrowLeft, IconPencil, IconTrash } from "@tabler/icons-react";
 import { useState } from "react";
 import { Link, Outlet, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/ingresses.$cluster.$namespace.$name";
@@ -19,7 +19,12 @@ import {
 } from "~/ui";
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
-import { detailTabPath, ingressPath, ingressesListPath } from "~/lib/format";
+import {
+  detailTabPath,
+  ingressEditPath,
+  ingressPath,
+  ingressesListPath,
+} from "~/lib/format";
 import { deleteIngress, getIngress } from "~/ingresses/ingresses.server";
 import { membershipModeLabel } from "~/backends/membership";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
@@ -118,15 +123,25 @@ export default function IngressDetailLayout({ loaderData }: Route.ComponentProps
             ]}
           />
         </div>
-        <Button
-          color="red"
-          variant="light"
-          leftSection={<IconTrash size={16} />}
-          disabled={busy}
-          onClick={() => setDeleteOpen(true)}
-        >
-          Delete
-        </Button>
+        <Group gap="xs">
+          <Button
+            component={Link}
+            to={ingressEditPath(ing)}
+            variant="light"
+            leftSection={<IconPencil size={16} />}
+          >
+            Edit
+          </Button>
+          <Button
+            color="red"
+            variant="light"
+            leftSection={<IconTrash size={16} />}
+            disabled={busy}
+            onClick={() => setDeleteOpen(true)}
+          >
+            Delete
+          </Button>
+        </Group>
       </Group>
 
       {ing.vm && !ing.vm.exists && (

@@ -10,6 +10,7 @@ import {
   Text,
 } from "@mantine/core";
 import {
+  IconArrowsRightLeft,
   IconLink,
   IconPlus,
   IconRouter,
@@ -32,6 +33,8 @@ import {
   floatingIpsListPath,
   formatAge,
   formatDateTime,
+  portForwardCreatePath,
+  portForwardsListPath,
   routerPath,
   vmPath,
   vpcPath,
@@ -41,7 +44,10 @@ import {
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { useRefresh } from "~/lib/refresh";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
-import type { FloatingIpAssociation } from "~/lib/types";
+import type {
+  FloatingIpAssociation,
+  PortForwardAssociation,
+} from "~/lib/types";
 
 const LAYOUT_ID = "routes/vpcs.$cluster.$namespace.$name";
 
@@ -61,6 +67,8 @@ export default function VpcOverviewTab() {
   const [releaseTarget, setReleaseTarget] = useState<FloatingIpAssociation | null>(
     null,
   );
+  const [deletePfTarget, setDeletePfTarget] =
+    useState<PortForwardAssociation | null>(null);
   const [attachRouterName, setAttachRouterName] = useState(
     attachableRouters[0]?.name ?? "",
   );
@@ -72,9 +80,11 @@ export default function VpcOverviewTab() {
           ? "Disassociate failed"
           : data.intent === "release"
             ? "Release failed"
-            : data.intent === "attach-router"
-              ? "Attach router failed"
-              : "Delete failed";
+            : data.intent === "delete-port-forward"
+              ? "Delete port forward failed"
+              : data.intent === "attach-router"
+                ? "Attach router failed"
+                : "Delete failed";
       notifyActionError(title, data.error);
     } else if (data.ok) {
       if (data.intent === "disassociate") {
@@ -88,6 +98,9 @@ export default function VpcOverviewTab() {
           "Done",
           "Floating IP released — public address returned to the pool",
         );
+        refreshNow();
+      } else if (data.intent === "delete-port-forward") {
+        notifyActionSuccess("Done", "Port forward deleted");
         refreshNow();
       } else if (data.intent === "attach-router") {
         notifyActionSuccess(
@@ -313,20 +326,37 @@ export default function VpcOverviewTab() {
               All floating IPs
             </Button>
             {vpc.router?.hasExternal ? (
-              <Button
-                component={Link}
-                to={floatingIpCreatePath({
-                  cluster: vpc.cluster,
-                  namespace: vpc.namespace,
-                  vpc: vpc.name,
-                })}
-                size="xs"
-                variant="light"
-                color="teal"
-                leftSection={<IconPlus size={14} />}
-              >
-                Associate
-              </Button>
+              <Group gap="xs">
+                <Button
+                  component={Link}
+                  to={floatingIpCreatePath({
+                    cluster: vpc.cluster,
+                    namespace: vpc.namespace,
+                    vpc: vpc.name,
+                    mode: "reserve",
+                  })}
+                  size="xs"
+                  variant="default"
+                  leftSection={<IconPlus size={14} />}
+                >
+                  Reserve
+                </Button>
+                <Button
+                  component={Link}
+                  to={floatingIpCreatePath({
+                    cluster: vpc.cluster,
+                    namespace: vpc.namespace,
+                    vpc: vpc.name,
+                    mode: "associate",
+                  })}
+                  size="xs"
+                  variant="light"
+                  color="teal"
+                  leftSection={<IconPlus size={14} />}
+                >
+                  Associate
+                </Button>
+              </Group>
             ) : (
               <Button
                 size="xs"
@@ -451,6 +481,118 @@ export default function VpcOverviewTab() {
         )}
       </DetailSection>
 
+      <DetailSection
+        title={`Port Forwards (${vpc.portForwards.length})`}
+        actions={
+          <Group gap="xs">
+            <Button
+              component={Link}
+              to={portForwardsListPath({
+                cluster: vpc.cluster,
+                namespace: vpc.namespace,
+                vpc: vpc.name,
+              })}
+              size="xs"
+              variant="subtle"
+              leftSection={<IconArrowsRightLeft size={14} />}
+            >
+              All port forwards
+            </Button>
+            {vpc.router?.hasExternal ? (
+              <Button
+                component={Link}
+                to={portForwardCreatePath({
+                  cluster: vpc.cluster,
+                  namespace: vpc.namespace,
+                  vpc: vpc.name,
+                })}
+                size="xs"
+                variant="light"
+                color="teal"
+                leftSection={<IconPlus size={14} />}
+              >
+                Create
+              </Button>
+            ) : (
+              <Button
+                size="xs"
+                variant="light"
+                color="teal"
+                leftSection={<IconPlus size={14} />}
+                disabled
+                title="Enable router external gateway first"
+              >
+                Create
+              </Button>
+            )}
+          </Group>
+        }
+      >
+        {!vpc.cidr ? (
+          <Text size="sm" c="dimmed">
+            Enable private IPAM (CIDR) and a router external gateway to map public
+            ports to private VMs.
+          </Text>
+        ) : vpc.portForwards.length === 0 ? (
+          <Text size="sm" c="dimmed">
+            {vpc.router?.hasExternal
+              ? "None yet. Map a public port to a private VM without a full floating IP."
+              : "None. Enable an external gateway on the shared router first."}
+          </Text>
+        ) : (
+          <ResourceTable
+            isEmpty={false}
+            headers={["Public", "Protocol", "Private", "Target VM", ""]}
+          >
+            {vpc.portForwards.map((pf) => (
+              <Table.Tr key={pf.id}>
+                <Table.Td>
+                  <Code>
+                    {pf.public}:{pf.publicPort}
+                  </Code>
+                </Table.Td>
+                <Table.Td>
+                  <Badge size="sm" variant="light" color="blue">
+                    {pf.protocol.toUpperCase()}
+                  </Badge>
+                </Table.Td>
+                <Table.Td>
+                  <Code>
+                    {pf.private}:{pf.privatePort}
+                  </Code>
+                </Table.Td>
+                <Table.Td>
+                  {pf.targetVm ? (
+                    <ResourceLink
+                      to={vmPath({
+                        cluster: vpc.cluster,
+                        namespace: vpc.namespace,
+                        name: pf.targetVm,
+                      })}
+                    >
+                      {pf.targetVm}
+                    </ResourceLink>
+                  ) : (
+                    "—"
+                  )}
+                </Table.Td>
+                <Table.Td>
+                  <Button
+                    size="compact-xs"
+                    variant="subtle"
+                    color="red"
+                    disabled={busy}
+                    onClick={() => setDeletePfTarget(pf)}
+                  >
+                    Delete
+                  </Button>
+                </Table.Td>
+              </Table.Tr>
+            ))}
+          </ResourceTable>
+        )}
+      </DetailSection>
+
       <ConfirmActionModal
         opened={disassociateTarget != null}
         onClose={() => setDisassociateTarget(null)}
@@ -514,6 +656,41 @@ export default function VpcOverviewTab() {
                   This also drops the mapping to <Code>{releaseTarget.private}</Code>.
                 </>
               ) : null}
+            </>
+          ) : (
+            ""
+          )
+        }
+      />
+
+      <ConfirmActionModal
+        opened={deletePfTarget != null}
+        onClose={() => setDeletePfTarget(null)}
+        title="Delete port forward"
+        confirmLabel="Delete"
+        confirmColor="red"
+        loading={busy}
+        onConfirm={() => {
+          if (!deletePfTarget) return;
+          fetcher.submit(
+            {
+              intent: "delete-port-forward",
+              id: deletePfTarget.id,
+            },
+            { method: "post", action: vpcPath(vpc) },
+          );
+          setDeletePfTarget(null);
+        }}
+        message={
+          deletePfTarget ? (
+            <>
+              Remove{" "}
+              <Code>
+                {deletePfTarget.protocol.toUpperCase()} {deletePfTarget.public}:
+                {deletePfTarget.publicPort} → {deletePfTarget.private}:
+                {deletePfTarget.privatePort}
+              </Code>
+              ?
             </>
           ) : (
             ""

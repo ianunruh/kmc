@@ -14,15 +14,22 @@ import {
 } from "@mantine/core";
 import {
   IconArrowLeft,
+  IconArrowsRightLeft,
+  IconBolt,
   IconCamera,
   IconChevronDown,
+  IconCloudComputing,
+  IconDots,
   IconEdit,
   IconPlayerPause,
   IconPlayerPlay,
   IconPlayerStop,
+  IconPower,
   IconRefresh,
+  IconRoute,
   IconTerminal2,
   IconTrash,
+  IconWorldWww,
 } from "@tabler/icons-react";
 import { useState } from "react";
 import { Link, Outlet, useFetcher, useNavigate } from "react-router";
@@ -45,6 +52,10 @@ import {
   canStart,
   canStop,
   canUnpause,
+  floatingIpCreatePath,
+  ingressCreatePath,
+  loadBalancerCreatePath,
+  portForwardCreatePath,
   vmConsolePath,
   vmEditPath,
   vmTabPath,
@@ -262,6 +273,11 @@ export default function VmDetailLayout({ loaderData }: Route.ComponentProps) {
 
   const confirmConfig = confirmIntent ? LIFECYCLE_CONFIRM[confirmIntent] : null;
 
+  const vpcPrefill = vm.networks.find((n) => n.vpc)?.vpc;
+  const hasPodNetwork =
+    vm.networks.length === 0 ||
+    vm.networks.some((n) => n.pod && !n.multusNetworkName);
+
   return (
     <Stack gap="md">
       <Group justify="space-between" align="flex-start">
@@ -298,75 +314,83 @@ export default function VmDetailLayout({ loaderData }: Route.ComponentProps) {
             ]}
           />
         </div>
-        <Group>
-          <Button
-            component={Link}
-            to={vmTerminalPath(vm)}
-            variant="default"
-            leftSection={<IconTerminal2 size={16} />}
-            disabled={!canOpenConsole(vm)}
-            title={
-              canOpenConsole(vm)
-                ? "Open SSH terminal (platform console key)"
-                : "Terminal requires a live VMI (Running)"
-            }
-          >
-            Terminal
-          </Button>
-          <Button
-            component={Link}
-            to={vmConsolePath(vm)}
-            variant="default"
-            leftSection={<IconTerminal2 size={16} />}
-            disabled={!canOpenConsole(vm)}
-            title={
-              canOpenConsole(vm)
-                ? "Open serial console (boot / debug)"
-                : "Serial console requires a live VMI (Running)"
-            }
-          >
-            Serial
-          </Button>
-          <Button
-            component={Link}
-            to={vmEditPath(vm)}
-            variant="default"
-            leftSection={<IconEdit size={16} />}
-          >
-            Edit
-          </Button>
-          <Button
-            variant="default"
-            leftSection={<IconPlayerStop size={16} />}
-            disabled={!canStop(vm) || busy}
-            loading={intentBusy("stop")}
-            title={vm.status === "Paused" ? "Unpause the VM before stopping" : undefined}
-            onClick={() => setConfirmIntent("stop")}
-          >
-            Stop
-          </Button>
-          <Button
-            variant="default"
-            leftSection={<IconPlayerPlay size={16} />}
-            disabled={!canStart(vm) || busy}
-            loading={intentBusy("start")}
-            onClick={() => submitIntent("start")}
-          >
-            Start
-          </Button>
+        <Group gap="xs" wrap="wrap" justify="flex-end">
           <Menu shadow="md" width={220} position="bottom-end">
             <Menu.Target>
               <Button
                 variant="default"
-                leftSection={<IconRefresh size={16} />}
+                leftSection={<IconTerminal2 size={16} />}
                 rightSection={<IconChevronDown size={14} />}
-                disabled={(!canRestart(vm) && !canSoftReboot(vm)) || busy}
-                loading={intentBusy("restart") || intentBusy("softreboot")}
+                disabled={!canOpenConsole(vm)}
+                title={
+                  canOpenConsole(vm)
+                    ? "Open a console"
+                    : "Console requires a live VMI (Running)"
+                }
               >
-                Restart
+                Console
               </Button>
             </Menu.Target>
             <Menu.Dropdown>
+              <Menu.Item
+                component={Link}
+                to={vmTerminalPath(vm)}
+                leftSection={<IconTerminal2 size={14} />}
+                disabled={!canOpenConsole(vm)}
+              >
+                SSH terminal
+              </Menu.Item>
+              <Menu.Item
+                component={Link}
+                to={vmConsolePath(vm)}
+                leftSection={<IconTerminal2 size={14} />}
+                disabled={!canOpenConsole(vm)}
+              >
+                Serial console
+              </Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
+
+          <Menu shadow="md" width={220} position="bottom-end">
+            <Menu.Target>
+              <Button
+                variant="default"
+                leftSection={<IconPower size={16} />}
+                rightSection={<IconChevronDown size={14} />}
+                disabled={busy}
+                loading={
+                  intentBusy("start") ||
+                  intentBusy("stop") ||
+                  intentBusy("restart") ||
+                  intentBusy("softreboot") ||
+                  intentBusy("pause") ||
+                  intentBusy("unpause")
+                }
+              >
+                Power
+              </Button>
+            </Menu.Target>
+            <Menu.Dropdown>
+              <Menu.Item
+                leftSection={<IconPlayerPlay size={14} />}
+                disabled={!canStart(vm) || busy}
+                onClick={() => submitIntent("start")}
+              >
+                Start
+              </Menu.Item>
+              <Menu.Item
+                leftSection={<IconPlayerStop size={14} />}
+                disabled={!canStop(vm) || busy}
+                title={
+                  vm.status === "Paused"
+                    ? "Unpause the VM before stopping"
+                    : undefined
+                }
+                onClick={() => setConfirmIntent("stop")}
+              >
+                Stop
+              </Menu.Item>
+              <Menu.Divider />
               <Menu.Item
                 leftSection={<IconRefresh size={14} />}
                 disabled={!canSoftReboot(vm) || busy}
@@ -380,57 +404,171 @@ export default function VmDetailLayout({ loaderData }: Route.ComponentProps) {
                 Soft reboot
               </Menu.Item>
               <Menu.Item
-                leftSection={<IconRefresh size={14} />}
+                leftSection={<IconBolt size={14} />}
                 disabled={!canRestart(vm) || busy}
                 title="Tear down and recreate the domain"
                 onClick={() => setConfirmIntent("restart")}
               >
                 Hard restart
               </Menu.Item>
+              <Menu.Divider />
+              {canUnpause(vm) ? (
+                <Menu.Item
+                  leftSection={<IconPlayerPlay size={14} />}
+                  disabled={busy}
+                  onClick={() => submitIntent("unpause")}
+                >
+                  Unpause
+                </Menu.Item>
+              ) : (
+                <Menu.Item
+                  leftSection={<IconPlayerPause size={14} />}
+                  disabled={!canPause(vm) || busy}
+                  onClick={() => setConfirmIntent("pause")}
+                >
+                  Pause
+                </Menu.Item>
+              )}
             </Menu.Dropdown>
           </Menu>
-          {canUnpause(vm) ? (
-            <Button
-              variant="default"
-              leftSection={<IconPlayerPlay size={16} />}
-              disabled={busy}
-              loading={intentBusy("unpause")}
-              onClick={() => submitIntent("unpause")}
-            >
-              Unpause
-            </Button>
-          ) : (
-            <Button
-              variant="default"
-              leftSection={<IconPlayerPause size={16} />}
-              disabled={!canPause(vm) || busy}
-              loading={intentBusy("pause")}
-              onClick={() => setConfirmIntent("pause")}
-            >
-              Pause
-            </Button>
-          )}
+
+          <Menu shadow="md" width={240} position="bottom-end">
+            <Menu.Target>
+              <Button
+                variant="default"
+                leftSection={<IconWorldWww size={16} />}
+                rightSection={<IconChevronDown size={14} />}
+              >
+                Expose
+              </Button>
+            </Menu.Target>
+            <Menu.Dropdown>
+              <Menu.Label>VPC plane</Menu.Label>
+              <Menu.Item
+                component={Link}
+                to={
+                  vpcPrefill
+                    ? floatingIpCreatePath({
+                        cluster: vpcPrefill.cluster,
+                        namespace: vpcPrefill.namespace,
+                        vpc: vpcPrefill.name,
+                        targetVm: vm.name,
+                        mode: "associate",
+                      })
+                    : vmTabPath(vm, "networking")
+                }
+                leftSection={<IconWorldWww size={14} />}
+                disabled={!vpcPrefill}
+                title={
+                  vpcPrefill
+                    ? "Associate a floating public IP"
+                    : "Attach a VPC with external gateway first"
+                }
+              >
+                Floating IP
+              </Menu.Item>
+              <Menu.Item
+                component={Link}
+                to={
+                  vpcPrefill
+                    ? portForwardCreatePath({
+                        cluster: vpcPrefill.cluster,
+                        namespace: vpcPrefill.namespace,
+                        vpc: vpcPrefill.name,
+                        targetVm: vm.name,
+                      })
+                    : vmTabPath(vm, "networking")
+                }
+                leftSection={<IconArrowsRightLeft size={14} />}
+                disabled={!vpcPrefill}
+                title={
+                  vpcPrefill
+                    ? "Create a public port forward"
+                    : "Attach a VPC with external gateway first"
+                }
+              >
+                Port forward
+              </Menu.Item>
+              <Menu.Divider />
+              <Menu.Label>Pod plane</Menu.Label>
+              <Menu.Item
+                component={Link}
+                to={ingressCreatePath({
+                  cluster: vm.cluster,
+                  namespace: vm.namespace,
+                  vmName: vm.name,
+                })}
+                leftSection={<IconRoute size={14} />}
+                disabled={!hasPodNetwork}
+                title={
+                  hasPodNetwork
+                    ? "HTTP(S) Ingress on the pod network"
+                    : "Guest needs a pod/masquerade NIC"
+                }
+              >
+                Ingress
+              </Menu.Item>
+              <Menu.Item
+                component={Link}
+                to={loadBalancerCreatePath({
+                  cluster: vm.cluster,
+                  namespace: vm.namespace,
+                  vmName: vm.name,
+                })}
+                leftSection={<IconCloudComputing size={14} />}
+                disabled={!hasPodNetwork}
+                title={
+                  hasPodNetwork
+                    ? "L4 LoadBalancer VIP on the pod network"
+                    : "Guest needs a pod/masquerade NIC"
+                }
+              >
+                Load balancer
+              </Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
+
           <Button
+            component={Link}
+            to={vmEditPath(vm)}
             variant="default"
-            leftSection={<IconCamera size={16} />}
-            disabled={busy}
-            loading={intentBusy("create-snapshot")}
-            onClick={() => {
-              setSnapshotNameInput("");
-              setCreateSnapshotOpen(true);
-            }}
+            leftSection={<IconEdit size={16} />}
           >
-            Snapshot
+            Edit
           </Button>
-          <Button
-            color="red"
-            variant="light"
-            leftSection={<IconTrash size={16} />}
-            disabled={busy}
-            onClick={openDelete}
-          >
-            Delete
-          </Button>
+
+          <Menu shadow="md" width={180} position="bottom-end">
+            <Menu.Target>
+              <Button
+                variant="default"
+                leftSection={<IconDots size={16} />}
+                aria-label="More actions"
+              >
+                More
+              </Button>
+            </Menu.Target>
+            <Menu.Dropdown>
+              <Menu.Item
+                leftSection={<IconCamera size={14} />}
+                disabled={busy}
+                onClick={() => {
+                  setSnapshotNameInput("");
+                  setCreateSnapshotOpen(true);
+                }}
+              >
+                Snapshot
+              </Menu.Item>
+              <Menu.Divider />
+              <Menu.Item
+                color="red"
+                leftSection={<IconTrash size={14} />}
+                disabled={busy}
+                onClick={openDelete}
+              >
+                Delete
+              </Menu.Item>
+            </Menu.Dropdown>
+          </Menu>
         </Group>
       </Group>
 

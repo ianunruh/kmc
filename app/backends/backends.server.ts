@@ -6,10 +6,16 @@ import type {
   BackendSummary,
   ClusterId,
   CreateBackendRequest,
+  UpdateBackendRequest,
 } from "~/lib/types";
 import {
+  KMC_ANN_MATCH_LABELS,
+  KMC_ANN_MEMBER_VMS,
   KMC_BACKEND_LABEL_SELECTOR,
+  KMC_LABEL_BACKEND_GROUP,
   KMC_LABEL_RESOURCE,
+  KMC_LABEL_TARGET_KIND,
+  KMC_LABEL_VM,
   KMC_MAX_BACKEND_GROUP_VMS,
   KMC_RESOURCE_BACKEND,
 } from "~/lib/k8s/constants";
@@ -18,7 +24,10 @@ import { toResourceYaml } from "~/lib/k8s/yaml.server";
 import { listClusters } from "~/vms/vms.server";
 import {
   labelsMatchSelector,
+  membershipAnnotations,
   membershipFromServiceMeta,
+  membershipLabels,
+  resolveServiceSelector,
   singleVmMembership,
 } from "./membership";
 import {
@@ -411,6 +420,161 @@ export async function createBackend(
   }
 }
 
+/**
+ * Update ports and/or membership on an existing kmc backend Service.
+ * For group membership, re-stamps VM labels (add new, unstamp removed).
+ */
+export async function updateBackend(
+  input: UpdateBackendRequest,
+): Promise<BackendSummary> {
+  const { cluster, namespace, name } = input;
+  if (!cluster?.trim() || !namespace?.trim() || !name?.trim()) {
+    throw new Error("cluster, namespace, and name are required");
+  }
+  if (!input.membership && !input.ports) {
+    throw new Error("nothing to update");
+  }
+
+  const existing = await readServiceOptional(cluster, namespace, name);
+  if (!existing) {
+    throw new Response("Backend Service not found", { status: 404 });
+  }
+  const labels = existing.metadata?.labels ?? {};
+  if (labels[KMC_LABEL_RESOURCE] !== KMC_RESOURCE_BACKEND) {
+    throw new Error(
+      `Service "${namespace}/${name}" is not a kmc backend; not updating`,
+    );
+  }
+
+  const prevMembership = membershipFromServiceMeta(
+    existing.metadata?.labels,
+    existing.metadata?.annotations,
+  );
+
+  let nextMembership = input.membership;
+  if (nextMembership) {
+    validateMembership(nextMembership);
+    if (nextMembership.mode === "group") {
+      nextMembership = {
+        ...nextMembership,
+        groupId: nextMembership.groupId.trim() || name,
+        vmNames: [
+          ...new Set(
+            nextMembership.vmNames.map((n) => n.trim()).filter(Boolean),
+          ),
+        ].sort(),
+      };
+    }
+    if (nextMembership.mode === "single-vm") {
+      await ensureSingleVmExists(cluster, namespace, nextMembership.vmName);
+    }
+  }
+
+  // Stamp group members before patching the Service selector
+  if (nextMembership?.mode === "group") {
+    const prevNames =
+      prevMembership.mode === "group" ? prevMembership.vmNames : [];
+    const nextNames = nextMembership.vmNames;
+    const toAdd = nextNames.filter((n) => !prevNames.includes(n));
+    const toRemove = prevNames.filter((n) => !nextNames.includes(n));
+    if (toAdd.length > 0) {
+      await stampBackendGroup({
+        cluster,
+        namespace,
+        groupId: nextMembership.groupId,
+        vmNames: toAdd,
+      });
+    }
+    if (toRemove.length > 0) {
+      await unstampBackendGroup({ cluster, namespace, vmNames: toRemove });
+    }
+    // Re-stamp remaining with current group id (no-op if already set)
+    const keep = nextNames.filter((n) => prevNames.includes(n));
+    if (keep.length > 0 && prevMembership.mode === "group") {
+      if (prevMembership.groupId !== nextMembership.groupId) {
+        await stampBackendGroup({
+          cluster,
+          namespace,
+          groupId: nextMembership.groupId,
+          vmNames: keep,
+        });
+      }
+    }
+  } else if (nextMembership && prevMembership.mode === "group") {
+    // Leaving group mode — unstamp old members
+    await unstampBackendGroup({
+      cluster,
+      namespace,
+      vmNames: prevMembership.vmNames,
+    });
+  }
+
+  const { core } = getClusterClients(cluster);
+  const body = structuredClone(existing) as KubeService & Record<string, unknown>;
+  delete (body as { status?: unknown }).status;
+
+  body.metadata = body.metadata ?? {};
+  body.metadata.labels = { ...(body.metadata.labels ?? {}) };
+  body.metadata.annotations = { ...(body.metadata.annotations ?? {}) };
+  body.spec = body.spec ?? {};
+
+  if (nextMembership) {
+    // Clear previous membership labels/annotations then apply new
+    delete body.metadata.labels[KMC_LABEL_TARGET_KIND];
+    delete body.metadata.labels[KMC_LABEL_VM];
+    delete body.metadata.labels[KMC_LABEL_BACKEND_GROUP];
+    delete body.metadata.annotations[KMC_ANN_MATCH_LABELS];
+    delete body.metadata.annotations[KMC_ANN_MEMBER_VMS];
+
+    Object.assign(body.metadata.labels, membershipLabels(nextMembership));
+    Object.assign(
+      body.metadata.annotations,
+      membershipAnnotations(nextMembership),
+    );
+    body.spec.selector = resolveServiceSelector(nextMembership);
+  }
+
+  if (input.ports) {
+    if (!input.ports.length) throw new Error("at least one port is required");
+    for (const p of input.ports) {
+      if (!Number.isFinite(p.port) || p.port < 1 || p.port > 65535) {
+        throw new Error(`invalid service port: ${p.port}`);
+      }
+      if (!Number.isFinite(p.targetPort) || p.targetPort < 1 || p.targetPort > 65535) {
+        throw new Error(`invalid target port: ${p.targetPort}`);
+      }
+    }
+    body.spec.ports = input.ports.map((p, i) => ({
+      name: p.name?.trim() || `port-${i}`,
+      protocol: p.protocol ?? "TCP",
+      port: p.port,
+      targetPort: p.targetPort,
+    }));
+  }
+
+  // Drop empty annotations object
+  if (
+    body.metadata.annotations &&
+    Object.keys(body.metadata.annotations).length === 0
+  ) {
+    delete body.metadata.annotations;
+  }
+
+  try {
+    await core.replaceNamespacedService({
+      name,
+      namespace,
+      body: body as never,
+    });
+  } catch (err) {
+    throw new Error(`Failed to update Service: ${formatError(err)}`, {
+      cause: err,
+    });
+  }
+
+  return getBackend(cluster, namespace, name);
+}
+
 export async function deleteBackend(
   cluster: ClusterId,
   namespace: string,
@@ -561,6 +725,25 @@ export async function deleteLoadBalancer(
   await deleteBackend(cluster, namespace, name);
 }
 
+export async function updateLoadBalancer(
+  input: UpdateBackendRequest,
+): Promise<BackendSummary> {
+  const existing = await readServiceOptional(
+    input.cluster,
+    input.namespace,
+    input.name,
+  );
+  if (!existing) {
+    throw new Response("Load balancer not found", { status: 404 });
+  }
+  if ((existing.spec?.type ?? "ClusterIP") !== "LoadBalancer") {
+    throw new Error(
+      `Service "${input.namespace}/${input.name}" is not a LoadBalancer backend`,
+    );
+  }
+  return updateBackend(input);
+}
+
 /** LoadBalancer backends that select this VM. */
 export async function listLoadBalancersForVm(
   cluster: ClusterId,
@@ -599,9 +782,19 @@ export async function listBackends(clusterFilter?: ClusterId): Promise<{
         const res = await core.listServiceForAllNamespaces({
           labelSelector: KMC_BACKEND_LABEL_SELECTOR,
         });
-        for (const svc of (res.items ?? []) as KubeService[]) {
-          items.push(mapSummary(id, svc));
-        }
+        const svcs = (res.items ?? []) as KubeService[];
+        // Endpoint readiness in parallel (list UX); ignore failures.
+        const withEp = await Promise.all(
+          svcs.map(async (svc) => {
+            const ns = svc.metadata?.namespace ?? "default";
+            const n = svc.metadata?.name ?? "";
+            const endpoints = n
+              ? await readEndpointsCounts(id, ns, n)
+              : null;
+            return mapSummary(id, svc, endpoints);
+          }),
+        );
+        items.push(...withEp);
       } catch (err) {
         if (cluster) {
           cluster.reachable = false;
@@ -636,7 +829,10 @@ export async function listBackendsForVm(
   const vmLabels = await getVmPodTemplateLabels(cluster, namespace, vmName);
   const items: BackendSummary[] = [];
   for (const svc of (res.items ?? []) as KubeService[]) {
-    const summary = mapSummary(cluster, svc);
+    const ns = svc.metadata?.namespace ?? namespace;
+    const n = svc.metadata?.name ?? "";
+    const endpoints = n ? await readEndpointsCounts(cluster, ns, n) : null;
+    const summary = mapSummary(cluster, svc, endpoints);
     if (summary.membership.mode === "single-vm") {
       if (summary.membership.vmName === vmName) items.push(summary);
       continue;

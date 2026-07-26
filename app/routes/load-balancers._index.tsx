@@ -1,6 +1,7 @@
 import {
   ActionIcon,
   Alert,
+  Badge,
   Button,
   Checkbox,
   Menu,
@@ -40,10 +41,12 @@ import {
 import { actionFailure } from "~/lib/errors";
 import {
   formatAge,
+  loadBalancerEditPath,
   loadBalancerPath,
   loadBalancersListPath,
   vmPath,
 } from "~/lib/format";
+import { CopyableValue } from "~/ui";
 import { clusterFromRequest } from "~/lib/search-params";
 import { matchesQuery, useListFilters } from "~/lib/use-list-filters";
 import {
@@ -268,6 +271,7 @@ export default function LoadBalancersPage({ loaderData }: Route.ComponentProps) 
               "External",
               "Backend",
               "Ports",
+              "Endpoints",
               "Age",
               "",
             ]}
@@ -307,9 +311,13 @@ export default function LoadBalancersPage({ loaderData }: Route.ComponentProps) 
                     </ResourceLink>
                   </Table.Td>
                   <Table.Td>
-                    <Text size="sm" c={lb.externalAddress ? undefined : "dimmed"}>
-                      {lb.externalAddress ?? "Pending"}
-                    </Text>
+                    {lb.externalAddress ? (
+                      <CopyableValue value={lb.externalAddress} />
+                    ) : (
+                      <Badge size="sm" variant="light" color="yellow">
+                        Pending
+                      </Badge>
+                    )}
                   </Table.Td>
                   <Table.Td>
                     {lb.membership.mode === "single-vm" && lb.vmName ? (
@@ -342,6 +350,21 @@ export default function LoadBalancersPage({ loaderData }: Route.ComponentProps) 
                     </Text>
                   </Table.Td>
                   <Table.Td>
+                    <Text
+                      size="sm"
+                      c={
+                        lb.endpointsTotal != null &&
+                        (lb.endpointsReady ?? 0) === 0
+                          ? "orange"
+                          : "dimmed"
+                      }
+                    >
+                      {lb.endpointsTotal != null
+                        ? `${lb.endpointsReady ?? 0}/${lb.endpointsTotal}`
+                        : "—"}
+                    </Text>
+                  </Table.Td>
+                  <Table.Td>
                     <Tooltip label={lb.age || "unknown"}>
                       <Text size="sm" c="dimmed">
                         {formatAge(lb.age)}
@@ -362,6 +385,9 @@ export default function LoadBalancersPage({ loaderData }: Route.ComponentProps) 
                       <Menu.Dropdown>
                         <Menu.Item component={Link} to={loadBalancerPath(lb)}>
                           Open
+                        </Menu.Item>
+                        <Menu.Item component={Link} to={loadBalancerEditPath(lb)}>
+                          Edit
                         </Menu.Item>
                         <Menu.Item
                           color="red"

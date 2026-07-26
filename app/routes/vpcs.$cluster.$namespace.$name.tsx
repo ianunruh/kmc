@@ -32,6 +32,7 @@ import {
 import { useRefresh } from "~/lib/refresh";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 import {
+  deletePortForward,
   deleteVpc,
   disassociateFloatingIp,
   getVpc,
@@ -147,6 +148,29 @@ export async function action({ request, params }: Route.ActionArgs) {
       });
     }
   }
+  if (intent === "delete-port-forward") {
+    const id = String(form.get("id") ?? "").trim();
+    if (!id) {
+      return { ok: false, error: "Missing port forward id", intent };
+    }
+    try {
+      await deletePortForward({
+        cluster,
+        namespace,
+        vpcName: name,
+        id,
+      });
+      return { ok: true, intent };
+    } catch (err) {
+      return actionFailure("portForward.delete", err, {
+        intent,
+        cluster,
+        namespace,
+        name,
+        id,
+      });
+    }
+  }
   return { ok: false, error: `Unknown intent: ${intent}`, intent };
 }
 
@@ -170,9 +194,11 @@ export default function VpcDetailLayout({ loaderData }: Route.ComponentProps) {
           ? "Disassociate failed"
           : data.intent === "release"
             ? "Release failed"
-            : data.intent === "attach-router"
-              ? "Attach router failed"
-              : "Delete failed";
+            : data.intent === "delete-port-forward"
+              ? "Delete port forward failed"
+              : data.intent === "attach-router"
+                ? "Attach router failed"
+                : "Delete failed";
       notifyActionError(title, data.error);
     } else if (data.ok) {
       if (data.intent === "disassociate") {
@@ -186,6 +212,9 @@ export default function VpcDetailLayout({ loaderData }: Route.ComponentProps) {
           "Done",
           "Floating IP released — public address returned to the pool",
         );
+        refreshNow();
+      } else if (data.intent === "delete-port-forward") {
+        notifyActionSuccess("Done", "Port forward deleted");
         refreshNow();
       } else if (data.intent === "attach-router") {
         notifyActionSuccess(

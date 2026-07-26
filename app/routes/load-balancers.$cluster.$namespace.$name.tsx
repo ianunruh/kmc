@@ -7,12 +7,13 @@ import {
   Stack,
   Title,
 } from "@mantine/core";
-import { IconArrowLeft, IconTrash } from "@tabler/icons-react";
+import { IconArrowLeft, IconPencil, IconTrash } from "@tabler/icons-react";
 import { useState } from "react";
 import { Link, Outlet, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/load-balancers.$cluster.$namespace.$name";
 import {
   ConfirmDeleteModal,
+  CopyButton,
   DetailTabs,
   ResourceIdentity,
 } from "~/ui";
@@ -20,6 +21,7 @@ import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
 import {
   detailTabPath,
+  loadBalancerEditPath,
   loadBalancerPath,
   loadBalancersListPath,
 } from "~/lib/format";
@@ -104,9 +106,12 @@ export default function LoadBalancerDetailLayout({
               {membershipModeLabel(lb.membership)}
             </Badge>
             {lb.externalAddress ? (
-              <Badge variant="light" color="green">
-                {lb.externalAddress}
-              </Badge>
+              <Group gap={4} wrap="nowrap">
+                <Badge variant="light" color="green">
+                  {lb.externalAddress}
+                </Badge>
+                <CopyButton value={lb.externalAddress} label="Copy VIP" size="xs" />
+              </Group>
             ) : (
               <Badge variant="light" color="yellow">
                 VIP pending
@@ -134,15 +139,25 @@ export default function LoadBalancerDetailLayout({
             ]}
           />
         </div>
-        <Button
-          color="red"
-          variant="light"
-          leftSection={<IconTrash size={16} />}
-          onClick={() => setDeleteOpen(true)}
-          loading={busy}
-        >
-          Delete
-        </Button>
+        <Group gap="xs">
+          <Button
+            component={Link}
+            to={loadBalancerEditPath(lb)}
+            variant="light"
+            leftSection={<IconPencil size={16} />}
+          >
+            Edit
+          </Button>
+          <Button
+            color="red"
+            variant="light"
+            leftSection={<IconTrash size={16} />}
+            onClick={() => setDeleteOpen(true)}
+            loading={busy}
+          >
+            Delete
+          </Button>
+        </Group>
       </Group>
 
       {!lb.externalAddress && (

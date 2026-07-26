@@ -1,6 +1,8 @@
-import { Badge, Code, Group, SimpleGrid, Stack, Text } from "@mantine/core";
+import { Anchor, Badge, Code, Group, SimpleGrid, Stack, Text } from "@mantine/core";
 import { useRouteLoaderData } from "react-router";
 import {
+  CopyButton,
+  CopyableValue,
   DetailField,
   DetailSection,
   ResourceLink,
@@ -11,7 +13,9 @@ import {
 import {
   formatAge,
   formatDateTime,
+  ingressHostUrl,
   ingressesListPath,
+  loadBalancerPath,
   vmPath,
 } from "~/lib/format";
 import {
@@ -64,12 +68,57 @@ export default function IngressOverviewTab() {
               }
             />
             <DetailField label="Ingress class" value={ing.className} />
-            <DetailField label="Address" value={ing.address} />
+            <DetailField
+              label="Address"
+              value={
+                ing.address ? <CopyableValue value={ing.address} /> : undefined
+              }
+            />
             <DetailField
               label="Hosts"
-              value={ing.hosts.length > 0 ? ing.hosts.join(", ") : undefined}
+              value={
+                ing.hosts.length > 0 ? (
+                  <Stack gap={4}>
+                    {ing.hosts.map((host) => {
+                      const url = ingressHostUrl(host, ing.tlsHosts);
+                      return (
+                        <Group key={host} gap={4} wrap="nowrap">
+                          <Anchor
+                            href={url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            size="sm"
+                          >
+                            {host}
+                          </Anchor>
+                          <CopyButton value={url} label="Copy URL" size="xs" />
+                        </Group>
+                      );
+                    })}
+                  </Stack>
+                ) : undefined
+              }
             />
-            <DetailField label="Service" value={ing.serviceName} />
+            <DetailField
+              label="Service"
+              value={
+                ing.serviceName ? (
+                  backend?.serviceType === "LoadBalancer" ? (
+                    <ResourceLink
+                      to={loadBalancerPath({
+                        cluster: ing.cluster,
+                        namespace: ing.namespace,
+                        name: ing.serviceName,
+                      })}
+                    >
+                      {ing.serviceName}
+                    </ResourceLink>
+                  ) : (
+                    <Code>{ing.serviceName}</Code>
+                  )
+                ) : undefined
+              }
+            />
             <DetailField
               label="Endpoints"
               value={
@@ -84,7 +133,9 @@ export default function IngressOverviewTab() {
         <DetailSection title="Backend">
           {!backend || !backend.exists ? (
             <Text size="sm" c="dimmed">
-              Companion Service not found (name: {ing.serviceName ?? ing.name})
+              Backend Service not found (name: {ing.serviceName ?? ing.name}).
+              If this Ingress was created with expose-existing, restore the Service
+              or recreate the Ingress.
             </Text>
           ) : (
             <SimpleGrid cols={2} spacing="sm">

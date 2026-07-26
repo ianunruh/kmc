@@ -5,12 +5,15 @@ import type {
   IngressDetail,
   IngressRuleInfo,
   IngressSummary,
+  UpdateIngressRequest,
 } from "~/lib/types";
 import {
   KMC_INGRESS_LABEL_SELECTOR,
   KMC_LABEL_INGRESS,
+  KMC_LABEL_RESOURCE,
   KMC_LABEL_TARGET_KIND,
   KMC_LABEL_VM,
+  KMC_RESOURCE_BACKEND,
   KMC_TARGET_KIND_GROUP,
   KMC_TARGET_KIND_LABELS,
   KMC_TARGET_KIND_VM,
@@ -25,6 +28,7 @@ import {
   listVmsMatchingSelector,
   readEndpointsCounts,
   readServiceOptional,
+  updateBackend,
 } from "~/backends/backends.server";
 import {
   labelsMatchSelector,
@@ -33,6 +37,7 @@ import {
 import { listClusters } from "~/vms/vms.server";
 import {
   buildIngressManifest,
+  ownershipLabels,
   vmNameFromIngressLabels,
 } from "./template.server";
 
@@ -227,9 +232,24 @@ export async function listIngresses(clusterFilter?: ClusterId): Promise<{
         const res = await networking.listIngressForAllNamespaces({
           labelSelector: KMC_INGRESS_LABEL_SELECTOR,
         });
-        for (const ing of (res.items ?? []) as KubeIngress[]) {
-          items.push(mapSummary(id, ing));
-        }
+        const ings = (res.items ?? []) as KubeIngress[];
+        const mapped = await Promise.all(
+          ings.map(async (ing) => {
+            const s = mapSummary(id, ing);
+            const svcName = s.serviceName ?? s.name;
+            const endpoints = await readEndpointsCounts(
+              id,
+              s.namespace,
+              svcName,
+            );
+            if (endpoints) {
+              s.endpointsReady = endpoints.ready;
+              s.endpointsTotal = endpoints.total;
+            }
+            return s;
+          }),
+        );
+        items.push(...mapped);
       } catch (err) {
         if (cluster) {
           cluster.reachable = false;
@@ -303,6 +323,16 @@ export async function listIngressesForVm(
   }
 
   const items = Array.from(byName.values());
+  await Promise.all(
+    items.map(async (s) => {
+      const svcName = s.serviceName ?? s.name;
+      const endpoints = await readEndpointsCounts(cluster, namespace, svcName);
+      if (endpoints) {
+        s.endpointsReady = endpoints.ready;
+        s.endpointsTotal = endpoints.total;
+      }
+    }),
+  );
   items.sort((a, b) => a.name.localeCompare(b.name));
   return items;
 }
@@ -416,19 +446,23 @@ export async function createIngress(
   if (!input.cluster?.trim()) throw new Error("cluster is required");
   if (!input.namespace?.trim()) throw new Error("namespace is required");
   if (!input.name?.trim()) throw new Error("name is required");
-  if (!input.membership) throw new Error("backend membership is required");
   if (!input.host?.trim()) throw new Error("host is required");
+
+  const existingService = input.existingServiceName?.trim();
+  if (!existingService && !input.membership) {
+    throw new Error("backend membership is required (or pick an existing Service)");
+  }
 
   // Normalize group id to ingress/backend name when empty
   let membership = input.membership;
-  if (membership.mode === "group") {
+  if (membership?.mode === "group") {
     membership = {
       ...membership,
       groupId: membership.groupId.trim() || input.name,
     };
   }
 
-  const { networking } = getClusterClients(input.cluster);
+  const { networking, core } = getClusterClients(input.cluster);
 
   // Pre-check Ingress name collision (backend create checks Service)
   try {
@@ -451,28 +485,50 @@ export async function createIngress(
   const servicePort = input.servicePort ?? 80;
   const targetPort = input.targetPort ?? servicePort;
   const payload: CreateIngressRequest = { ...input, membership };
+  let createdCompanion = false;
 
-  // Companion backend Service (selector + ports); VM existence / group stamp inside
-  await createBackend({
-    cluster: input.cluster,
-    namespace: input.namespace,
-    name: input.name,
-    membership,
-    ports: [
-      {
-        name: "http",
-        port: servicePort,
-        targetPort,
-        protocol: "TCP",
+  if (existingService) {
+    // Expose-existing: Service must already exist
+    try {
+      await core.readNamespacedService({
+        name: existingService,
+        namespace: input.namespace,
+      });
+    } catch (err) {
+      if (isNotFound(err)) {
+        throw new Error(
+          `Service "${input.namespace}/${existingService}" not found`,
+        );
+      }
+      throw new Error(formatError(err), { cause: err });
+    }
+  } else if (membership) {
+    // Companion backend Service (selector + ports); VM existence / group stamp inside
+    await createBackend({
+      cluster: input.cluster,
+      namespace: input.namespace,
+      name: input.name,
+      membership,
+      ports: [
+        {
+          name: "http",
+          port: servicePort,
+          targetPort,
+          protocol: "TCP",
+        },
+      ],
+      serviceType: "ClusterIP",
+      extraLabels: {
+        [KMC_LABEL_INGRESS]: input.name,
       },
-    ],
-    serviceType: "ClusterIP",
-    extraLabels: {
-      [KMC_LABEL_INGRESS]: input.name,
-    },
-  });
+    });
+    createdCompanion = true;
+  }
 
-  const ingressBody = buildIngressManifest(payload, input.name);
+  const ingressBody = buildIngressManifest(
+    payload,
+    existingService || input.name,
+  );
 
   try {
     const created = (await networking.createNamespacedIngress({
@@ -481,16 +537,177 @@ export async function createIngress(
     })) as KubeIngress;
     return mapSummary(input.cluster, created);
   } catch (err) {
-    // Best-effort rollback of companion backend Service (unstamps group)
-    try {
-      await deleteBackend(input.cluster, input.namespace, input.name);
-    } catch {
-      // ignore
+    // Best-effort rollback of companion backend Service only
+    if (createdCompanion) {
+      try {
+        await deleteBackend(input.cluster, input.namespace, input.name);
+      } catch {
+        // ignore
+      }
     }
     throw new Error(`Failed to create Ingress: ${formatError(err)}`, {
       cause: err,
     });
   }
+}
+
+/**
+ * Update Ingress host/path/TLS/class and optionally companion backend ports/membership.
+ */
+export async function updateIngress(
+  input: UpdateIngressRequest,
+): Promise<IngressDetail> {
+  const { cluster, namespace, name } = input;
+  if (!cluster?.trim() || !namespace?.trim() || !name?.trim()) {
+    throw new Error("cluster, namespace, and name are required");
+  }
+
+  const { networking } = getClusterClients(cluster);
+  let existing: KubeIngress;
+  try {
+    existing = (await networking.readNamespacedIngress({
+      name,
+      namespace,
+    })) as KubeIngress;
+  } catch (err) {
+    if (isNotFound(err)) {
+      throw new Response("Ingress not found", { status: 404 });
+    }
+    throw new Error(formatError(err), { cause: err });
+  }
+
+  const body = structuredClone(existing) as KubeIngress & Record<string, unknown>;
+  delete (body as { status?: unknown }).status;
+  body.metadata = body.metadata ?? {};
+  body.metadata.labels = { ...(body.metadata.labels ?? {}) };
+  body.spec = body.spec ?? {};
+
+  const currentHost =
+    body.spec.rules?.[0]?.host?.trim() ||
+    mapHosts(existing)[0] ||
+    "";
+  const host =
+    input.host !== undefined ? input.host.trim() : currentHost;
+  if (!host) throw new Error("host is required");
+
+  const currentPath =
+    body.spec.rules?.[0]?.http?.paths?.[0]?.path ?? "/";
+  const path =
+    input.path !== undefined ? input.path.trim() || "/" : currentPath;
+  const pathType =
+    input.pathType ??
+    body.spec.rules?.[0]?.http?.paths?.[0]?.pathType ??
+    "Prefix";
+  const serviceName =
+    body.spec.rules?.[0]?.http?.paths?.[0]?.backend?.service?.name ||
+    name;
+  const currentPort =
+    body.spec.rules?.[0]?.http?.paths?.[0]?.backend?.service?.port?.number ??
+    80;
+  const servicePort =
+    input.servicePort !== undefined ? input.servicePort : currentPort;
+
+  if (input.membership) {
+    // Replace ownership + membership labels (preserve unrelated labels)
+    const owned = ownershipLabels({ name, membership: input.membership });
+    Object.assign(body.metadata.labels, owned);
+  }
+
+  if (input.ingressClassName !== undefined) {
+    const cls = input.ingressClassName?.trim();
+    if (cls) body.spec.ingressClassName = cls;
+    else delete body.spec.ingressClassName;
+  }
+
+  if (input.tlsSecretName !== undefined) {
+    const secret = input.tlsSecretName?.trim();
+    if (secret) {
+      body.spec.tls = [{ hosts: [host], secretName: secret }];
+    } else {
+      delete body.spec.tls;
+    }
+  } else if (body.spec.tls?.length) {
+    // Keep TLS but refresh hosts to match rule host
+    body.spec.tls = body.spec.tls.map((t) => ({
+      ...t,
+      hosts: t.hosts?.length ? [host] : t.hosts,
+    }));
+  }
+
+  body.spec.rules = [
+    {
+      host,
+      http: {
+        paths: [
+          {
+            path,
+            pathType,
+            backend: {
+              service: {
+                name: serviceName,
+                port: { number: servicePort },
+              },
+            },
+          },
+        ],
+      },
+    },
+  ];
+
+  try {
+    await networking.replaceNamespacedIngress({
+      name,
+      namespace,
+      body: body as never,
+    });
+  } catch (err) {
+    throw new Error(`Failed to update Ingress: ${formatError(err)}`, {
+      cause: err,
+    });
+  }
+
+  // Patch companion Service only when it is a kmc backend we own
+  const ownsCompanion =
+    serviceName === name ||
+    (await readServiceOptional(cluster, namespace, serviceName))?.metadata
+      ?.labels?.[KMC_LABEL_INGRESS] === name;
+
+  if (
+    ownsCompanion &&
+    (input.membership ||
+      input.targetPort !== undefined ||
+      input.servicePort !== undefined)
+  ) {
+    const svc = await readServiceOptional(cluster, namespace, serviceName);
+    if (
+      svc?.metadata?.labels?.[KMC_LABEL_RESOURCE] === KMC_RESOURCE_BACKEND
+    ) {
+      const ports =
+        input.targetPort !== undefined || input.servicePort !== undefined
+          ? [
+              {
+                name: "http",
+                port: servicePort,
+                targetPort:
+                  input.targetPort ??
+                  (typeof svc.spec?.ports?.[0]?.targetPort === "number"
+                    ? svc.spec.ports[0].targetPort
+                    : servicePort),
+                protocol: "TCP" as const,
+              },
+            ]
+          : undefined;
+      await updateBackend({
+        cluster,
+        namespace,
+        name: serviceName,
+        membership: input.membership,
+        ports,
+      });
+    }
+  }
+
+  return getIngress(cluster, namespace, name);
 }
 
 export async function deleteIngress(
@@ -500,6 +717,18 @@ export async function deleteIngress(
 ): Promise<void> {
   const { networking } = getClusterClients(cluster);
 
+  // Resolve backend Service before deleting Ingress
+  let serviceName = name;
+  try {
+    const ing = (await networking.readNamespacedIngress({
+      name,
+      namespace,
+    })) as KubeIngress;
+    serviceName = primaryServiceName(ing) ?? name;
+  } catch {
+    // continue with name convention
+  }
+
   try {
     await networking.deleteNamespacedIngress({ name, namespace });
   } catch (err) {
@@ -508,8 +737,25 @@ export async function deleteIngress(
     }
   }
 
+  // Only delete companion Service if it is a kmc backend owned by this Ingress
+  // (do not tear down an expose-existing LB/Service).
+  const svc = await readServiceOptional(cluster, namespace, serviceName);
+  if (!svc) return;
+  const labels = svc.metadata?.labels ?? {};
+  const isBackend = labels[KMC_LABEL_RESOURCE] === KMC_RESOURCE_BACKEND;
+  const ownedByIngress =
+    labels[KMC_LABEL_INGRESS] === name || serviceName === name;
+  if (!isBackend || !ownedByIngress) return;
+  // When serviceName === name but no ingress label, only delete ClusterIP companions
+  if (
+    labels[KMC_LABEL_INGRESS] !== name &&
+    (svc.spec?.type ?? "ClusterIP") === "LoadBalancer"
+  ) {
+    return;
+  }
+
   try {
-    await deleteBackend(cluster, namespace, name);
+    await deleteBackend(cluster, namespace, serviceName);
   } catch (err) {
     if (!isNotFound(err)) {
       throw new Error(

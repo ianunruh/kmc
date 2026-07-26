@@ -440,6 +440,25 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                             </Text>
                           </Tooltip>
                         ) : null}
+                        {vm.ingressHosts && vm.ingressHosts.length > 0 ? (
+                          <Tooltip
+                            label={`Ingress host${vm.ingressHosts.length > 1 ? "s" : ""}`}
+                          >
+                            <Text size="xs" ff="monospace" c="grape.4">
+                              {vm.ingressHosts.join(", ")}
+                            </Text>
+                          </Tooltip>
+                        ) : null}
+                        {vm.loadBalancerAddresses &&
+                        vm.loadBalancerAddresses.length > 0 ? (
+                          <Tooltip
+                            label={`Load balancer VIP${vm.loadBalancerAddresses.length > 1 ? "s" : ""}`}
+                          >
+                            <Text size="xs" ff="monospace" c="cyan.4">
+                              {vm.loadBalancerAddresses.join(", ")}
+                            </Text>
+                          </Tooltip>
+                        ) : null}
                       </Stack>
                     </Table.Td>
                     <Table.Td>

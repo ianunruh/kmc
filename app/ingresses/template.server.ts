@@ -15,18 +15,19 @@ import { membershipLabels } from "~/backends/membership";
 
 export function ownershipLabels(input: {
   name: string;
-  membership: BackendMembership;
+  membership?: BackendMembership;
 }): Record<string, string> {
   return {
     [MANAGED_BY_LABEL]: KMC_MANAGED_BY,
     [KMC_LABEL_RESOURCE]: KMC_RESOURCE_INGRESS,
     [KMC_LABEL_INGRESS]: input.name,
-    ...membershipLabels(input.membership),
+    ...(input.membership ? membershipLabels(input.membership) : {}),
   };
 }
 
 /**
- * Ingress-only manifest. Companion Service is created via app/backends.
+ * Ingress-only manifest. Companion Service is created via app/backends unless
+ * `serviceName` points at an existing backend (expose-existing).
  * @param serviceName defaults to ingress name (1:1 convention)
  */
 export function buildIngressManifest(
@@ -40,7 +41,12 @@ export function buildIngressManifest(
     name: input.name,
     membership: input.membership,
   });
-  const backendService = serviceName?.trim() || input.name;
+  const backendService =
+    serviceName?.trim() ||
+    input.existingServiceName?.trim() ||
+    input.name;
+  const host = input.host.trim();
+  const tlsSecret = input.tlsSecretName?.trim();
 
   return {
     apiVersion: "networking.k8s.io/v1",
@@ -54,9 +60,19 @@ export function buildIngressManifest(
       ...(input.ingressClassName?.trim()
         ? { ingressClassName: input.ingressClassName.trim() }
         : {}),
+      ...(tlsSecret
+        ? {
+            tls: [
+              {
+                hosts: [host],
+                secretName: tlsSecret,
+              },
+            ],
+          }
+        : {}),
       rules: [
         {
-          host: input.host.trim(),
+          host,
           http: {
             paths: [
               {

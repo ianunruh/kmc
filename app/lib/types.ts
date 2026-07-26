@@ -45,6 +45,9 @@ export interface VmSummary {
   allocatedIpv4?: string;
   /** Public floating IPs associated with this VM (from router policy ConfigMaps). */
   floatingIpv4?: string[];
+  /** Compact exposure chips for the VM list (hosts / VIP addresses). */
+  ingressHosts?: string[];
+  loadBalancerAddresses?: string[];
   age: string;
   nodeName?: string;
   message?: string;
@@ -775,13 +778,22 @@ export interface CreateBackendRequest {
   name: string;
   membership: BackendMembership;
   ports: BackendPort[];
-  /** Default ClusterIP. LoadBalancer reserved for step 3. */
+  /** Default ClusterIP; use LoadBalancer for L4 VIP backends. */
   serviceType?: BackendServiceType;
   /**
    * Extra labels merged onto the Service (e.g. ingress name linkage when
    * created as a companion to an Ingress).
    */
   extraLabels?: Record<string, string>;
+}
+
+/** Patch an existing kmc backend Service (ports and/or membership). */
+export interface UpdateBackendRequest {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  membership?: BackendMembership;
+  ports?: BackendPort[];
 }
 
 export interface BackendMatchedVm {
@@ -832,6 +844,9 @@ export interface IngressSummary {
   age: string;
   /** First loadBalancer ingress host/IP when present */
   address?: string;
+  /** Companion Service endpoint readiness when loaded */
+  endpointsReady?: number;
+  endpointsTotal?: number;
 }
 
 export interface IngressRulePath {
@@ -884,13 +899,40 @@ export interface CreateIngressRequest {
   cluster: ClusterId;
   namespace: string;
   name: string;
-  membership: BackendMembership;
+  /**
+   * Backend membership for a new companion Service.
+   * Omit (or leave unused) when `existingServiceName` is set.
+   */
+  membership?: BackendMembership;
   host: string;
   path?: string;
   pathType?: IngressPathType;
   servicePort?: number;
   targetPort?: number;
   ingressClassName?: string;
+  /**
+   * Expose an existing Service instead of creating a companion backend.
+   * When set, membership/targetPort are not used for create.
+   */
+  existingServiceName?: string;
+  /** Optional TLS: secret name enables HTTPS for the host. */
+  tlsSecretName?: string;
+}
+
+/** Patch host/path/TLS/class and optionally companion Service ports. */
+export interface UpdateIngressRequest {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  host?: string;
+  path?: string;
+  pathType?: IngressPathType;
+  servicePort?: number;
+  targetPort?: number;
+  ingressClassName?: string | null;
+  /** Empty string clears TLS; undefined leaves unchanged. */
+  tlsSecretName?: string | null;
+  membership?: BackendMembership;
 }
 
 // --- VPCs (Multus NAD + VLAN from cluster vlanPools) ---
@@ -988,6 +1030,8 @@ export interface VpcDetail extends VpcSummary {
    * Floating IP associations from the router policy ConfigMap for this VPC.
    */
   floatingIps: FloatingIpAssociation[];
+  /** Port forwards from the shared router policy that target this VPC. */
+  portForwards: PortForwardAssociation[];
 }
 
 /** DHCP lease published to the router agent (static dhcp-host). */
@@ -1124,6 +1168,18 @@ export interface AssociateFloatingIpRequest {
   privateIpv4?: string;
   /** Target VM name (same namespace); used to resolve private IP when not set. */
   targetVm?: string;
+  /** Optional specific public address; otherwise allocate from the public pool. */
+  publicIpv4?: string;
+}
+
+/**
+ * Reserve (hold) a public Multus address for a VPC without mapping a private target.
+ * Address leaves the free pool; associate later from held list.
+ */
+export interface ReserveFloatingIpRequest {
+  cluster: ClusterId;
+  namespace: string;
+  vpcName: string;
   /** Optional specific public address; otherwise allocate from the public pool. */
   publicIpv4?: string;
 }
@@ -1337,7 +1393,7 @@ export interface TopologyEdge {
    * `ingress`: HTTP(S) exposure via Ingress on the pod network.
    * `loadbalancer`: L4 Service type LoadBalancer on the pod network.
    */
-  role?: "attachment" | "floating" | "ingress" | "loadbalancer";
+  role?: "attachment" | "floating" | "portforward" | "ingress" | "loadbalancer";
   /** Optional display label (e.g. floating public address, ingress host, VIP). */
   label?: string;
 }

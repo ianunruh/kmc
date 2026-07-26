@@ -1568,6 +1568,135 @@ export async function associateRouterFloatingIp(
   };
 }
 
+/**
+ * Reserve (hold) a public address for a VPC without private mapping.
+ * Allocates from the public Multus pool and records a held floating IP entry.
+ */
+export async function reserveRouterFloatingIp(
+  input: {
+    cluster: ClusterId;
+    namespace: string;
+    vpcName: string;
+    routerName: string;
+    publicMultusNetwork: string;
+    publicIpv4?: string;
+  },
+): Promise<FloatingIpAssociation> {
+  const policy = await getRouterPolicyConfigMap(
+    input.cluster,
+    input.namespace,
+    input.routerName,
+  );
+  if (!policy?.doc) {
+    throw new Error(`No router policy for ${input.namespace}/${input.routerName}`);
+  }
+  const doc = policy.doc;
+  if (!doc.external?.multusNetwork?.trim()) {
+    throw new Error(
+      `Router ${input.routerName} has no external gateway — set one before floating IPs`,
+    );
+  }
+  if (!doc.interfaces.some((i) => i.vpc === input.vpcName)) {
+    throw new Error(`VPC ${input.vpcName} is not attached to router ${input.routerName}`);
+  }
+
+  const publicPool = findIpPoolForMultus(input.cluster, input.publicMultusNetwork);
+  if (!publicPool) {
+    throw new Error(`No ipPools entry for public Multus "${input.publicMultusNetwork}"`);
+  }
+  const prefix = parseCidr(publicPool.cidr).prefix;
+
+  let publicAddr: string;
+  if (input.publicIpv4?.trim()) {
+    publicAddr =
+      addressFromIpv4Annotation(input.publicIpv4.trim()) ?? input.publicIpv4.trim();
+    if (!containsIpv4(parseCidr(publicPool.cidr), publicAddr)) {
+      throw new Error(`Public address ${publicAddr} is outside pool ${publicPool.cidr}`);
+    }
+    // Already held for this VPC?
+    const existingHeld = doc.floatingIPs.find((f) => {
+      const pub = addressFromIpv4Annotation(f.public) ?? f.public;
+      return pub === publicAddr && !f.private?.trim();
+    });
+    if (existingHeld) {
+      return {
+        id: existingHeld.id,
+        public: publicAddr,
+        prefix: existingHeld.prefix || prefix,
+        state: "held",
+      };
+    }
+    const already = doc.floatingIPs.find((f) => {
+      const pub = addressFromIpv4Annotation(f.public) ?? f.public;
+      return pub === publicAddr;
+    });
+    if (already) {
+      throw new Error(
+        already.private?.trim()
+          ? `Public address ${publicAddr} is already associated to ${already.private}`
+          : `Public address ${publicAddr} is already reserved`,
+      );
+    }
+    const pfsOnPublic = (doc.portForwards ?? []).filter(
+      (pf) => (addressFromIpv4Annotation(pf.public) ?? pf.public) === publicAddr,
+    );
+    if (pfsOnPublic.length > 0) {
+      throw new Error(
+        `Public address ${publicAddr} has ${pfsOnPublic.length} port forward(s) — delete them first`,
+      );
+    }
+    await allocateIpv4ForMultus(
+      input.cluster,
+      input.publicMultusNetwork,
+      input.namespace,
+      { preferredAddress: publicAddr },
+    );
+  } else {
+    const alloc = await allocateIpv4ForMultus(
+      input.cluster,
+      input.publicMultusNetwork,
+      input.namespace,
+    );
+    if (!alloc) throw new Error("Could not allocate a public floating IP");
+    publicAddr = alloc.address;
+  }
+
+  if (
+    doc.floatingIPs.some(
+      (f) => (addressFromIpv4Annotation(f.public) ?? f.public) === publicAddr,
+    )
+  ) {
+    throw new Error(`Public address ${publicAddr} is already a floating IP`);
+  }
+
+  const id = `fip-${publicAddr.replace(/\./g, "-")}`;
+  doc.floatingIPs = [
+    ...doc.floatingIPs,
+    {
+      id,
+      public: publicAddr,
+      prefix,
+      vpc: input.vpcName,
+      protocol: "all",
+    },
+  ];
+  await replaceRouterPolicyDoc(input.cluster, input.namespace, input.routerName, doc, {
+    bumpGeneration: true,
+  });
+  await syncRouterFloatingAnnotation(
+    input.cluster,
+    input.namespace,
+    input.routerName,
+    floatingIpsFromRouterDoc(doc),
+  );
+  return {
+    id,
+    public: publicAddr,
+    prefix,
+    state: "held",
+  };
+}
+
 export async function disassociateRouterFloatingIp(
   input: DisassociateFloatingIpRequest & { routerName: string },
 ): Promise<void> {

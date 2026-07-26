@@ -5,6 +5,7 @@ import {
   Button,
   Checkbox,
   Code,
+  Group,
   Menu,
   Select,
   Stack,
@@ -27,6 +28,7 @@ import {
   BulkActionBar,
   ConfirmActionModal,
   ConsolePaper,
+  CopyableValue,
   FilterBar,
   PageHeader,
   ResourceLink,
@@ -182,6 +184,7 @@ export default function FloatingIpsPage({ loaderData }: Route.ComponentProps) {
   const { filters, qDraft, setQ, setFilter } = useListFilters();
   const [searchParams, setSearchParams] = useSearchParams();
   const vpcFilter = getSearchParam(searchParams, "vpc");
+  const stateFilter = getSearchParam(searchParams, "state");
   const [disassociateTarget, setDisassociateTarget] =
     useState<FloatingIpSummary | null>(null);
   const [releaseTarget, setReleaseTarget] = useState<FloatingIpSummary | null>(null);
@@ -204,6 +207,9 @@ export default function FloatingIpsPage({ loaderData }: Route.ComponentProps) {
       if (filters.cluster && f.cluster !== filters.cluster) return false;
       if (filters.namespace && f.namespace !== filters.namespace) return false;
       if (vpcFilter && f.vpcName !== vpcFilter) return false;
+      if (stateFilter === "associated" || stateFilter === "held") {
+        if (f.state !== stateFilter) return false;
+      }
       return matchesQuery(qDraft, [
         f.public,
         f.private,
@@ -216,7 +222,7 @@ export default function FloatingIpsPage({ loaderData }: Route.ComponentProps) {
         f.state,
       ]);
     });
-  }, [items, filters.cluster, filters.namespace, vpcFilter, qDraft]);
+  }, [items, filters.cluster, filters.namespace, vpcFilter, stateFilter, qDraft]);
 
   const visibleKeys = useMemo(() => filtered.map(floatingIpKey), [filtered]);
   const {
@@ -292,15 +298,25 @@ export default function FloatingIpsPage({ loaderData }: Route.ComponentProps) {
     <Stack gap="md">
       <PageHeader
         title="Floating IPs"
-        description={`${filtered.length} shown · ${items.length} total · disassociate keeps the public IP; release returns it to the pool`}
+        description={`${filtered.length} shown · ${items.length} total · reserve holds a public IP; associate maps it; release returns it to the pool`}
         actions={
-          <Button
-            component={Link}
-            to={floatingIpCreatePath()}
-            leftSection={<IconPlus size={16} />}
-          >
-            Associate floating IP
-          </Button>
+          <Group gap="xs">
+            <Button
+              component={Link}
+              to={floatingIpCreatePath({ mode: "reserve" })}
+              variant="default"
+              leftSection={<IconPlus size={16} />}
+            >
+              Reserve
+            </Button>
+            <Button
+              component={Link}
+              to={floatingIpCreatePath({ mode: "associate" })}
+              leftSection={<IconPlus size={16} />}
+            >
+              Associate
+            </Button>
+          </Group>
         }
       />
 
@@ -346,6 +362,25 @@ export default function FloatingIpsPage({ loaderData }: Route.ComponentProps) {
               })
             }
             w={160}
+          />
+          <Select
+            placeholder="State"
+            clearable
+            data={[
+              { value: "associated", label: "Associated" },
+              { value: "held", label: "Held" },
+            ]}
+            value={stateFilter === "associated" || stateFilter === "held" ? stateFilter : null}
+            onChange={(v) =>
+              setSearchParams(
+                (prev) =>
+                  patchSearchParams(prev, {
+                    state: v === "associated" || v === "held" ? v : null,
+                  }),
+                { replace: true },
+              )
+            }
+            w={140}
           />
         </FilterBar>
 
@@ -425,9 +460,10 @@ export default function FloatingIpsPage({ loaderData }: Route.ComponentProps) {
                     />
                   </Table.Td>
                   <Table.Td>
-                    <Code>
-                      {f.public}/{f.prefix}
-                    </Code>
+                    <CopyableValue
+                      value={f.public}
+                      display={`${f.public}/${f.prefix}`}
+                    />
                   </Table.Td>
                   <Table.Td>
                     <Badge

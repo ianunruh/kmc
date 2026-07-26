@@ -4,6 +4,7 @@ export { ConfirmActionModal } from "./confirm-action-modal";
 export { ConfirmBulkDeleteModal } from "./confirm-bulk-delete-modal";
 export { ConfirmDeleteModal } from "./confirm-delete-modal";
 export { ConsolePaper } from "./console-paper";
+export { CopyButton, CopyableValue } from "./copyable";
 export { DetailField } from "./detail-field";
 export { DetailSection } from "./detail-section";
 export { DetailTabs, type DetailTabItem } from "./detail-tabs";

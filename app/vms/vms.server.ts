@@ -42,9 +42,13 @@ import {
   KMC_ANN_DISK_SIZE,
   KMC_ANN_RETAINED_AT,
   KMC_ANN_ROUTER,
+  KMC_BACKEND_LABEL_SELECTOR,
+  KMC_INGRESS_LABEL_SELECTOR,
   KMC_LABEL_RESOURCE,
   KMC_LABEL_RETAINED_FROM_VM,
   KMC_LABEL_ROLE,
+  KMC_LABEL_TARGET_KIND,
+  KMC_LABEL_VM,
   KMC_LABEL_VLAN,
   KMC_MANAGED_BY,
   KMC_MAX_EXTRA_DISKS,
@@ -52,6 +56,7 @@ import {
   KMC_RESOURCE_NETWORK,
   KMC_RESOURCE_VPC,
   KMC_ROLE_ROUTER,
+  KMC_TARGET_KIND_VM,
   MANAGED_BY_LABEL,
   REUSABLE_DV_PHASES,
 } from "~/lib/k8s/constants";
@@ -951,17 +956,28 @@ export async function listVms(clusterFilter?: ClusterId): Promise<{
       const cluster = byId.get(id);
       if (!cluster?.reachable) return;
       try {
-        const { custom } = getClusterClients(id);
-        const [res, instanceTypes, floats, dvIndex] = await Promise.all([
-          custom.listClusterCustomObject({
-            group: "kubevirt.io",
-            version: "v1",
-            plural: "virtualmachines",
-          }) as Promise<{ items?: KubeVm[] }>,
-          loadInstanceTypeSizes(id),
-          listFloatingIpsFromRouterPolicies(id).catch(() => []),
-          loadClusterDataVolumeDiskIndex(id),
-        ]);
+        const { custom, core, networking } = getClusterClients(id);
+        const [res, instanceTypes, floats, dvIndex, backendSvcs, ings] =
+          await Promise.all([
+            custom.listClusterCustomObject({
+              group: "kubevirt.io",
+              version: "v1",
+              plural: "virtualmachines",
+            }) as Promise<{ items?: KubeVm[] }>,
+            loadInstanceTypeSizes(id),
+            listFloatingIpsFromRouterPolicies(id).catch(() => []),
+            loadClusterDataVolumeDiskIndex(id),
+            core
+              .listServiceForAllNamespaces({
+                labelSelector: KMC_BACKEND_LABEL_SELECTOR,
+              })
+              .catch(() => ({ items: [] as unknown[] })),
+            networking
+              .listIngressForAllNamespaces({
+                labelSelector: KMC_INGRESS_LABEL_SELECTOR,
+              })
+              .catch(() => ({ items: [] as unknown[] })),
+          ]);
 
         // Map floating public IPs → VMs by targetVm name or private IPAM address.
         const floatsByVmKey = new Map<string, string[]>();
@@ -996,6 +1012,64 @@ export async function listVms(clusterFilter?: ClusterId): Promise<{
           floatsByVmKey.set(key, list);
         }
 
+        // Exposure chips: single-vm Ingress hosts + LoadBalancer VIPs (cheap path).
+        const ingressHostsByVm = new Map<string, string[]>();
+        for (const raw of (ings as { items?: unknown[] }).items ?? []) {
+          const ing = raw as {
+            metadata?: {
+              namespace?: string;
+              labels?: Record<string, string>;
+            };
+            spec?: { rules?: Array<{ host?: string }> };
+          };
+          const labels = ing.metadata?.labels ?? {};
+          if (labels[KMC_LABEL_TARGET_KIND] && labels[KMC_LABEL_TARGET_KIND] !== KMC_TARGET_KIND_VM) {
+            continue;
+          }
+          const vmName = labels[KMC_LABEL_VM];
+          const ns = ing.metadata?.namespace;
+          if (!vmName || !ns) continue;
+          const hosts = (ing.spec?.rules ?? [])
+            .map((r) => r.host?.trim())
+            .filter((h): h is string => Boolean(h));
+          if (!hosts.length) continue;
+          const key = `${ns}/${vmName}`;
+          const list = ingressHostsByVm.get(key) ?? [];
+          for (const h of hosts) {
+            if (!list.includes(h)) list.push(h);
+          }
+          ingressHostsByVm.set(key, list);
+        }
+
+        const lbAddrsByVm = new Map<string, string[]>();
+        for (const raw of (backendSvcs as { items?: unknown[] }).items ?? []) {
+          const svc = raw as {
+            metadata?: {
+              namespace?: string;
+              labels?: Record<string, string>;
+            };
+            spec?: { type?: string };
+            status?: {
+              loadBalancer?: {
+                ingress?: Array<{ ip?: string; hostname?: string }>;
+              };
+            };
+          };
+          if ((svc.spec?.type ?? "ClusterIP") !== "LoadBalancer") continue;
+          const labels = svc.metadata?.labels ?? {};
+          if (labels[KMC_LABEL_TARGET_KIND] !== KMC_TARGET_KIND_VM) continue;
+          const vmName = labels[KMC_LABEL_VM];
+          const ns = svc.metadata?.namespace;
+          if (!vmName || !ns) continue;
+          const lb = svc.status?.loadBalancer?.ingress?.[0];
+          const addr = lb?.hostname || lb?.ip;
+          if (!addr) continue;
+          const key = `${ns}/${vmName}`;
+          const list = lbAddrsByVm.get(key) ?? [];
+          if (!list.includes(addr)) list.push(addr);
+          lbAddrsByVm.set(key, list);
+        }
+
         for (const vm of res.items ?? []) {
           const summary = mapVm(id, vm, instanceTypes);
           applyRootDiskFromIndex(summary, dvIndex);
@@ -1004,6 +1078,10 @@ export async function listVms(clusterFilter?: ClusterId): Promise<{
           if (floatingIpv4?.length) {
             summary.floatingIpv4 = floatingIpv4;
           }
+          const hosts = ingressHostsByVm.get(key);
+          if (hosts?.length) summary.ingressHosts = hosts;
+          const lbAddrs = lbAddrsByVm.get(key);
+          if (lbAddrs?.length) summary.loadBalancerAddresses = lbAddrs;
           items.push(summary);
         }
       } catch (err) {

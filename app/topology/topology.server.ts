@@ -35,7 +35,10 @@ import type {
   TopologyNetworkNode,
   TopologyVmNode,
 } from "~/lib/types";
-import { listFloatingIpsFromRouterPolicies } from "~/vpcs/router-policy.server";
+import {
+  listFloatingIpsFromRouterPolicies,
+  listPortForwardsFromRouterPolicies,
+} from "~/vpcs/router-policy.server";
 
 import { listClusters } from "~/vms/vms.server";
 
@@ -443,6 +446,71 @@ async function loadClusterTopology(
   } catch (err) {
     console.error(
       `topology floating IPs (${cluster}):`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
+  // Port forwards: public Multus → target (dashed, distinct from full FIP).
+  try {
+    const pfs = await listPortForwardsFromRouterPolicies(cluster);
+    const pools = listIpPools(cluster);
+    for (const pf of pfs) {
+      const publicAddr =
+        addressFromIpv4Annotation(pf.public) ?? pf.public.trim();
+      if (!publicAddr) continue;
+
+      let targetVmId: string | undefined;
+      if (pf.targetVm?.trim()) {
+        targetVmId = vmByNsName.get(`${pf.namespace}/${pf.targetVm.trim()}`)?.id;
+      }
+      if (!targetVmId && pf.private?.trim()) {
+        const priv = addressFromIpv4Annotation(pf.private) ?? pf.private.trim();
+        if (priv) {
+          targetVmId = vmIdsByPrivate.get(`${pf.namespace}|${priv}`);
+        }
+      }
+      if (!targetVmId) continue;
+
+      let publicRef: ReturnType<typeof resolveMultusRef> = null;
+      for (const pool of pools) {
+        try {
+          if (containsIpv4(parseCidr(pool.cidr), publicAddr)) {
+            publicRef = resolveMultusRef(
+              cluster,
+              pf.namespace,
+              pool.multusNetwork,
+            );
+            break;
+          }
+        } catch {
+          /* skip bad pool */
+        }
+      }
+      if (!publicRef) continue;
+
+      if (!networksById.has(publicRef.networkId)) {
+        networksById.set(publicRef.networkId, {
+          id: publicRef.networkId,
+          kind: "multus",
+          cluster,
+          namespace: publicRef.namespace,
+          name: publicRef.name,
+          exists: false,
+        });
+      }
+
+      const label = `${publicAddr}:${pf.publicPort}`;
+      edges.push({
+        id: `pf:${publicRef.networkId}->${targetVmId}:${label}/${pf.protocol}`,
+        networkId: publicRef.networkId,
+        vmId: targetVmId,
+        role: "portforward",
+        label,
+      });
+    }
+  } catch (err) {
+    console.error(
+      `topology port forwards (${cluster}):`,
       err instanceof Error ? err.message : String(err),
     );
   }

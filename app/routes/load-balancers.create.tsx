@@ -1,7 +1,6 @@
 import {
   Alert,
   Button,
-  NumberInput,
   Select,
   Stack,
   Text,
@@ -14,9 +13,21 @@ import type { Route } from "./+types/load-balancers.create";
 import { notifyActionError } from "~/lib/action-feedback";
 import { FormActions, FormSection, PageHeader } from "~/ui";
 import { logServerError } from "~/lib/errors";
-import { loadBalancerPath, validateDns1123Label } from "~/lib/format";
+import {
+  ingressCreatePath,
+  loadBalancerPath,
+  validateDns1123Label,
+} from "~/lib/format";
 import { createLoadBalancer } from "~/backends/backends.server";
-import { BackendMembershipFields } from "~/backends/membership-fields";
+import {
+  BackendMembershipFields,
+  multusWarningVms,
+} from "~/backends/membership-fields";
+import {
+  BackendPortsFields,
+  emptyPortRow,
+  type PortRow,
+} from "~/backends/ports-fields";
 import {
   groupMembership,
   labelsMembership,
@@ -71,14 +82,7 @@ export async function action({ request }: Route.ActionArgs) {
   const vmName = String(form.get("vmName") ?? "").trim();
   const vmNamesRaw = String(form.get("vmNames") ?? "").trim();
   const matchLabelsText = String(form.get("matchLabelsText") ?? "").trim();
-  const servicePortRaw = String(form.get("servicePort") ?? "80").trim();
-  const targetPortRaw = String(form.get("targetPort") ?? "80").trim();
-  const protocol = (String(form.get("protocol") ?? "TCP").trim() ||
-    "TCP") as BackendPortProtocol;
-  const portName = String(form.get("portName") ?? "").trim() || undefined;
-
-  const servicePort = Number(servicePortRaw);
-  const targetPort = Number(targetPortRaw);
+  const portsJson = String(form.get("portsJson") ?? "").trim();
 
   try {
     let membership;
@@ -98,14 +102,39 @@ export async function action({ request }: Route.ActionArgs) {
       throw new Error(`Unsupported membership mode: ${membershipMode}`);
     }
 
-    if (!Number.isFinite(servicePort) || servicePort < 1 || servicePort > 65535) {
-      throw new Error("service port must be 1–65535");
-    }
-    if (!Number.isFinite(targetPort) || targetPort < 1 || targetPort > 65535) {
-      throw new Error("target port must be 1–65535");
-    }
-    if (protocol !== "TCP" && protocol !== "UDP") {
-      throw new Error("protocol must be TCP or UDP");
+    let ports: Array<{
+      name?: string;
+      port: number;
+      targetPort: number;
+      protocol?: BackendPortProtocol;
+    }>;
+    try {
+      const parsed = JSON.parse(portsJson || "[]") as PortRow[];
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        throw new Error("at least one port is required");
+      }
+      ports = parsed.map((p, i) => {
+        const port = Number(p.port);
+        const targetPort = Number(p.targetPort);
+        if (!Number.isFinite(port) || port < 1 || port > 65535) {
+          throw new Error(`service port #${i + 1} must be 1–65535`);
+        }
+        if (!Number.isFinite(targetPort) || targetPort < 1 || targetPort > 65535) {
+          throw new Error(`target port #${i + 1} must be 1–65535`);
+        }
+        const protocol = (String(p.protocol ?? "TCP").toUpperCase() === "UDP"
+          ? "UDP"
+          : "TCP") as BackendPortProtocol;
+        return {
+          name: p.name?.trim() || `port-${i}`,
+          port,
+          targetPort,
+          protocol,
+        };
+      });
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("port")) throw err;
+      throw new Error("invalid ports payload");
     }
 
     const created = await createLoadBalancer({
@@ -113,14 +142,7 @@ export async function action({ request }: Route.ActionArgs) {
       namespace,
       name,
       membership,
-      ports: [
-        {
-          name: portName ?? "svc",
-          port: servicePort,
-          targetPort,
-          protocol,
-        },
-      ],
+      ports,
     });
     return redirect(loadBalancerPath(created));
   } catch (err) {
@@ -161,16 +183,19 @@ export default function CreateLoadBalancerPage({
       vmName: prefill.vmName,
       vmNames: prefill.vmName ? [prefill.vmName] : ([] as string[]),
       matchLabelsText: "",
-      servicePort:
-        Number.isFinite(prefillServicePort) && prefillServicePort > 0
-          ? prefillServicePort
-          : 80,
-      targetPort:
-        Number.isFinite(prefillTargetPort) && prefillTargetPort > 0
-          ? prefillTargetPort
-          : 80,
-      protocol: prefillProtocol as BackendPortProtocol,
-      portName: "",
+      ports: [
+        emptyPortRow({
+          port:
+            Number.isFinite(prefillServicePort) && prefillServicePort > 0
+              ? prefillServicePort
+              : 80,
+          targetPort:
+            Number.isFinite(prefillTargetPort) && prefillTargetPort > 0
+              ? prefillTargetPort
+              : 80,
+          protocol: prefillProtocol as BackendPortProtocol,
+        }),
+      ] as PortRow[],
     },
     validate: {
       cluster: (v) => (!v ? "Required" : null),
@@ -192,10 +217,7 @@ export default function CreateLoadBalancerPage({
           return err instanceof Error ? err.message : "Invalid labels";
         }
       },
-      servicePort: (v) =>
-        !Number.isFinite(v) || v < 1 || v > 65535 ? "1–65535" : null,
-      targetPort: (v) =>
-        !Number.isFinite(v) || v < 1 || v > 65535 ? "1–65535" : null,
+      ports: (v) => (!v?.length ? "At least one port" : null),
     },
   });
 
@@ -230,22 +252,40 @@ export default function CreateLoadBalancerPage({
     [vmsFetcher.data?.vms],
   );
 
-  const ingressPrefill = useMemo(() => {
-    const p = new URLSearchParams();
-    if (form.values.cluster) p.set("cluster", form.values.cluster);
-    if (form.values.namespace) p.set("namespace", form.values.namespace);
-    if (form.values.vmName) p.set("vmName", form.values.vmName);
-    if (form.values.name) p.set("name", form.values.name);
-    const q = p.toString();
-    return q ? `/ingresses/create?${q}` : "/ingresses/create";
-  }, [
-    form.values.cluster,
-    form.values.namespace,
-    form.values.vmName,
-    form.values.name,
-  ]);
+  const ingressPrefill = useMemo(
+    () =>
+      ingressCreatePath({
+        cluster: form.values.cluster || null,
+        namespace: form.values.namespace || null,
+        vmName: form.values.vmName || null,
+        name: form.values.name || null,
+      }),
+    [
+      form.values.cluster,
+      form.values.namespace,
+      form.values.vmName,
+      form.values.name,
+    ],
+  );
+
+  const multusBlocked = useMemo(
+    () =>
+      multusWarningVms(
+        form.values.membershipMode,
+        vms,
+        form.values.vmName,
+        form.values.vmNames,
+      ).length > 0,
+    [
+      form.values.membershipMode,
+      form.values.vmName,
+      form.values.vmNames,
+      vms,
+    ],
+  );
 
   const onSubmit = form.onSubmit((values) => {
+    if (multusBlocked) return;
     submit(
       {
         cluster: values.cluster,
@@ -255,10 +295,7 @@ export default function CreateLoadBalancerPage({
         vmName: values.vmName,
         vmNames: values.vmNames.join(","),
         matchLabelsText: values.matchLabelsText,
-        servicePort: String(values.servicePort),
-        targetPort: String(values.targetPort),
-        protocol: values.protocol,
-        portName: values.portName,
+        portsJson: JSON.stringify(values.ports),
       },
       { method: "post" },
     );
@@ -358,38 +395,9 @@ export default function CreateLoadBalancerPage({
           </FormSection>
 
           <FormSection title="Ports">
-            <NumberInput
-              label="Service port"
-              description="Port exposed on the LoadBalancer VIP"
-              min={1}
-              max={65535}
-              required
-              {...form.getInputProps("servicePort")}
-            />
-            <NumberInput
-              label="Target port"
-              description="Port on the virt-launcher pod / guest"
-              min={1}
-              max={65535}
-              required
-              {...form.getInputProps("targetPort")}
-            />
-            <Select
-              label="Protocol"
-              data={["TCP", "UDP"]}
-              value={form.values.protocol}
-              onChange={(v) =>
-                form.setFieldValue(
-                  "protocol",
-                  (v as BackendPortProtocol) ?? "TCP",
-                )
-              }
-            />
-            <TextInput
-              label="Port name"
-              description="Optional Kubernetes port name"
-              placeholder="http"
-              {...form.getInputProps("portName")}
+            <BackendPortsFields
+              ports={form.values.ports}
+              onChange={(ports) => form.setFieldValue("ports", ports)}
             />
           </FormSection>
 
@@ -397,7 +405,7 @@ export default function CreateLoadBalancerPage({
             <Button component={Link} to="/load-balancers" variant="default">
               Cancel
             </Button>
-            <Button type="submit" loading={submitting}>
+            <Button type="submit" loading={submitting} disabled={multusBlocked}>
               Create Load Balancer
             </Button>
           </FormActions>

@@ -175,7 +175,22 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 - **VPCs** — self-service Multus networks from a cluster VLAN pool (`vlanPools`); optional private CIDR for IPAM
 - **Routers** — shared DHCP/DNS appliance per namespace (OpenStack-style); multi-VPC at create and day-2 Multus hotplug attach/detach; agent-owned private L3; external SNAT + floating IPs + port forwards
 - **SSH keys** — signed-in users save named public keys (ConfigMap on the settings cluster); select when creating a VM
-- **Ingresses** — create/list/detail/delete HTTP Ingresses bound to a VM (companion ClusterIP Service selects `kubevirt.io/vm`)
+- **Expose VMs** — two planes (see matrix below): VPC L3 (floating IPs / port forwards) and pod L4/L7 (Ingress / LoadBalancer)
+- **Ingresses** — create/list/detail/edit/delete HTTP Ingresses (companion ClusterIP Service, or expose-existing backend)
+- **Load balancers** — Service type LoadBalancer with membership (single VM / group / labels) and multi-port edit
+
+### Exposing a VM
+
+| Mechanism | Plane | What it gives you | Needs |
+| --------- | ----- | ----------------- | ----- |
+| **Floating IP** | VPC / Multus | Full public address → private guest IP (any protocol) | VPC + router external gateway |
+| **Port forward** | VPC / Multus | Public `IP:port` → private `IP:port` (no dedicated FIP) | Same as FIP |
+| **Ingress** | Pod / masquerade | HTTP(S) host/path via ClusterIP + Ingress | Guest pod NIC; listen on target port |
+| **Load balancer** | Pod / masquerade | L4 VIP (TCP/UDP), `externalTrafficPolicy: Local` | Guest pod NIC; MetalLB (or cloud LB) |
+
+- **Reserve** a floating IP to hold a public address without mapping; **associate** to bind private; **disassociate** keeps the public held; **release** returns it to the pool.
+- Ingress / LB select **virt-launcher pod IPs**, not Multus guest addresses. Dual-home Multus VMs (include pod network) for pod-plane exposure.
+- From a VM: **Expose** menu on the detail header, or the **Networking** tab.
 
 - **Data volumes** — list, create (blank / PVC clone / HTTP), detail, delete
 - **Images** — golden disks in `vm-images` (`KMC_IMAGE_NAMESPACE`): list, HTTP import (CDI DataVolume), set `cluster-preference` label, delete, Launch VM deep-link. Local file path remains `virtctl image-upload` (see below)
