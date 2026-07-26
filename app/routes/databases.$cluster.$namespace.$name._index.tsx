@@ -14,6 +14,7 @@ import {
   formatAge,
   formatDateTime,
 } from "~/lib/format";
+import { DatabaseMetricsPanel } from "~/databases/db-metrics-panel";
 import type { loader as detailLoader } from "./databases.$cluster.$namespace.$name";
 
 const LAYOUT_ID = "routes/databases.$cluster.$namespace.$name";
@@ -22,7 +23,7 @@ export default function DatabaseOverviewTab() {
   const data = useRouteLoaderData(LAYOUT_ID) as Awaited<
     ReturnType<typeof detailLoader>
   >;
-  const { db } = data;
+  const { db, prometheusConfigured } = data;
 
   const resources =
     db.cpuRequest || db.memoryRequest || db.cpuLimit || db.memoryLimit
@@ -40,6 +41,14 @@ export default function DatabaseOverviewTab() {
 
   return (
     <Stack gap="md">
+      {prometheusConfigured && (
+        <DatabaseMetricsPanel
+          cluster={db.cluster}
+          namespace={db.namespace}
+          name={db.name}
+        />
+      )}
+
       <DetailSection title="Overview">
         <SimpleGrid cols={{ base: 2, md: 3 }} spacing="sm">
           <DetailField

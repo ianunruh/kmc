@@ -25,6 +25,7 @@ import {
   detailTabPath,
 } from "~/lib/format";
 import { deleteDatabase, getDatabase } from "~/databases/databases.server";
+import { hasClusterPrometheus } from "~/lib/k8s/cluster-config.server";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 
 export function meta({ params }: Route.MetaArgs) {
@@ -37,7 +38,10 @@ export async function loader({ params }: Route.LoaderArgs) {
     throw new Response("Missing path params", { status: 400 });
   }
   const db = await getDatabase(cluster, namespace, name);
-  return { db };
+  return {
+    db,
+    prometheusConfigured: hasClusterPrometheus(cluster),
+  };
 }
 
 export async function action({ request, params }: Route.ActionArgs) {

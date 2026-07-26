@@ -42,3 +42,38 @@ export type VmMetricsSnapshot = {
     disk: MetricSeries[];
   };
 };
+
+/** High-level CloudNativePG / Postgres metrics for a Cluster. */
+export type DatabaseMetricsSnapshot = {
+  configured: boolean;
+  range: MetricsRange;
+  stepSec: number;
+  start: number;
+  end: number;
+  /** True when Prometheus answered but no CNPG series for this cluster. */
+  empty: boolean;
+  error?: string;
+  current: {
+    connections?: number;
+    connectionsActive?: number;
+    connectionsIdle?: number;
+    connectionsWaiting?: number;
+    commitsPerSec?: number;
+    rollbacksPerSec?: number;
+    databaseSizeBytes?: number;
+    replicationLagSeconds?: number;
+    cpuCores?: number;
+    memoryBytes?: number;
+    cacheHitRatio?: number;
+    tupFetchedPerSec?: number;
+    tupInsertedPerSec?: number;
+    tupUpdatedPerSec?: number;
+    tupDeletedPerSec?: number;
+  };
+  charts: {
+    connections: MetricSeries[];
+    transactions: MetricSeries[];
+    tuples: MetricSeries[];
+    resources: MetricSeries[];
+  };
+};

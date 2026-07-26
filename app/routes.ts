@@ -156,4 +156,8 @@ export default [
     "api/vms/:cluster/:namespace/:name/metrics",
     "routes/api.vms.$cluster.$namespace.$name.metrics.ts",
   ),
+  route(
+    "api/databases/:cluster/:namespace/:name/metrics",
+    "routes/api.databases.$cluster.$namespace.$name.metrics.ts",
+  ),
 ] satisfies RouteConfig;
