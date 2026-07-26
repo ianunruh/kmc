@@ -210,6 +210,35 @@ export function databasePath(
   return `/databases/${encodeURIComponent(db.cluster)}/${encodeURIComponent(db.namespace)}/${encodeURIComponent(db.name)}`;
 }
 
+/** Browser psql terminal (pod exec as app user on the primary). */
+export function databaseTerminalPath(
+  db: Pick<
+    { cluster: string; namespace: string; name: string },
+    "cluster" | "namespace" | "name"
+  >,
+): string {
+  return `${databasePath(db)}/terminal`;
+}
+
+/**
+ * psql terminal needs a live primary (or at least one ready instance).
+ * Status "Ready" alone is enough when status fields lag.
+ */
+export function canOpenDatabaseTerminal(
+  db: Pick<
+    {
+      status: string;
+      readyInstances?: number;
+      currentPrimary?: string;
+    },
+    "status" | "readyInstances" | "currentPrimary"
+  >,
+): boolean {
+  if (db.currentPrimary?.trim()) return true;
+  if ((db.readyInstances ?? 0) > 0) return true;
+  return db.status === "Ready";
+}
+
 export function databasesListPath(
   filters: {
     q?: string | null;

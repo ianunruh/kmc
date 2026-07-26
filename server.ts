@@ -1,8 +1,8 @@
 /**
- * Production HTTP server: React Router request handler + VM console WebSockets
- * (serial + SSH terminal).
+ * Production HTTP server: React Router request handler + console WebSockets
+ * (VM serial/SSH + database psql terminal).
  *
- * Dev uses Vite's server via the kmc-vm-console-ws plugin (see vite.config.ts).
+ * Dev uses Vite's server via the kmc-console-ws plugin (see vite.config.ts).
  */
 import { createServer } from "node:http";
 import { createRequestListener } from "@react-router/node";
@@ -10,6 +10,7 @@ import compression from "compression";
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { attachPsqlConsoleWs } from "./app/databases/psql-console-ws.server";
 import { attachSerialConsoleWs } from "./app/vms/serial-console-ws.server";
 import { attachSshConsoleWs } from "./app/vms/ssh-console-ws.server";
 
@@ -55,6 +56,7 @@ server.on("clientError", (err, socket) => {
 });
 attachSerialConsoleWs(server);
 attachSshConsoleWs(server);
+attachPsqlConsoleWs(server);
 
 server.listen(port, () => {
   console.warn(`[kmc] http://localhost:${port}`);

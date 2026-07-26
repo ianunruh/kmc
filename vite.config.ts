@@ -2,13 +2,13 @@ import { reactRouter } from "@react-router/dev/vite";
 import { defineConfig, type Plugin } from "vite";
 
 /**
- * Attach KubeVirt serial + SSH terminal WS proxies on Vite's HTTP server.
+ * Attach console WS proxies (VM serial/SSH + database psql) on Vite's HTTP server.
  * Loads attach modules via Vite SSR so `~/` aliases resolve.
  * Path-filtered inside each attach so HMR upgrades are never claimed.
  */
-function vmConsoleWsPlugin(): Plugin {
+function consoleWsPlugin(): Plugin {
   return {
-    name: "kmc-vm-console-ws",
+    name: "kmc-console-ws",
     configureServer(server) {
       // Malformed client requests / abrupt disconnects on the HTTP server must
       // not take down the whole Vite process (default is often uncaught).
@@ -28,16 +28,23 @@ function vmConsoleWsPlugin(): Plugin {
             "./app/vms/serial-console-ws.server.ts",
           );
           const sshMod = await server.ssrLoadModule("./app/vms/ssh-console-ws.server.ts");
+          const psqlMod = await server.ssrLoadModule(
+            "./app/databases/psql-console-ws.server.ts",
+          );
           const attachSerialConsoleWs = serialMod.attachSerialConsoleWs as (
             s: typeof server.httpServer,
           ) => void;
           const attachSshConsoleWs = sshMod.attachSshConsoleWs as (
             s: typeof server.httpServer,
           ) => void;
+          const attachPsqlConsoleWs = psqlMod.attachPsqlConsoleWs as (
+            s: typeof server.httpServer,
+          ) => void;
           attachSerialConsoleWs(server.httpServer);
           attachSshConsoleWs(server.httpServer);
+          attachPsqlConsoleWs(server.httpServer);
         } catch (err) {
-          console.error("[kmc] failed to attach VM console WS:", err);
+          console.error("[kmc] failed to attach console WS:", err);
         }
       };
       void attach();
@@ -49,7 +56,7 @@ function vmConsoleWsPlugin(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [reactRouter(), vmConsoleWsPlugin()],
+  plugins: [reactRouter(), consoleWsPlugin()],
   resolve: {
     tsconfigPaths: true,
   },

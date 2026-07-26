@@ -45,6 +45,10 @@ export default [
   route("databases", "routes/databases._index.tsx"),
   route("databases/create", "routes/databases.create.tsx"),
   route(
+    "databases/:cluster/:namespace/:name/terminal",
+    "routes/databases.$cluster.$namespace.$name.terminal.tsx",
+  ),
+  route(
     "databases/:cluster/:namespace/:name",
     "routes/databases.$cluster.$namespace.$name.tsx",
     [

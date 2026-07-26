@@ -16,6 +16,7 @@ import {
   IconDotsVertical,
   IconPlus,
   IconSearch,
+  IconTerminal2,
   IconTrash,
 } from "@tabler/icons-react";
 import { useMemo, useState } from "react";
@@ -47,9 +48,11 @@ import {
 } from "~/lib/bulk-action";
 import { actionFailure } from "~/lib/errors";
 import {
+  canOpenDatabaseTerminal,
   databaseCreatePath,
   databasePath,
   databasesListPath,
+  databaseTerminalPath,
   formatAge,
 } from "~/lib/format";
 import { clusterFromRequest } from "~/lib/search-params";
@@ -378,7 +381,7 @@ export default function DatabasesPage({ loaderData }: Route.ComponentProps) {
                     </Tooltip>
                   </Table.Td>
                   <Table.Td>
-                    <Menu shadow="md" width={160} position="bottom-end">
+                    <Menu shadow="md" width={180} position="bottom-end">
                       <Menu.Target>
                         <ActionIcon
                           variant="subtle"
@@ -391,6 +394,19 @@ export default function DatabasesPage({ loaderData }: Route.ComponentProps) {
                       <Menu.Dropdown>
                         <Menu.Item component={Link} to={databasePath(db)}>
                           Open
+                        </Menu.Item>
+                        <Menu.Item
+                          component={Link}
+                          to={databaseTerminalPath(db)}
+                          leftSection={<IconTerminal2 size={14} />}
+                          disabled={!canOpenDatabaseTerminal(db)}
+                          title={
+                            canOpenDatabaseTerminal(db)
+                              ? "Open psql as the app user"
+                              : "psql requires a primary instance"
+                          }
+                        >
+                          Terminal
                         </Menu.Item>
                         <Menu.Item
                           color="red"

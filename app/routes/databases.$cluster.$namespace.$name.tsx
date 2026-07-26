@@ -6,7 +6,7 @@ import {
   Stack,
   Title,
 } from "@mantine/core";
-import { IconArrowLeft, IconTrash } from "@tabler/icons-react";
+import { IconArrowLeft, IconTerminal2, IconTrash } from "@tabler/icons-react";
 import { useState } from "react";
 import { Link, Outlet, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/databases.$cluster.$namespace.$name";
@@ -20,8 +20,10 @@ import {
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
 import {
+  canOpenDatabaseTerminal,
   databasePath,
   databasesListPath,
+  databaseTerminalPath,
   detailTabPath,
 } from "~/lib/format";
 import { deleteDatabase, getDatabase } from "~/databases/databases.server";
@@ -130,15 +132,31 @@ export default function DatabaseDetailLayout({ loaderData }: Route.ComponentProp
             ]}
           />
         </div>
-        <Button
-          color="red"
-          variant="light"
-          leftSection={<IconTrash size={16} />}
-          disabled={busy}
-          onClick={() => setDeleteOpen(true)}
-        >
-          Delete
-        </Button>
+        <Group gap="xs" wrap="wrap" justify="flex-end">
+          <Button
+            component={Link}
+            to={databaseTerminalPath(db)}
+            variant="default"
+            leftSection={<IconTerminal2 size={16} />}
+            disabled={!canOpenDatabaseTerminal(db)}
+            title={
+              canOpenDatabaseTerminal(db)
+                ? "Open psql as the app user"
+                : "psql requires a primary instance"
+            }
+          >
+            Terminal
+          </Button>
+          <Button
+            color="red"
+            variant="light"
+            leftSection={<IconTrash size={16} />}
+            disabled={busy}
+            onClick={() => setDeleteOpen(true)}
+          >
+            Delete
+          </Button>
+        </Group>
       </Group>
 
       <DetailTabs

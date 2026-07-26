@@ -469,3 +469,82 @@ export async function deleteDatabase(
     throw new Error(formatError(err), { cause: err });
   }
 }
+
+/**
+ * Resolve primary pod + app credentials for an in-pod `psql` session.
+ * Used by the browser terminal WebSocket proxy.
+ */
+export async function resolvePsqlSessionTarget(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+): Promise<{
+  podName: string;
+  username: string;
+  password: string;
+  database: string;
+}> {
+  if (!cluster?.trim() || !namespace?.trim() || !name?.trim()) {
+    throw new Error("cluster, namespace, and name are required");
+  }
+
+  const { custom } = getClusterClients(cluster);
+  let obj: KubeCnpgCluster;
+  try {
+    obj = (await custom.getNamespacedCustomObject({
+      group: CNPG_GROUP,
+      version: CNPG_VERSION,
+      namespace,
+      plural: CNPG_CLUSTER_PLURAL,
+      name,
+    })) as KubeCnpgCluster;
+  } catch (err) {
+    const msg = formatError(err);
+    if (/not found|404/i.test(msg)) {
+      throw new Error(`Database ${namespace}/${name} not found on ${cluster}`);
+    }
+    throw new Error(msg, { cause: err });
+  }
+
+  const podName =
+    obj.status?.currentPrimary?.trim() ||
+    obj.status?.targetPrimary?.trim() ||
+    obj.status?.instanceNames?.find((n) => n?.trim())?.trim() ||
+    obj.status?.instancesStatus?.healthy?.[0]?.trim();
+
+  if (!podName) {
+    throw new Error(
+      `No primary instance for ${namespace}/${name} — wait until the cluster is Ready`,
+    );
+  }
+
+  const appCreds = await readRoleCredentials(
+    cluster,
+    namespace,
+    `${name}-app`,
+    "app",
+  );
+  if (appCreds.error) {
+    throw new Error(appCreds.error);
+  }
+
+  const username = appCreds.username?.trim();
+  const password = appCreds.password;
+  const database =
+    appCreds.database?.trim() ||
+    obj.spec?.bootstrap?.initdb?.database?.trim() ||
+    "app";
+
+  if (!username) {
+    throw new Error(
+      `App secret ${namespace}/${name}-app is missing username`,
+    );
+  }
+  if (password == null || password === "") {
+    throw new Error(
+      `App secret ${namespace}/${name}-app is missing password`,
+    );
+  }
+
+  return { podName, username, password, database };
+}
