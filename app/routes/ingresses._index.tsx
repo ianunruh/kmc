@@ -181,7 +181,7 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
     <Stack gap="md">
       <PageHeader
         title="Ingresses"
-        description={`${filtered.length} shown · ${items.length} total · Service backends (single VM, group, or labels)`}
+        description={`${filtered.length} shown · ${items.length} total · HTTP(S) via ClusterIP Service (single VM, group, or labels)`}
         actions={
           <Button
             component={Link}
@@ -202,7 +202,7 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
       <ConsolePaper>
         <FilterBar>
           <TextInput
-            placeholder="Search name, host, VM, namespace…"
+            placeholder="Search name, host, VM, membership, namespace…"
             leftSection={<IconSearch size={14} />}
             value={qDraft}
             onChange={(e) => setQ(e.currentTarget.value)}
@@ -247,7 +247,7 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
 
           <ResourceTable
             isEmpty={filtered.length === 0}
-            emptyMessage="No kmc-managed Ingresses found. Create one to expose a pod-network VM."
+            emptyMessage="No kmc-managed Ingresses yet. Create one to expose pod-network VM(s) over HTTP(S)."
             headers={[
               <Checkbox
                 key="select-all"
@@ -358,6 +358,9 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
                         </ActionIcon>
                       </Menu.Target>
                       <Menu.Dropdown>
+                        <Menu.Item component={Link} to={ingressPath(ing)}>
+                          Open
+                        </Menu.Item>
                         <Menu.Item
                           color="red"
                           leftSection={<IconTrash size={14} />}
@@ -386,7 +389,7 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
         }
         title="Delete Ingress"
         confirmLabel="Delete Ingress"
-        warning="Also deletes the companion ClusterIP Service with the same name. The VirtualMachine is not affected."
+        warning="Also deletes the companion ClusterIP Service with the same name. Group membership labels are cleared. VirtualMachines are not deleted."
         loading={busy}
         onClose={() => setDeleteTarget(null)}
         onConfirm={() => {
@@ -410,7 +413,7 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
         identities={selectedItems.map(resourceKey)}
         title={`Delete ${selectedItems.length} ingress${selectedItems.length === 1 ? "" : "es"}`}
         confirmLabel={`Delete ${selectedItems.length}`}
-        warning="Also deletes the companion ClusterIP Service with the same name. The VirtualMachine is not affected."
+        warning="Also deletes the companion ClusterIP Service with the same name. Group membership labels are cleared. VirtualMachines are not deleted."
         loading={busy}
         onClose={() => setBulkDeleteOpen(false)}
         onConfirm={() => {

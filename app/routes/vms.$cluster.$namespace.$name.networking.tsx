@@ -519,7 +519,7 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
             </Button>
             <Button
               component={Link}
-              to="/ingresses/create"
+              to={`/ingresses/create?cluster=${encodeURIComponent(vm.cluster)}&namespace=${encodeURIComponent(vm.namespace)}&vmName=${encodeURIComponent(vm.name)}`}
               size="xs"
               variant="light"
               color="grape"
@@ -628,7 +628,7 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
             </Button>
             <Button
               component={Link}
-              to="/load-balancers/create"
+              to={`/load-balancers/create?cluster=${encodeURIComponent(vm.cluster)}&namespace=${encodeURIComponent(vm.namespace)}&vmName=${encodeURIComponent(vm.name)}`}
               size="xs"
               variant="light"
               color="grape"

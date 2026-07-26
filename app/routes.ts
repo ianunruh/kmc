@@ -68,6 +68,11 @@ export default [
   route(
     "load-balancers/:cluster/:namespace/:name",
     "routes/load-balancers.$cluster.$namespace.$name.tsx",
+    [
+      index("routes/load-balancers.$cluster.$namespace.$name._index.tsx"),
+      route("events", "routes/load-balancers.$cluster.$namespace.$name.events.tsx"),
+      route("yaml", "routes/load-balancers.$cluster.$namespace.$name.yaml.tsx"),
+    ],
   ),
 
   route("vpcs", "routes/vpcs._index.tsx"),

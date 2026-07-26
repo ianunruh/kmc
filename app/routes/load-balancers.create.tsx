@@ -1,11 +1,10 @@
 import {
   Alert,
   Button,
-  MultiSelect,
   NumberInput,
   Select,
   Stack,
-  Textarea,
+  Text,
   TextInput,
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
@@ -17,12 +16,14 @@ import { FormActions, FormSection, PageHeader } from "~/ui";
 import { logServerError } from "~/lib/errors";
 import { loadBalancerPath, validateDns1123Label } from "~/lib/format";
 import { createLoadBalancer } from "~/backends/backends.server";
+import { BackendMembershipFields } from "~/backends/membership-fields";
 import {
   groupMembership,
   labelsMembership,
   parseMatchLabelsText,
   singleVmMembership,
 } from "~/backends/membership";
+import { getSearchParam } from "~/lib/search-params";
 import { listClusters } from "~/vms/vms.server";
 import type {
   BackendMembershipMode,
@@ -39,19 +40,24 @@ type VmOption = {
 
 type VmsFetcherData = { vms: VmOption[] };
 
-const MEMBERSHIP_OPTIONS: Array<{ value: BackendMembershipMode; label: string }> =
-  [
-    { value: "single-vm", label: "Single VM" },
-    { value: "group", label: "VM group" },
-    { value: "labels", label: "Label selector" },
-  ];
-
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Create Load Balancer · kmc" }];
 }
 
-export async function loader() {
-  return { clusters: await listClusters() };
+export async function loader({ request }: Route.LoaderArgs) {
+  const url = new URL(request.url);
+  return {
+    clusters: await listClusters(),
+    prefill: {
+      cluster: getSearchParam(url.searchParams, "cluster") ?? "",
+      namespace: getSearchParam(url.searchParams, "namespace") ?? "",
+      vmName: getSearchParam(url.searchParams, "vmName") ?? "",
+      name: getSearchParam(url.searchParams, "name") ?? "",
+      servicePort: getSearchParam(url.searchParams, "servicePort") ?? "",
+      targetPort: getSearchParam(url.searchParams, "targetPort") ?? "",
+      protocol: getSearchParam(url.searchParams, "protocol") ?? "",
+    },
+  };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -134,25 +140,36 @@ export default function CreateLoadBalancerPage({
   loaderData,
   actionData,
 }: Route.ComponentProps) {
-  const { clusters } = loaderData;
+  const { clusters, prefill } = loaderData;
   const navigation = useNavigation();
   const submit = useSubmit();
   const catalogFetcher = useFetcher<ClusterCatalog>();
   const vmsFetcher = useFetcher<VmsFetcherData>();
   const submitting = navigation.state === "submitting";
 
+  const prefillServicePort = Number(prefill.servicePort);
+  const prefillTargetPort = Number(prefill.targetPort);
+  const prefillProtocol =
+    prefill.protocol.toUpperCase() === "UDP" ? "UDP" : "TCP";
+
   const form = useForm({
     initialValues: {
-      cluster: "",
-      namespace: "",
-      name: "",
+      cluster: prefill.cluster,
+      namespace: prefill.namespace,
+      name: prefill.name,
       membershipMode: "single-vm" as BackendMembershipMode,
-      vmName: "",
-      vmNames: [] as string[],
+      vmName: prefill.vmName,
+      vmNames: prefill.vmName ? [prefill.vmName] : ([] as string[]),
       matchLabelsText: "",
-      servicePort: 80,
-      targetPort: 80,
-      protocol: "TCP" as BackendPortProtocol,
+      servicePort:
+        Number.isFinite(prefillServicePort) && prefillServicePort > 0
+          ? prefillServicePort
+          : 80,
+      targetPort:
+        Number.isFinite(prefillTargetPort) && prefillTargetPort > 0
+          ? prefillTargetPort
+          : 80,
+      protocol: prefillProtocol as BackendPortProtocol,
       portName: "",
     },
     validate: {
@@ -212,32 +229,21 @@ export default function CreateLoadBalancerPage({
     () => vmsFetcher.data?.vms ?? [],
     [vmsFetcher.data?.vms],
   );
-  const vmOptions = useMemo(
-    () =>
-      vms.map((vm) => ({
-        value: vm.name,
-        label: `${vm.name} · ${vm.status}${vm.podNetwork ? "" : " · Multus"}`,
-      })),
-    [vms],
-  );
 
-  const selectedVm = useMemo(
-    () => vms.find((vm) => vm.name === form.values.vmName),
-    [vms, form.values.vmName],
-  );
-  const selectedGroupVms = useMemo(
-    () => vms.filter((vm) => form.values.vmNames.includes(vm.name)),
-    [vms, form.values.vmNames],
-  );
-  const multusWarningVms = useMemo(() => {
-    if (form.values.membershipMode === "single-vm") {
-      return selectedVm && !selectedVm.podNetwork ? [selectedVm] : [];
-    }
-    if (form.values.membershipMode === "group") {
-      return selectedGroupVms.filter((vm) => !vm.podNetwork);
-    }
-    return [];
-  }, [form.values.membershipMode, selectedVm, selectedGroupVms]);
+  const ingressPrefill = useMemo(() => {
+    const p = new URLSearchParams();
+    if (form.values.cluster) p.set("cluster", form.values.cluster);
+    if (form.values.namespace) p.set("namespace", form.values.namespace);
+    if (form.values.vmName) p.set("vmName", form.values.vmName);
+    if (form.values.name) p.set("name", form.values.name);
+    const q = p.toString();
+    return q ? `/ingresses/create?${q}` : "/ingresses/create";
+  }, [
+    form.values.cluster,
+    form.values.namespace,
+    form.values.vmName,
+    form.values.name,
+  ]);
 
   const onSubmit = form.onSubmit((values) => {
     submit(
@@ -262,7 +268,7 @@ export default function CreateLoadBalancerPage({
     <Stack gap="md" pb={80}>
       <PageHeader
         title="Create Load Balancer"
-        description="Expose pod-network VM(s) via a Service of type LoadBalancer (MetalLB or cloud LB controller assigns the VIP)"
+        description="L4 VIP via Service type LoadBalancer (MetalLB or cloud LB controller)"
       />
 
       {actionData && "error" in actionData && actionData.error && (
@@ -272,10 +278,13 @@ export default function CreateLoadBalancerPage({
       )}
 
       <Alert color="gray" variant="light" title="How this works">
-        Same backend membership as Ingress (single VM, group stamp, or label
-        selector), but the Service type is <code>LoadBalancer</code> instead of
-        ClusterIP + Ingress. Requires a controller that implements LoadBalancer
-        Services. Multus guest IPs are not used as backends.
+        Same backend membership as Ingress (single VM, group, or labels), but
+        the Service type is <code>LoadBalancer</code>. The cluster controller
+        assigns the external VIP. Need HTTP host/path routing instead?{" "}
+        <Text component={Link} to={ingressPrefill} size="sm" c="blue.4" span>
+          Create an Ingress
+        </Text>
+        .
       </Alert>
 
       <form onSubmit={onSubmit}>
@@ -323,83 +332,26 @@ export default function CreateLoadBalancerPage({
           </FormSection>
 
           <FormSection title="Backend membership">
-            <Select
-              label="Membership"
-              data={MEMBERSHIP_OPTIONS}
-              required
-              value={form.values.membershipMode}
-              onChange={(v) =>
-                form.setFieldValue(
-                  "membershipMode",
-                  (v as BackendMembershipMode) ?? "single-vm",
-                )
+            <BackendMembershipFields
+              membershipMode={form.values.membershipMode}
+              onMembershipModeChange={(mode) =>
+                form.setFieldValue("membershipMode", mode)
               }
+              namespace={form.values.namespace}
+              vmName={form.values.vmName}
+              onVmNameChange={(name) => form.setFieldValue("vmName", name)}
+              vmNameError={form.errors.vmName}
+              vmNames={form.values.vmNames}
+              onVmNamesChange={(names) => form.setFieldValue("vmNames", names)}
+              vmNamesError={form.errors.vmNames}
+              matchLabelsText={form.values.matchLabelsText}
+              onMatchLabelsTextChange={(text) =>
+                form.setFieldValue("matchLabelsText", text)
+              }
+              matchLabelsError={form.errors.matchLabelsText}
+              vmOptions={vms}
+              vmsLoading={vmsFetcher.state !== "idle"}
             />
-
-            {form.values.membershipMode === "single-vm" && (
-              <Select
-                label="Virtual machine"
-                placeholder={
-                  form.values.namespace ? "Select VM" : "Select namespace first"
-                }
-                data={vmOptions}
-                required
-                searchable
-                disabled={!form.values.namespace}
-                value={form.values.vmName || null}
-                error={form.errors.vmName}
-                onChange={(v) => form.setFieldValue("vmName", v ?? "")}
-                nothingFoundMessage={
-                  vmsFetcher.state !== "idle"
-                    ? "Loading…"
-                    : "No VMs in this namespace"
-                }
-              />
-            )}
-
-            {form.values.membershipMode === "group" && (
-              <MultiSelect
-                label="Virtual machines"
-                description="kmc stamps kmc.ianunruh.com/backend-group on each VM pod template. Running VMs may need a restart before endpoints appear."
-                placeholder={
-                  form.values.namespace
-                    ? "Select one or more VMs"
-                    : "Select namespace first"
-                }
-                data={vmOptions}
-                required
-                searchable
-                disabled={!form.values.namespace}
-                value={form.values.vmNames}
-                error={form.errors.vmNames}
-                onChange={(v) => form.setFieldValue("vmNames", v)}
-                nothingFoundMessage={
-                  vmsFetcher.state !== "idle"
-                    ? "Loading…"
-                    : "No VMs in this namespace"
-                }
-              />
-            )}
-
-            {form.values.membershipMode === "labels" && (
-              <Textarea
-                label="Match labels"
-                description="Pod-template labels on virt-launcher (key=value, one per line or comma-separated)."
-                placeholder={"app=web\ntier=frontend"}
-                minRows={3}
-                required
-                {...form.getInputProps("matchLabelsText")}
-              />
-            )}
-
-            {multusWarningVms.length > 0 && (
-              <Alert color="yellow" variant="light" title="Multus network">
-                {multusWarningVms.length === 1
-                  ? `${multusWarningVms[0].name} uses Multus, not the pod network.`
-                  : `${multusWarningVms.length} selected VMs use Multus.`}{" "}
-                The Service selects virt-launcher pod IPs only.
-              </Alert>
-            )}
           </FormSection>
 
           <FormSection title="Ports">

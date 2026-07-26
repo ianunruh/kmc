@@ -11,6 +11,8 @@ import {
 } from "~/lib/ipam/pools.server";
 import {
   KMC_ANN_CIDR,
+  KMC_ANN_MEMBER_VMS,
+  KMC_BACKEND_LABEL_SELECTOR,
   KMC_INGRESS_LABEL_SELECTOR,
   KMC_LABEL_RESOURCE,
   KMC_LABEL_VM,
@@ -352,20 +354,52 @@ async function loadClusterTopology(
   }
 
   // Ingresses: one synthetic "ingress" node per namespace + edges to target VMs.
+  // Multi-member: resolve targets via single-vm label, group member annotation,
+  // or companion backend Service selector (kubevirt.io/vm).
   try {
-    const { networking } = getClusterClients(cluster);
-    const ingRes = await networking.listIngressForAllNamespaces({
-      labelSelector: KMC_INGRESS_LABEL_SELECTOR,
-    });
+    const { networking, core } = getClusterClients(cluster);
+    const [ingRes, svcRes] = await Promise.all([
+      networking.listIngressForAllNamespaces({
+        labelSelector: KMC_INGRESS_LABEL_SELECTOR,
+      }),
+      core
+        .listServiceForAllNamespaces({
+          labelSelector: KMC_BACKEND_LABEL_SELECTOR,
+        })
+        .catch(() => ({ items: [] as unknown[] })),
+    ]);
+
+    const backendByKey = new Map<
+      string,
+      {
+        labels?: Record<string, string>;
+        annotations?: Record<string, string>;
+        selector?: Record<string, string>;
+      }
+    >();
+    for (const svc of (svcRes.items ?? []) as Array<{
+      metadata?: {
+        name?: string;
+        namespace?: string;
+        labels?: Record<string, string>;
+        annotations?: Record<string, string>;
+      };
+      spec?: { selector?: Record<string, string> };
+    }>) {
+      const sn = svc.metadata?.name;
+      const sns = svc.metadata?.namespace;
+      if (!sn || !sns) continue;
+      backendByKey.set(`${sns}/${sn}`, {
+        labels: svc.metadata?.labels,
+        annotations: svc.metadata?.annotations,
+        selector: svc.spec?.selector,
+      });
+    }
+
     for (const ing of (ingRes.items ?? []) as KubeIngress[]) {
       const name = ing.metadata?.name;
       const namespace = ing.metadata?.namespace;
       if (!name || !namespace) continue;
-
-      const vmName = ing.metadata?.labels?.[KMC_LABEL_VM]?.trim();
-      if (!vmName) continue;
-      const target = vmByNsName.get(`${namespace}/${vmName}`);
-      if (!target) continue;
 
       const hosts = new Set<string>();
       for (const rule of ing.spec?.rules ?? []) {
@@ -377,16 +411,24 @@ async function loadClusterTopology(
         }
       }
       const hostList = Array.from(hosts);
-      const label = hostList[0] ?? name;
+      const edgeLabel = hostList[0] ?? name;
 
-      if (hostList.length > 0) {
-        const existing = target.ingressHosts ?? [];
-        const merged = [...existing];
-        for (const h of hostList) {
-          if (!merged.includes(h)) merged.push(h);
-        }
-        target.ingressHosts = merged;
+      const targetVmNames = new Set<string>();
+      const labeledVm = ing.metadata?.labels?.[KMC_LABEL_VM]?.trim();
+      if (labeledVm) targetVmNames.add(labeledVm);
+
+      const backend = backendByKey.get(`${namespace}/${name}`);
+      if (backend) {
+        const members = (backend.annotations?.[KMC_ANN_MEMBER_VMS] ?? "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+        for (const m of members) targetVmNames.add(m);
+        const selVm = backend.selector?.["kubevirt.io/vm"]?.trim();
+        if (selVm) targetVmNames.add(selVm);
       }
+
+      if (targetVmNames.size === 0) continue;
 
       const iid = ingressNodeId(cluster, namespace);
       if (!networksById.has(iid)) {
@@ -400,13 +442,27 @@ async function loadClusterTopology(
         });
       }
 
-      edges.push({
-        id: `ing:${iid}->${target.id}:${name}`,
-        networkId: iid,
-        vmId: target.id,
-        role: "ingress",
-        label,
-      });
+      for (const vmName of targetVmNames) {
+        const target = vmByNsName.get(`${namespace}/${vmName}`);
+        if (!target) continue;
+
+        if (hostList.length > 0) {
+          const existing = target.ingressHosts ?? [];
+          const merged = [...existing];
+          for (const h of hostList) {
+            if (!merged.includes(h)) merged.push(h);
+          }
+          target.ingressHosts = merged;
+        }
+
+        edges.push({
+          id: `ing:${iid}->${target.id}:${name}`,
+          networkId: iid,
+          vmId: target.id,
+          role: "ingress",
+          label: edgeLabel,
+        });
+      }
     }
   } catch (err) {
     console.error(

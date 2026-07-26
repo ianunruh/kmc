@@ -482,6 +482,8 @@ export async function getBackend(
 
 export interface BackendDetail extends BackendSummary {
   matchedVms: BackendMatchedVm[];
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
 }
 
 export async function getBackendDetail(
@@ -489,13 +491,27 @@ export async function getBackendDetail(
   namespace: string,
   name: string,
 ): Promise<BackendDetail> {
-  const summary = await getBackend(cluster, namespace, name);
+  const svc = await readServiceOptional(cluster, namespace, name);
+  if (!svc) {
+    throw new Response("Backend Service not found", { status: 404 });
+  }
+  const endpoints = await readEndpointsCounts(cluster, namespace, name);
+  const summary = mapSummary(cluster, svc, endpoints);
   const matchedVms = await listVmsMatchingSelector(
     cluster,
     namespace,
     summary.selector,
   ).catch(() => [] as BackendMatchedVm[]);
-  return { ...summary, matchedVms };
+  return {
+    ...summary,
+    matchedVms,
+    labels: svc.metadata?.labels ?? {},
+    annotations: Object.fromEntries(
+      Object.entries(svc.metadata?.annotations ?? {}).filter(
+        ([k]) => !k.startsWith("kubectl.kubernetes.io/"),
+      ),
+    ),
+  };
 }
 
 /** LoadBalancer-typed kmc backends only. */

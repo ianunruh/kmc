@@ -14,35 +14,13 @@ import {
   ingressesListPath,
   vmPath,
 } from "~/lib/format";
-import type { IngressBackendInfo } from "~/lib/types";
+import {
+  formatLabelSelector,
+  membershipModeLabel,
+} from "~/backends/membership";
 import type { loader as detailLoader } from "./ingresses.$cluster.$namespace.$name";
 
 const LAYOUT_ID = "routes/ingresses.$cluster.$namespace.$name";
-
-function membershipModeLabel(
-  membership: IngressBackendInfo["membership"],
-): string {
-  switch (membership.mode) {
-    case "single-vm":
-      return "Single VM";
-    case "labels":
-      return "Label selector";
-    case "group":
-      return "VM group";
-    case "unknown":
-      return "Unknown";
-    default: {
-      const mode = (membership as { mode: string }).mode;
-      return mode;
-    }
-  }
-}
-
-function formatSelector(selector: Record<string, string>): string {
-  const entries = Object.entries(selector);
-  if (entries.length === 0) return "";
-  return entries.map(([k, v]) => `${k}=${v}`).join(", ");
-}
 
 export default function IngressOverviewTab() {
   const data = useRouteLoaderData(LAYOUT_ID) as Awaited<
@@ -50,7 +28,9 @@ export default function IngressOverviewTab() {
   >;
   const { ing } = data;
   const backend = ing.backend;
-  const selectorText = backend ? formatSelector(backend.selector) : "";
+  const selectorText = backend
+    ? formatLabelSelector(backend.selector)
+    : "";
   const matchedVms = backend?.matchedVms ?? [];
   const membership = backend?.membership;
 
@@ -163,7 +143,7 @@ export default function IngressOverviewTab() {
                   label="Match labels"
                   value={
                     <Code style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                      {formatSelector(membership.matchLabels) || "—"}
+                      {formatLabelSelector(membership.matchLabels) || "—"}
                     </Code>
                   }
                 />

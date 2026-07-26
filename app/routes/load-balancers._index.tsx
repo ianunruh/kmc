@@ -50,6 +50,7 @@ import {
   deleteLoadBalancer,
   listLoadBalancers,
 } from "~/backends/backends.server";
+import { membershipModeLabel } from "~/backends/membership";
 import { useRefresh } from "~/lib/refresh";
 import type { BackendSummary, BulkActionResult } from "~/lib/types";
 import { resourceKey, useRowSelection } from "~/lib/use-row-selection";
@@ -109,13 +110,6 @@ export async function action({ request }: Route.ActionArgs) {
 type ActionResult =
   | { ok?: boolean; error?: string; intent?: string }
   | BulkActionResult;
-
-function membershipLabel(lb: BackendSummary): string {
-  if (lb.membership.mode === "single-vm") return lb.vmName ?? "Single VM";
-  if (lb.membership.mode === "group") return "VM group";
-  if (lb.membership.mode === "labels") return "Labels";
-  return "—";
-}
 
 export default function LoadBalancersPage({ loaderData }: Route.ComponentProps) {
   const { items, clusters } = loaderData;
@@ -331,7 +325,7 @@ export default function LoadBalancersPage({ loaderData }: Route.ComponentProps) 
                       </ResourceLink>
                     ) : (
                       <Text size="sm" c="dimmed">
-                        {membershipLabel(lb)}
+                        {membershipModeLabel(lb.membership)}
                       </Text>
                     )}
                   </Table.Td>

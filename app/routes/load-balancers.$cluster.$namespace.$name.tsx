@@ -3,41 +3,31 @@ import {
   Anchor,
   Badge,
   Button,
-  Code,
   Group,
-  SimpleGrid,
   Stack,
-  Text,
   Title,
 } from "@mantine/core";
 import { IconArrowLeft, IconTrash } from "@tabler/icons-react";
 import { useState } from "react";
-import { Link, redirect, useFetcher } from "react-router";
+import { Link, Outlet, redirect, useFetcher } from "react-router";
 import type { Route } from "./+types/load-balancers.$cluster.$namespace.$name";
 import {
   ConfirmDeleteModal,
-  DetailField,
-  DetailSection,
+  DetailTabs,
   ResourceIdentity,
-  ResourceLink,
-  ResourceTable,
-  StatusBadge,
-  Table,
 } from "~/ui";
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
 import {
-  formatAge,
-  formatDateTime,
+  detailTabPath,
   loadBalancerPath,
   loadBalancersListPath,
-  vmPath,
 } from "~/lib/format";
 import {
   deleteLoadBalancer,
   getLoadBalancer,
 } from "~/backends/backends.server";
-import type { BackendMembership } from "~/lib/types";
+import { membershipModeLabel } from "~/backends/membership";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 
 export function meta({ params }: Route.MetaArgs) {
@@ -76,38 +66,14 @@ export async function action({ request, params }: Route.ActionArgs) {
   }
 }
 
-function membershipModeLabel(
-  membership: BackendMembership | { mode: "unknown" },
-): string {
-  switch (membership.mode) {
-    case "single-vm":
-      return "Single VM";
-    case "labels":
-      return "Label selector";
-    case "group":
-      return "VM group";
-    case "unknown":
-      return "Unknown";
-    default:
-      return (membership as { mode: string }).mode;
-  }
-}
-
-function formatSelector(selector: Record<string, string>): string {
-  return Object.entries(selector)
-    .map(([k, v]) => `${k}=${v}`)
-    .join(", ");
-}
-
-export default function LoadBalancerDetailPage({
+export default function LoadBalancerDetailLayout({
   loaderData,
 }: Route.ComponentProps) {
   const { lb } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string }>();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const busy = fetcher.state !== "idle";
-  const selectorText = formatSelector(lb.selector);
-  const membership = lb.membership;
+  const base = loadBalancerPath(lb);
 
   useFetcherResult(fetcher, (data) => {
     if (data.error) {
@@ -134,6 +100,9 @@ export default function LoadBalancerDetailPage({
             <Badge variant="light" color="teal">
               LoadBalancer
             </Badge>
+            <Badge variant="light" color="gray">
+              {membershipModeLabel(lb.membership)}
+            </Badge>
             {lb.externalAddress ? (
               <Badge variant="light" color="green">
                 {lb.externalAddress}
@@ -141,6 +110,11 @@ export default function LoadBalancerDetailPage({
             ) : (
               <Badge variant="light" color="yellow">
                 VIP pending
+              </Badge>
+            )}
+            {lb.endpointsTotal != null && (
+              <Badge variant="light" color="gray">
+                {lb.endpointsReady ?? 0}/{lb.endpointsTotal} endpoints
               </Badge>
             )}
           </Group>
@@ -157,7 +131,6 @@ export default function LoadBalancerDetailPage({
                   namespace: lb.namespace,
                 }),
               },
-              { label: lb.name, to: loadBalancerPath(lb) },
             ]}
           />
         </div>
@@ -174,200 +147,32 @@ export default function LoadBalancerDetailPage({
 
       {!lb.externalAddress && (
         <Alert color="yellow" variant="light" title="External address pending">
-          The Service is type LoadBalancer but no VIP is in{" "}
-          <code>status.loadBalancer</code> yet. Ensure MetalLB (or another
-          LoadBalancer controller) is installed and has free IPs.
+          No VIP in <code>status.loadBalancer</code> yet. Ensure MetalLB (or
+          another LoadBalancer controller) is installed and has free IPs.
+        </Alert>
+      )}
+      {lb.matchedVms.some((vm) => !vm.podNetwork) && (
+        <Alert color="yellow" variant="light" title="Multus members">
+          One or more matched VMs are Multus-only. The Service still selects
+          virt-launcher pod IPs, not Multus guest addresses.
+        </Alert>
+      )}
+      {lb.matchedVms.length === 0 && (
+        <Alert color="yellow" variant="light" title="No matching VMs">
+          No VMs currently match the Service selector. Group members may need a
+          restart for labels to appear on virt-launcher pods.
         </Alert>
       )}
 
-      <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
-        <DetailSection title="Overview">
-          <SimpleGrid cols={2} spacing="sm">
-            <DetailField label="Age" value={formatAge(lb.age)} />
-            <DetailField label="Created" value={formatDateTime(lb.age)} />
-            <DetailField
-              label="Cluster"
-              value={
-                <ResourceLink
-                  to={loadBalancersListPath({ cluster: lb.cluster })}
-                  dimmed
-                >
-                  {lb.cluster}
-                </ResourceLink>
-              }
-            />
-            <DetailField
-              label="Namespace"
-              value={
-                <ResourceLink
-                  to={loadBalancersListPath({
-                    cluster: lb.cluster,
-                    namespace: lb.namespace,
-                  })}
-                  dimmed
-                >
-                  {lb.namespace}
-                </ResourceLink>
-              }
-            />
-            <DetailField
-              label="External address"
-              value={lb.externalAddress ?? "Pending"}
-            />
-            <DetailField
-              label="Endpoints"
-              value={
-                lb.endpointsTotal != null
-                  ? `${lb.endpointsReady ?? 0}/${lb.endpointsTotal} ready`
-                  : undefined
-              }
-            />
-          </SimpleGrid>
-        </DetailSection>
+      <DetailTabs
+        items={[
+          { label: "Overview", to: detailTabPath(base, "overview"), end: true },
+          { label: "Events", to: detailTabPath(base, "events") },
+          { label: "YAML", to: detailTabPath(base, "yaml") },
+        ]}
+      />
 
-        <DetailSection title="Backend">
-          <SimpleGrid cols={2} spacing="sm">
-            <DetailField
-              label="Membership"
-              value={
-                <Badge size="sm" variant="light" color="gray">
-                  {membershipModeLabel(membership)}
-                </Badge>
-              }
-            />
-            <DetailField label="Service type" value={lb.serviceType} />
-
-            {membership.mode === "single-vm" && (
-              <DetailField
-                label="Target VM"
-                value={
-                  membership.vmName ? (
-                    <ResourceLink
-                      to={vmPath({
-                        cluster: lb.cluster,
-                        namespace: lb.namespace,
-                        name: membership.vmName,
-                      })}
-                    >
-                      {membership.vmName}
-                    </ResourceLink>
-                  ) : (
-                    "—"
-                  )
-                }
-              />
-            )}
-
-            {membership.mode === "group" && (
-              <DetailField label="Group id" value={membership.groupId} />
-            )}
-
-            {membership.mode === "labels" && (
-              <DetailField
-                label="Match labels"
-                value={
-                  <Code style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                    {formatSelector(membership.matchLabels) || "—"}
-                  </Code>
-                }
-              />
-            )}
-
-            <DetailField
-              label="Selector"
-              value={
-                selectorText ? (
-                  <Code style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-                    {selectorText}
-                  </Code>
-                ) : (
-                  <Text size="sm" c="dimmed">
-                    (none)
-                  </Text>
-                )
-              }
-            />
-          </SimpleGrid>
-        </DetailSection>
-      </SimpleGrid>
-
-      <DetailSection
-        title={`Matched VMs${lb.matchedVms.length ? ` (${lb.matchedVms.length})` : ""}`}
-      >
-        {lb.matchedVms.length === 0 ? (
-          <Text size="sm" c="dimmed">
-            No VMs match the Service selector. Group members may need a restart
-            for virt-launcher pods to pick up labels.
-          </Text>
-        ) : (
-          <ResourceTable
-            headers={["Name", "Status", "Network"]}
-            isEmpty={false}
-          >
-            {lb.matchedVms.map((vm) => (
-              <Table.Tr key={vm.name}>
-                <Table.Td>
-                  <ResourceLink
-                    to={vmPath({
-                      cluster: lb.cluster,
-                      namespace: lb.namespace,
-                      name: vm.name,
-                    })}
-                  >
-                    {vm.name}
-                  </ResourceLink>
-                </Table.Td>
-                <Table.Td>
-                  <StatusBadge status={vm.status} />
-                </Table.Td>
-                <Table.Td>
-                  {vm.podNetwork ? (
-                    <Text size="sm" c="dimmed">
-                      Pod
-                    </Text>
-                  ) : (
-                    <Badge size="sm" variant="light" color="orange">
-                      Multus only
-                    </Badge>
-                  )}
-                </Table.Td>
-              </Table.Tr>
-            ))}
-          </ResourceTable>
-        )}
-      </DetailSection>
-
-      <DetailSection title="Ports">
-        {lb.ports.length === 0 ? (
-          <Text size="sm" c="dimmed">
-            No ports
-          </Text>
-        ) : (
-          <ResourceTable
-            headers={["Name", "Port", "Target", "Protocol"]}
-            isEmpty={false}
-          >
-            {lb.ports.map((p, i) => (
-              <Table.Tr key={`${p.name ?? "port"}-${p.port}-${i}`}>
-                <Table.Td>
-                  <Text size="sm">{p.name ?? "—"}</Text>
-                </Table.Td>
-                <Table.Td>
-                  <Text size="sm">{p.port}</Text>
-                </Table.Td>
-                <Table.Td>
-                  <Text size="sm">{p.targetPort}</Text>
-                </Table.Td>
-                <Table.Td>
-                  <Text size="sm" c="dimmed">
-                    {p.protocol ?? "TCP"}
-                  </Text>
-                </Table.Td>
-              </Table.Tr>
-            ))}
-          </ResourceTable>
-        )}
-      </DetailSection>
+      <Outlet />
 
       <ConfirmDeleteModal
         opened={deleteOpen}

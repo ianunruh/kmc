@@ -144,6 +144,37 @@ export function labelsMatchSelector(
   return true;
 }
 
+/** Human-readable membership mode for list/detail UI. */
+export function membershipModeLabel(
+  membership: BackendMembership | { mode: "unknown" } | string | undefined,
+): string {
+  const mode =
+    typeof membership === "string"
+      ? membership
+      : membership?.mode ?? "unknown";
+  switch (mode) {
+    case "single-vm":
+      return "Single VM";
+    case "labels":
+      return "Label selector";
+    case "group":
+      return "VM group";
+    case "unknown":
+      return "Unknown";
+    default:
+      return mode;
+  }
+}
+
+export function formatLabelSelector(
+  labels: Record<string, string> | undefined,
+): string {
+  if (!labels) return "";
+  return Object.entries(labels)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(", ");
+}
+
 export function singleVmMembership(vmName: string): BackendMembership {
   return { mode: "single-vm", vmName };
 }

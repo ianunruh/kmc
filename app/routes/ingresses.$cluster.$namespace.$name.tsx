@@ -21,6 +21,7 @@ import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
 import { detailTabPath, ingressPath, ingressesListPath } from "~/lib/format";
 import { deleteIngress, getIngress } from "~/ingresses/ingresses.server";
+import { membershipModeLabel } from "~/backends/membership";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 
 export function meta({ params }: Route.MetaArgs) {
@@ -88,9 +89,19 @@ export default function IngressDetailLayout({ loaderData }: Route.ComponentProps
             <Title order={2} size="h3">
               {ing.name}
             </Title>
+            {ing.backend?.membership && (
+              <Badge variant="light" color="gray">
+                {membershipModeLabel(ing.backend.membership)}
+              </Badge>
+            )}
             {ing.className && (
               <Badge variant="light" color="gray">
                 {ing.className}
+              </Badge>
+            )}
+            {ing.endpointsTotal != null && (
+              <Badge variant="light" color="gray">
+                {ing.endpointsReady ?? 0}/{ing.endpointsTotal} endpoints
               </Badge>
             )}
           </Group>
@@ -130,6 +141,29 @@ export default function IngressDetailLayout({ loaderData }: Route.ComponentProps
           pod IP, not Multus guest addresses.
         </Alert>
       )}
+      {(ing.backend?.matchedVms ?? []).some((vm) => !vm.podNetwork) &&
+        !(ing.vm?.exists && !ing.vm.podNetwork) && (
+          <Alert color="yellow" variant="light" title="Multus members">
+            One or more matched VMs are Multus-only. The Service selects
+            virt-launcher pod IPs, not Multus guest addresses.
+          </Alert>
+        )}
+      {ing.backend?.exists &&
+        (ing.backend.matchedVms?.length ?? 0) === 0 && (
+          <Alert color="yellow" variant="light" title="No matching VMs">
+            No VMs currently match the Service selector. Group members may need
+            a restart for labels to appear on virt-launcher pods.
+          </Alert>
+        )}
+      {ing.backend && !ing.backend.exists && (
+        <Alert color="red" variant="light" title="Companion Service missing">
+          Expected Service{" "}
+          <Code>
+            {ing.namespace}/{ing.serviceName ?? ing.name}
+          </Code>
+          . Recreate the Ingress or restore the Service.
+        </Alert>
+      )}
 
       <DetailTabs
         items={[
@@ -147,7 +181,7 @@ export default function IngressDetailLayout({ loaderData }: Route.ComponentProps
         identity={`${ing.cluster}/${ing.namespace}/${ing.name}`}
         title="Delete Ingress"
         confirmLabel="Delete Ingress"
-        warning="Also deletes the companion ClusterIP Service with the same name. The VirtualMachine is not affected."
+        warning="Also deletes the companion ClusterIP Service with the same name. Group membership labels are cleared. VirtualMachines are not deleted."
         loading={busy}
         onClose={() => setDeleteOpen(false)}
         onConfirm={() => {

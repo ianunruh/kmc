@@ -1,11 +1,10 @@
 import {
   Alert,
   Button,
-  MultiSelect,
   NumberInput,
   Select,
   Stack,
-  Textarea,
+  Text,
   TextInput,
 } from "@mantine/core";
 import { useForm } from "@mantine/form";
@@ -17,12 +16,14 @@ import { FormActions, FormSection, PageHeader } from "~/ui";
 import { logServerError } from "~/lib/errors";
 import { ingressPath, validateDns1123Label } from "~/lib/format";
 import { createIngress } from "~/ingresses/ingresses.server";
+import { BackendMembershipFields } from "~/backends/membership-fields";
 import {
   groupMembership,
   labelsMembership,
   parseMatchLabelsText,
   singleVmMembership,
 } from "~/backends/membership";
+import { getSearchParam } from "~/lib/search-params";
 import { listClusters } from "~/vms/vms.server";
 import type {
   BackendMembershipMode,
@@ -40,19 +41,22 @@ type VmOption = {
 
 type VmsFetcherData = { vms: VmOption[] };
 
-const MEMBERSHIP_OPTIONS: Array<{ value: BackendMembershipMode; label: string }> =
-  [
-    { value: "single-vm", label: "Single VM" },
-    { value: "group", label: "VM group" },
-    { value: "labels", label: "Label selector" },
-  ];
-
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Create Ingress · kmc" }];
 }
 
-export async function loader() {
-  return { clusters: await listClusters() };
+export async function loader({ request }: Route.LoaderArgs) {
+  const url = new URL(request.url);
+  return {
+    clusters: await listClusters(),
+    prefill: {
+      cluster: getSearchParam(url.searchParams, "cluster") ?? "",
+      namespace: getSearchParam(url.searchParams, "namespace") ?? "",
+      vmName: getSearchParam(url.searchParams, "vmName") ?? "",
+      host: getSearchParam(url.searchParams, "host") ?? "",
+      name: getSearchParam(url.searchParams, "name") ?? "",
+    },
+  };
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -128,7 +132,7 @@ export default function CreateIngressPage({
   loaderData,
   actionData,
 }: Route.ComponentProps) {
-  const { clusters } = loaderData;
+  const { clusters, prefill } = loaderData;
   const navigation = useNavigation();
   const submit = useSubmit();
   const catalogFetcher = useFetcher<ClusterCatalog>();
@@ -137,14 +141,14 @@ export default function CreateIngressPage({
 
   const form = useForm({
     initialValues: {
-      cluster: "",
-      namespace: "",
-      name: "",
+      cluster: prefill.cluster,
+      namespace: prefill.namespace,
+      name: prefill.name,
       membershipMode: "single-vm" as BackendMembershipMode,
-      vmName: "",
-      vmNames: [] as string[],
+      vmName: prefill.vmName,
+      vmNames: prefill.vmName ? [prefill.vmName] : ([] as string[]),
       matchLabelsText: "",
-      host: "",
+      host: prefill.host,
       path: "/",
       pathType: "Prefix" as IngressPathType,
       servicePort: 80,
@@ -214,33 +218,6 @@ export default function CreateIngressPage({
     () => vmsFetcher.data?.vms ?? [],
     [vmsFetcher.data?.vms],
   );
-  const vmOptions = useMemo(
-    () =>
-      vms.map((vm) => ({
-        value: vm.name,
-        label: `${vm.name} · ${vm.status}${vm.podNetwork ? "" : " · Multus"}`,
-      })),
-    [vms],
-  );
-
-  const selectedVm = useMemo(
-    () => vms.find((vm) => vm.name === form.values.vmName),
-    [vms, form.values.vmName],
-  );
-
-  const selectedGroupVms = useMemo(
-    () => vms.filter((vm) => form.values.vmNames.includes(vm.name)),
-    [vms, form.values.vmNames],
-  );
-  const multusWarningVms = useMemo(() => {
-    if (form.values.membershipMode === "single-vm") {
-      return selectedVm && !selectedVm.podNetwork ? [selectedVm] : [];
-    }
-    if (form.values.membershipMode === "group") {
-      return selectedGroupVms.filter((vm) => !vm.podNetwork);
-    }
-    return [];
-  }, [form.values.membershipMode, selectedVm, selectedGroupVms]);
 
   const onSubmit = form.onSubmit((values) => {
     submit(
@@ -263,11 +240,26 @@ export default function CreateIngressPage({
     );
   });
 
+  const lbPrefill = useMemo(() => {
+    const p = new URLSearchParams();
+    if (form.values.cluster) p.set("cluster", form.values.cluster);
+    if (form.values.namespace) p.set("namespace", form.values.namespace);
+    if (form.values.vmName) p.set("vmName", form.values.vmName);
+    if (form.values.name) p.set("name", form.values.name);
+    const q = p.toString();
+    return q ? `/load-balancers/create?${q}` : "/load-balancers/create";
+  }, [
+    form.values.cluster,
+    form.values.namespace,
+    form.values.vmName,
+    form.values.name,
+  ]);
+
   return (
     <Stack gap="md" pb={80}>
       <PageHeader
         title="Create Ingress"
-        description="Expose pod-network VM(s) via ClusterIP Service + Ingress (same CNI path as any backend pod)"
+        description="HTTP(S) route to pod-network VM(s) via ClusterIP Service + Ingress"
       />
 
       {actionData && "error" in actionData && actionData.error && (
@@ -278,10 +270,13 @@ export default function CreateIngressPage({
 
       <Alert color="gray" variant="light" title="How binding works">
         kmc creates a ClusterIP Service that selects virt-launcher pods and an
-        Ingress that points at that Service. Membership chooses the Service
-        selector: a single VM (<code>kubevirt.io/vm</code>), a stamped group
-        label, or arbitrary pod-template labels. Multus guest IPs are not used
-        as backends.
+        Ingress that points at that Service. Membership chooses the selector:
+        single VM, stamped group, or existing pod-template labels. Need raw
+        TCP/UDP instead?{" "}
+        <Text component={Link} to={lbPrefill} size="sm" c="blue.4" span>
+          Create a Load Balancer
+        </Text>
+        .
       </Alert>
 
       <form onSubmit={onSubmit}>
@@ -329,86 +324,26 @@ export default function CreateIngressPage({
           </FormSection>
 
           <FormSection title="Backend membership">
-            <Select
-              label="Membership"
-              data={MEMBERSHIP_OPTIONS}
-              required
-              value={form.values.membershipMode}
-              onChange={(v) =>
-                form.setFieldValue(
-                  "membershipMode",
-                  (v as BackendMembershipMode) ?? "single-vm",
-                )
+            <BackendMembershipFields
+              membershipMode={form.values.membershipMode}
+              onMembershipModeChange={(mode) =>
+                form.setFieldValue("membershipMode", mode)
               }
+              namespace={form.values.namespace}
+              vmName={form.values.vmName}
+              onVmNameChange={(name) => form.setFieldValue("vmName", name)}
+              vmNameError={form.errors.vmName}
+              vmNames={form.values.vmNames}
+              onVmNamesChange={(names) => form.setFieldValue("vmNames", names)}
+              vmNamesError={form.errors.vmNames}
+              matchLabelsText={form.values.matchLabelsText}
+              onMatchLabelsTextChange={(text) =>
+                form.setFieldValue("matchLabelsText", text)
+              }
+              matchLabelsError={form.errors.matchLabelsText}
+              vmOptions={vms}
+              vmsLoading={vmsFetcher.state !== "idle"}
             />
-
-            {form.values.membershipMode === "single-vm" && (
-              <Select
-                label="Virtual machine"
-                placeholder={
-                  form.values.namespace ? "Select VM" : "Select namespace first"
-                }
-                data={vmOptions}
-                required
-                searchable
-                disabled={!form.values.namespace}
-                value={form.values.vmName || null}
-                error={form.errors.vmName}
-                onChange={(v) => form.setFieldValue("vmName", v ?? "")}
-                nothingFoundMessage={
-                  vmsFetcher.state !== "idle"
-                    ? "Loading…"
-                    : "No VMs in this namespace"
-                }
-              />
-            )}
-
-            {form.values.membershipMode === "group" && (
-              <>
-                <MultiSelect
-                  label="Virtual machines"
-                  description="kmc stamps kmc.ianunruh.com/backend-group on each VM pod template. Running VMs may need a restart before endpoints appear."
-                  placeholder={
-                    form.values.namespace
-                      ? "Select one or more VMs"
-                      : "Select namespace first"
-                  }
-                  data={vmOptions}
-                  required
-                  searchable
-                  disabled={!form.values.namespace}
-                  value={form.values.vmNames}
-                  error={form.errors.vmNames}
-                  onChange={(v) => form.setFieldValue("vmNames", v)}
-                  nothingFoundMessage={
-                    vmsFetcher.state !== "idle"
-                      ? "Loading…"
-                      : "No VMs in this namespace"
-                  }
-                />
-              </>
-            )}
-
-            {form.values.membershipMode === "labels" && (
-              <Textarea
-                label="Match labels"
-                description="Pod-template labels on virt-launcher (key=value, one per line or comma-separated). Labels must already exist on the VMs."
-                placeholder={"app=web\ntier=frontend"}
-                minRows={3}
-                required
-                {...form.getInputProps("matchLabelsText")}
-              />
-            )}
-
-            {multusWarningVms.length > 0 && (
-              <Alert color="yellow" variant="light" title="Multus network">
-                {multusWarningVms.length === 1
-                  ? `${multusWarningVms[0].name} uses Multus, not the pod network.`
-                  : `${multusWarningVms.length} selected VMs use Multus.`}{" "}
-                The Service still selects virt-launcher pod IPs — Multus guest
-                addresses are not used as Ingress backends.
-              </Alert>
-            )}
           </FormSection>
 
           <FormSection title="Routing">
