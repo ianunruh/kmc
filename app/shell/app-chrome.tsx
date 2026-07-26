@@ -83,6 +83,29 @@ const NAV_SECTIONS: NavSection[] = [
     label: "Network",
     items: [
       {
+        to: "/ingresses",
+        label: "Ingresses",
+        icon: IconRoute,
+        match: (path: string) => path.startsWith("/ingresses"),
+      },
+      {
+        to: "/load-balancers",
+        label: "Load Balancers",
+        icon: IconCloudComputing,
+        match: (path: string) => path.startsWith("/load-balancers"),
+      },
+      {
+        to: "/topology",
+        label: "Network Map",
+        icon: IconTopologyStar3,
+        match: (path: string) => path.startsWith("/topology"),
+      },
+    ],
+  },
+  {
+    label: "VPC",
+    items: [
+      {
         to: "/vpcs",
         label: "VPCs",
         icon: IconNetwork,
@@ -105,24 +128,6 @@ const NAV_SECTIONS: NavSection[] = [
         label: "Port Forwards",
         icon: IconArrowsRightLeft,
         match: (path: string) => path.startsWith("/port-forwards"),
-      },
-      {
-        to: "/ingresses",
-        label: "Ingresses",
-        icon: IconRoute,
-        match: (path: string) => path.startsWith("/ingresses"),
-      },
-      {
-        to: "/load-balancers",
-        label: "Load Balancers",
-        icon: IconCloudComputing,
-        match: (path: string) => path.startsWith("/load-balancers"),
-      },
-      {
-        to: "/topology",
-        label: "Network Map",
-        icon: IconTopologyStar3,
-        match: (path: string) => path.startsWith("/topology"),
       },
     ],
   },
