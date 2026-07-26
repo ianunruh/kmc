@@ -747,16 +747,20 @@ export interface UpsertClusterInstanceTypeRequest {
 
 /**
  * How a backend Service selects virt-launcher pods.
- * Step 1: single-vm only. Later: labels | group.
+ * - single-vm: selector kubevirt.io/vm=<name>
+ * - labels: arbitrary pod-template matchLabels
+ * - group: kmc stamps backend-group=<id> on member VMs
  */
-export type BackendMembership = {
-  mode: "single-vm";
-  vmName: string;
-};
+export type BackendMembership =
+  | { mode: "single-vm"; vmName: string }
+  | { mode: "labels"; matchLabels: Record<string, string> }
+  | { mode: "group"; groupId: string; vmNames: string[] };
 
 export type BackendServiceType = "ClusterIP" | "LoadBalancer";
 
 export type BackendPortProtocol = "TCP" | "UDP";
+
+export type BackendMembershipMode = BackendMembership["mode"];
 
 export interface BackendPort {
   name?: string;
@@ -778,6 +782,13 @@ export interface CreateBackendRequest {
    * created as a companion to an Ingress).
    */
   extraLabels?: Record<string, string>;
+}
+
+export interface BackendMatchedVm {
+  name: string;
+  status: string;
+  ready: boolean;
+  podNetwork: boolean;
 }
 
 export interface BackendSummary {
@@ -810,7 +821,9 @@ export interface IngressSummary {
    */
   tlsHosts: string[];
   className?: string;
-  /** Target VM name (same namespace) when bound */
+  /** single-vm | labels | group (from target-kind label) */
+  membershipMode?: BackendMembershipMode | "unknown";
+  /** Target VM name when membership is single-vm */
   vmName?: string;
   /** Companion Service name (same as Ingress in v1) */
   serviceName?: string;
@@ -838,6 +851,8 @@ export interface IngressBackendInfo {
   serviceType?: string;
   membership: BackendMembership | { mode: "unknown" };
   selector: Record<string, string>;
+  /** VMs whose pod-template labels match the Service selector */
+  matchedVms?: BackendMatchedVm[];
 }
 
 export interface IngressDetail extends IngressSummary {
@@ -857,6 +872,7 @@ export interface IngressDetail extends IngressSummary {
   endpointsTotal?: number;
   /** Parsed from companion Service labels + spec.selector */
   backend?: IngressBackendInfo;
+  /** single-vm binding only */
   vm?: { name: string; exists: boolean; podNetwork: boolean };
 }
 
@@ -866,7 +882,7 @@ export interface CreateIngressRequest {
   cluster: ClusterId;
   namespace: string;
   name: string;
-  vmName: string;
+  membership: BackendMembership;
   host: string;
   path?: string;
   pathType?: IngressPathType;

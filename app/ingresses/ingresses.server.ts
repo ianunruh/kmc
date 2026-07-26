@@ -9,20 +9,32 @@ import type {
 import {
   KMC_INGRESS_LABEL_SELECTOR,
   KMC_LABEL_INGRESS,
+  KMC_LABEL_TARGET_KIND,
   KMC_LABEL_VM,
+  KMC_TARGET_KIND_GROUP,
+  KMC_TARGET_KIND_LABELS,
+  KMC_TARGET_KIND_VM,
 } from "~/lib/k8s/constants";
 import { getClusterClients, getConfiguredContexts } from "~/lib/k8s/clients.server";
 import { toResourceYaml } from "~/lib/k8s/yaml.server";
 import {
   createBackend,
   deleteBackend,
+  getVmPodTemplateLabels,
+  listBackendsForVm,
+  listVmsMatchingSelector,
   readEndpointsCounts,
   readServiceOptional,
-  singleVmMembership,
 } from "~/backends/backends.server";
-import { membershipFromLabels } from "~/backends/membership.server";
+import {
+  labelsMatchSelector,
+  membershipFromServiceMeta,
+} from "~/backends/membership";
 import { listClusters } from "~/vms/vms.server";
-import { buildIngressManifest } from "./template.server";
+import {
+  buildIngressManifest,
+  vmNameFromIngressLabels,
+} from "./template.server";
 
 interface KubeIngress {
   metadata?: {
@@ -122,8 +134,25 @@ function primaryServiceName(ing: KubeIngress): string | undefined {
   return ing.metadata?.name;
 }
 
+function membershipModeFromKind(
+  kind: string | undefined,
+): IngressSummary["membershipMode"] {
+  if (kind === KMC_TARGET_KIND_VM) return "single-vm";
+  if (kind === KMC_TARGET_KIND_LABELS) return "labels";
+  if (kind === KMC_TARGET_KIND_GROUP) return "group";
+  if (!kind) return "single-vm"; // older single-vm creates without resource=ingress may still have vm label
+  return "unknown";
+}
+
 function mapSummary(cluster: ClusterId, ing: KubeIngress): IngressSummary {
   const hosts = mapHosts(ing);
+  const labels = ing.metadata?.labels;
+  const kind = labels?.[KMC_LABEL_TARGET_KIND];
+  const membershipMode = membershipModeFromKind(kind);
+  const vmName =
+    membershipMode === "single-vm"
+      ? vmNameFromIngressLabels(labels)
+      : undefined;
   return {
     cluster,
     namespace: ing.metadata?.namespace ?? "default",
@@ -131,7 +160,8 @@ function mapSummary(cluster: ClusterId, ing: KubeIngress): IngressSummary {
     hosts,
     tlsHosts: mapTlsHosts(ing, hosts),
     className: ing.spec?.ingressClassName,
-    vmName: ing.metadata?.labels?.[KMC_LABEL_VM],
+    membershipMode,
+    vmName,
     serviceName: primaryServiceName(ing),
     age: ing.metadata?.creationTimestamp ?? "",
     address: mapAddress(ing),
@@ -220,20 +250,59 @@ export async function listIngresses(clusterFilter?: ClusterId): Promise<{
   return { items, clusters };
 }
 
-/** kmc-managed Ingresses bound to a specific VM (same namespace). */
+/**
+ * kmc-managed Ingresses that target a VM — single-vm label, or multi-member
+ * backends whose selector matches the VM's pod-template labels.
+ */
 export async function listIngressesForVm(
   cluster: ClusterId,
   namespace: string,
   vmName: string,
 ): Promise<IngressSummary[]> {
   const { networking } = getClusterClients(cluster);
-  const res = await networking.listNamespacedIngress({
-    namespace,
-    labelSelector: `${KMC_INGRESS_LABEL_SELECTOR},${KMC_LABEL_VM}=${vmName}`,
-  });
-  const items = ((res.items ?? []) as KubeIngress[]).map((ing) =>
-    mapSummary(cluster, ing),
-  );
+  const byName = new Map<string, IngressSummary>();
+
+  // 1. Direct single-vm Ingress labels
+  try {
+    const res = await networking.listNamespacedIngress({
+      namespace,
+      labelSelector: `${KMC_INGRESS_LABEL_SELECTOR},${KMC_LABEL_VM}=${vmName}`,
+    });
+    for (const ing of (res.items ?? []) as KubeIngress[]) {
+      const s = mapSummary(cluster, ing);
+      byName.set(s.name, s);
+    }
+  } catch {
+    // fall through to multi-member path
+  }
+
+  // 2. Multi-member: backends selecting this VM → Ingresses pointing at them
+  try {
+    const backends = await listBackendsForVm(cluster, namespace, vmName);
+    const serviceNames = new Set(backends.map((b) => b.name));
+    if (serviceNames.size > 0) {
+      const all = await networking.listNamespacedIngress({
+        namespace,
+        labelSelector: KMC_INGRESS_LABEL_SELECTOR,
+      });
+      const vmLabels = await getVmPodTemplateLabels(cluster, namespace, vmName);
+      for (const ing of (all.items ?? []) as KubeIngress[]) {
+        const s = mapSummary(cluster, ing);
+        const svcName = s.serviceName ?? s.name;
+        if (!serviceNames.has(svcName)) continue;
+        // Confirm selector still matches (backend list already filtered)
+        const backend = backends.find((b) => b.name === svcName);
+        if (backend && !labelsMatchSelector(vmLabels, backend.selector)) {
+          continue;
+        }
+        byName.set(s.name, s);
+      }
+    }
+  } catch {
+    // keep single-vm results
+  }
+
+  const items = Array.from(byName.values());
   items.sort((a, b) => a.name.localeCompare(b.name));
   return items;
 }
@@ -264,15 +333,23 @@ export async function getIngress(
     readEndpointsCounts(cluster, namespace, serviceName),
   ]);
 
-  const membership = membershipFromLabels(service?.metadata?.labels);
+  const membership = membershipFromServiceMeta(
+    service?.metadata?.labels,
+    service?.metadata?.annotations,
+  );
+  const selector = service?.spec?.selector ?? {};
   const backendVmName =
     membership.mode === "single-vm" ? membership.vmName : undefined;
-  // Prefer Ingress label; Service membership is the backend source of truth
   const targetVmName = summary.vmName ?? backendVmName;
 
-  const vm = targetVmName
-    ? await vmBindingInfo(cluster, namespace, targetVmName)
-    : undefined;
+  const [vm, matchedVms] = await Promise.all([
+    targetVmName
+      ? vmBindingInfo(cluster, namespace, targetVmName)
+      : Promise.resolve(undefined),
+    service && Object.keys(selector).length > 0
+      ? listVmsMatchingSelector(cluster, namespace, selector).catch(() => [])
+      : Promise.resolve([]),
+  ]);
 
   return {
     ...summary,
@@ -302,12 +379,14 @@ export async function getIngress(
           exists: true,
           serviceType: service.spec?.type ?? "ClusterIP",
           membership,
-          selector: service.spec?.selector ?? {},
+          selector,
+          matchedVms,
         }
       : {
           exists: false,
           membership: { mode: "unknown" as const },
           selector: {},
+          matchedVms: [],
         },
     vm,
   };
@@ -337,8 +416,17 @@ export async function createIngress(
   if (!input.cluster?.trim()) throw new Error("cluster is required");
   if (!input.namespace?.trim()) throw new Error("namespace is required");
   if (!input.name?.trim()) throw new Error("name is required");
-  if (!input.vmName?.trim()) throw new Error("target VM is required");
+  if (!input.membership) throw new Error("backend membership is required");
   if (!input.host?.trim()) throw new Error("host is required");
+
+  // Normalize group id to ingress/backend name when empty
+  let membership = input.membership;
+  if (membership.mode === "group") {
+    membership = {
+      ...membership,
+      groupId: membership.groupId.trim() || input.name,
+    };
+  }
 
   const { networking } = getClusterClients(input.cluster);
 
@@ -362,13 +450,14 @@ export async function createIngress(
 
   const servicePort = input.servicePort ?? 80;
   const targetPort = input.targetPort ?? servicePort;
+  const payload: CreateIngressRequest = { ...input, membership };
 
-  // Companion backend Service (selector + ports); VM existence checked inside
+  // Companion backend Service (selector + ports); VM existence / group stamp inside
   await createBackend({
     cluster: input.cluster,
     namespace: input.namespace,
     name: input.name,
-    membership: singleVmMembership(input.vmName),
+    membership,
     ports: [
       {
         name: "http",
@@ -383,7 +472,7 @@ export async function createIngress(
     },
   });
 
-  const ingressBody = buildIngressManifest(input, input.name);
+  const ingressBody = buildIngressManifest(payload, input.name);
 
   try {
     const created = (await networking.createNamespacedIngress({
@@ -392,7 +481,7 @@ export async function createIngress(
     })) as KubeIngress;
     return mapSummary(input.cluster, created);
   } catch (err) {
-    // Best-effort rollback of companion backend Service
+    // Best-effort rollback of companion backend Service (unstamps group)
     try {
       await deleteBackend(input.cluster, input.namespace, input.name);
     } catch {

@@ -23,17 +23,28 @@ export const IMAGE_PREFERENCE_LABEL = `${KMC_LABEL_NAMESPACE}/cluster-preference
 export const KMC_LABEL_VM = `${KMC_LABEL_NAMESPACE}/vm`;
 
 /**
- * What a kmc-managed Service/Ingress is bound to.
- * v1: `VirtualMachine`; future: label selector / group.
+ * What a kmc-managed backend Service / Ingress is bound to.
+ * VirtualMachine | LabelSelector | Group
  */
 export const KMC_LABEL_TARGET_KIND = `${KMC_LABEL_NAMESPACE}/target-kind`;
 export const KMC_TARGET_KIND_VM = "VirtualMachine";
+export const KMC_TARGET_KIND_LABELS = "LabelSelector";
+export const KMC_TARGET_KIND_GROUP = "Group";
+
+/**
+ * Group id stamped on member VM pod templates and used as Service selector
+ * for group membership (`kmc.ianunruh.com/backend-group=<id>`).
+ */
+export const KMC_LABEL_BACKEND_GROUP = `${KMC_LABEL_NAMESPACE}/backend-group`;
+
+/** JSON object of match labels for LabelSelector membership (Service annotation). */
+export const KMC_ANN_MATCH_LABELS = `${KMC_LABEL_NAMESPACE}/match-labels`;
+
+/** Comma-separated VM names in a group (Service annotation; UI convenience). */
+export const KMC_ANN_MEMBER_VMS = `${KMC_LABEL_NAMESPACE}/member-vms`;
 
 /** Ingress name stamped on the companion backend Service (1:1 create). */
 export const KMC_LABEL_INGRESS = `${KMC_LABEL_NAMESPACE}/ingress`;
-
-/** List selector for kmc-managed Ingresses bound to a single VM. */
-export const KMC_INGRESS_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_TARGET_KIND}=${KMC_TARGET_KIND_VM}`;
 
 /** Labels on kmc-managed resources (VPC NAD, backend Service, etc.). */
 export const KMC_LABEL_RESOURCE = `${KMC_LABEL_NAMESPACE}/resource`;
@@ -44,8 +55,17 @@ export const KMC_LABEL_RESOURCE = `${KMC_LABEL_NAMESPACE}/resource`;
  */
 export const KMC_RESOURCE_BACKEND = "backend";
 
+/** Value of kmc.ianunruh.com/resource for kmc-managed Ingresses. */
+export const KMC_RESOURCE_INGRESS = "ingress";
+
 /** List selector for kmc-managed backend Services. */
 export const KMC_BACKEND_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_BACKEND}`;
+
+/** List selector for kmc-managed Ingresses (any membership mode). */
+export const KMC_INGRESS_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_INGRESS}`;
+
+/** Max VMs that can be added to a backend group at create time. */
+export const KMC_MAX_BACKEND_GROUP_VMS = 32;
 
 /** Value of kmc.ianunruh.com/resource for self-service VPC NADs. */
 export const KMC_RESOURCE_VPC = "vpc";

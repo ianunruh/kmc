@@ -6,9 +6,10 @@ import {
   MANAGED_BY_LABEL,
 } from "~/lib/k8s/constants";
 import {
+  membershipAnnotations,
   membershipLabels,
   resolveServiceSelector,
-} from "./membership.server";
+} from "./membership";
 
 /** Ownership + membership labels for a kmc backend Service. */
 export function backendOwnershipLabels(
@@ -26,9 +27,13 @@ export function buildServiceManifest(input: CreateBackendRequest) {
   const serviceType = input.serviceType ?? "ClusterIP";
   const selector = resolveServiceSelector(input.membership);
   const labels = backendOwnershipLabels(input);
+  const annotations = membershipAnnotations(input.membership);
 
   if (!input.ports.length) {
     throw new Error("backend requires at least one port");
+  }
+  if (Object.keys(selector).length === 0) {
+    throw new Error("backend selector cannot be empty");
   }
 
   return {
@@ -38,6 +43,7 @@ export function buildServiceManifest(input: CreateBackendRequest) {
       name: input.name,
       namespace: input.namespace,
       labels,
+      ...(Object.keys(annotations).length > 0 ? { annotations } : {}),
     },
     spec: {
       type: serviceType,

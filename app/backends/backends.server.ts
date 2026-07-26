@@ -1,5 +1,6 @@
 import { formatError } from "~/lib/errors";
 import type {
+  BackendMatchedVm,
   BackendMembership,
   BackendPort,
   BackendSummary,
@@ -9,13 +10,22 @@ import type {
 import {
   KMC_BACKEND_LABEL_SELECTOR,
   KMC_LABEL_RESOURCE,
-  KMC_LABEL_VM,
+  KMC_MAX_BACKEND_GROUP_VMS,
   KMC_RESOURCE_BACKEND,
 } from "~/lib/k8s/constants";
 import { getClusterClients, getConfiguredContexts } from "~/lib/k8s/clients.server";
 import { toResourceYaml } from "~/lib/k8s/yaml.server";
 import { listClusters } from "~/vms/vms.server";
-import { membershipFromLabels } from "./membership.server";
+import {
+  labelsMatchSelector,
+  membershipFromServiceMeta,
+  singleVmMembership,
+} from "./membership";
+import {
+  listVmsWithBackendGroup,
+  stampBackendGroup,
+  unstampBackendGroup,
+} from "./stamp.server";
 import { buildServiceManifest } from "./template.server";
 
 interface KubeService {
@@ -95,7 +105,10 @@ function mapSummary(
   svc: KubeService,
   endpoints?: { ready: number; total: number } | null,
 ): BackendSummary {
-  const membership = membershipFromLabels(svc.metadata?.labels);
+  const membership = membershipFromServiceMeta(
+    svc.metadata?.labels,
+    svc.metadata?.annotations,
+  );
   return {
     cluster,
     namespace: svc.metadata?.namespace ?? "default",
@@ -149,7 +162,6 @@ export async function readEndpointsCounts(
     return { ready, total: ready + notReady };
   } catch (err) {
     if (isNotFound(err)) return null;
-    // Endpoints may be restricted; callers still work without them
     return null;
   }
 }
@@ -176,6 +188,122 @@ async function ensureSingleVmExists(
   }
 }
 
+function validateMembership(membership: BackendMembership): void {
+  if (membership.mode === "single-vm") {
+    if (!membership.vmName?.trim()) throw new Error("target VM is required");
+    return;
+  }
+  if (membership.mode === "labels") {
+    if (!membership.matchLabels || Object.keys(membership.matchLabels).length === 0) {
+      throw new Error("at least one match label is required");
+    }
+    return;
+  }
+  if (membership.mode === "group") {
+    if (!membership.groupId?.trim()) throw new Error("group id is required");
+    if (!membership.vmNames?.length) {
+      throw new Error("select at least one VM for the group");
+    }
+    if (membership.vmNames.length > KMC_MAX_BACKEND_GROUP_VMS) {
+      throw new Error(
+        `at most ${KMC_MAX_BACKEND_GROUP_VMS} VMs per backend group`,
+      );
+    }
+  }
+}
+
+/**
+ * List VMs in a namespace whose pod-template labels match the selector.
+ * Uses template labels (what virt-launcher carries) with metadata as fallback.
+ */
+export async function listVmsMatchingSelector(
+  cluster: ClusterId,
+  namespace: string,
+  selector: Record<string, string>,
+): Promise<BackendMatchedVm[]> {
+  if (!selector || Object.keys(selector).length === 0) return [];
+
+  const { custom } = getClusterClients(cluster);
+  const res = (await custom.listNamespacedCustomObject({
+    group: "kubevirt.io",
+    version: "v1",
+    namespace,
+    plural: "virtualmachines",
+  })) as {
+    items?: Array<{
+      metadata?: { name?: string; labels?: Record<string, string> };
+      status?: { printableStatus?: string; ready?: boolean };
+      spec?: {
+        template?: {
+          metadata?: { labels?: Record<string, string> };
+          spec?: {
+            networks?: Array<{ pod?: unknown; multus?: unknown }>;
+          };
+        };
+      };
+    }>;
+  };
+
+  const matched: BackendMatchedVm[] = [];
+  for (const vm of res.items ?? []) {
+    const name = vm.metadata?.name;
+    if (!name) continue;
+    const templateLabels = vm.spec?.template?.metadata?.labels;
+    const metaLabels = vm.metadata?.labels;
+    if (
+      !labelsMatchSelector(templateLabels, selector) &&
+      !labelsMatchSelector(metaLabels, selector)
+    ) {
+      continue;
+    }
+    const networks = vm.spec?.template?.spec?.networks ?? [];
+    const podNetwork =
+      networks.length === 0 ||
+      networks.some((n) => n.pod != null && n.multus == null);
+    const status = vm.status?.printableStatus ?? "Unknown";
+    matched.push({
+      name,
+      status,
+      ready: vm.status?.ready === true || status === "Running",
+      podNetwork,
+    });
+  }
+  matched.sort((a, b) => a.name.localeCompare(b.name));
+  return matched;
+}
+
+/** Read pod-template labels for a VM (for multi-member reverse lookup). */
+export async function getVmPodTemplateLabels(
+  cluster: ClusterId,
+  namespace: string,
+  vmName: string,
+): Promise<Record<string, string>> {
+  const { custom } = getClusterClients(cluster);
+  try {
+    const vm = (await custom.getNamespacedCustomObject({
+      group: "kubevirt.io",
+      version: "v1",
+      namespace,
+      plural: "virtualmachines",
+      name: vmName,
+    })) as {
+      metadata?: { labels?: Record<string, string> };
+      spec?: {
+        template?: { metadata?: { labels?: Record<string, string> } };
+      };
+    };
+    return {
+      ...(vm.metadata?.labels ?? {}),
+      ...(vm.spec?.template?.metadata?.labels ?? {}),
+      // kubevirt.io/vm is always on the virt-launcher pod
+      "kubevirt.io/vm": vmName,
+    };
+  } catch (err) {
+    if (isNotFound(err)) return { "kubevirt.io/vm": vmName };
+    throw err;
+  }
+}
+
 export async function createBackend(
   input: CreateBackendRequest,
 ): Promise<BackendSummary> {
@@ -184,15 +312,33 @@ export async function createBackend(
   if (!input.name?.trim()) throw new Error("name is required");
   if (!input.ports?.length) throw new Error("at least one port is required");
 
-  if (input.membership.mode === "single-vm") {
-    if (!input.membership.vmName?.trim()) {
-      throw new Error("target VM is required");
-    }
+  validateMembership(input.membership);
+  let membership = input.membership;
+
+  // Normalize group: default groupId to backend Service name
+  if (membership.mode === "group") {
+    membership = {
+      ...membership,
+      groupId: membership.groupId.trim() || input.name,
+      vmNames: [...new Set(membership.vmNames.map((n) => n.trim()).filter(Boolean))].sort(),
+    };
+  }
+
+  if (membership.mode === "single-vm") {
     await ensureSingleVmExists(
       input.cluster,
       input.namespace,
-      input.membership.vmName,
+      membership.vmName,
     );
+  }
+
+  if (membership.mode === "group") {
+    await stampBackendGroup({
+      cluster: input.cluster,
+      namespace: input.namespace,
+      groupId: membership.groupId,
+      vmNames: membership.vmNames,
+    });
   }
 
   const { core } = getClusterClients(input.cluster);
@@ -202,6 +348,18 @@ export async function createBackend(
       name: input.name,
       namespace: input.namespace,
     });
+    // Service already exists — unstamp group if we just stamped
+    if (membership.mode === "group") {
+      try {
+        await unstampBackendGroup({
+          cluster: input.cluster,
+          namespace: input.namespace,
+          vmNames: membership.vmNames,
+        });
+      } catch {
+        // ignore
+      }
+    }
     throw new Error(
       `Service "${input.namespace}/${input.name}" already exists`,
     );
@@ -210,11 +368,22 @@ export async function createBackend(
       throw err;
     }
     if (!isNotFound(err)) {
+      if (membership.mode === "group") {
+        try {
+          await unstampBackendGroup({
+            cluster: input.cluster,
+            namespace: input.namespace,
+            vmNames: membership.vmNames,
+          });
+        } catch {
+          // ignore
+        }
+      }
       throw new Error(formatError(err), { cause: err });
     }
   }
 
-  const body = buildServiceManifest(input);
+  const body = buildServiceManifest({ ...input, membership });
 
   try {
     const created = (await core.createNamespacedService({
@@ -223,6 +392,17 @@ export async function createBackend(
     })) as KubeService;
     return mapSummary(input.cluster, created);
   } catch (err) {
+    if (membership.mode === "group") {
+      try {
+        await unstampBackendGroup({
+          cluster: input.cluster,
+          namespace: input.namespace,
+          vmNames: membership.vmNames,
+        });
+      } catch {
+        // ignore
+      }
+    }
     throw new Error(`Failed to create Service: ${formatError(err)}`, {
       cause: err,
     });
@@ -234,12 +414,36 @@ export async function deleteBackend(
   namespace: string,
   name: string,
 ): Promise<void> {
+  const svc = await readServiceOptional(cluster, namespace, name);
+  const membership = svc
+    ? membershipFromServiceMeta(svc.metadata?.labels, svc.metadata?.annotations)
+    : { mode: "unknown" as const };
+
   const { core } = getClusterClients(cluster);
   try {
     await core.deleteNamespacedService({ name, namespace });
   } catch (err) {
     if (!isNotFound(err)) {
       throw new Error(formatError(err), { cause: err });
+    }
+  }
+
+  // Clear group stamps after Service is gone
+  if (membership.mode === "group") {
+    const fromAnn = membership.vmNames;
+    let names = fromAnn;
+    try {
+      const live = await listVmsWithBackendGroup(
+        cluster,
+        namespace,
+        membership.groupId,
+      );
+      names = [...new Set([...fromAnn, ...live])].sort();
+    } catch {
+      // use annotation only
+    }
+    if (names.length > 0) {
+      await unstampBackendGroup({ cluster, namespace, vmNames: names });
     }
   }
 }
@@ -327,7 +531,7 @@ export async function listBackends(clusterFilter?: ClusterId): Promise<{
   return { items, clusters };
 }
 
-/** kmc backend Services bound to a specific VM (single-vm membership). */
+/** kmc backend Services that select a specific VM (any membership mode). */
 export async function listBackendsForVm(
   cluster: ClusterId,
   namespace: string,
@@ -336,15 +540,22 @@ export async function listBackendsForVm(
   const { core } = getClusterClients(cluster);
   const res = await core.listNamespacedService({
     namespace,
-    labelSelector: `${KMC_BACKEND_LABEL_SELECTOR},${KMC_LABEL_VM}=${vmName}`,
+    labelSelector: KMC_BACKEND_LABEL_SELECTOR,
   });
-  const items = ((res.items ?? []) as KubeService[]).map((svc) =>
-    mapSummary(cluster, svc),
-  );
+  const vmLabels = await getVmPodTemplateLabels(cluster, namespace, vmName);
+  const items: BackendSummary[] = [];
+  for (const svc of (res.items ?? []) as KubeService[]) {
+    const summary = mapSummary(cluster, svc);
+    if (summary.membership.mode === "single-vm") {
+      if (summary.membership.vmName === vmName) items.push(summary);
+      continue;
+    }
+    if (labelsMatchSelector(vmLabels, summary.selector)) {
+      items.push(summary);
+    }
+  }
   items.sort((a, b) => a.name.localeCompare(b.name));
   return items;
 }
 
-export function singleVmMembership(vmName: string): BackendMembership {
-  return { mode: "single-vm", vmName };
-}
+export { singleVmMembership };

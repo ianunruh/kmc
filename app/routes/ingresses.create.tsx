@@ -1,4 +1,13 @@
-import { Alert, Button, NumberInput, Select, Stack, TextInput } from "@mantine/core";
+import {
+  Alert,
+  Button,
+  MultiSelect,
+  NumberInput,
+  Select,
+  Stack,
+  Textarea,
+  TextInput,
+} from "@mantine/core";
 import { useForm } from "@mantine/form";
 import { useEffect, useMemo } from "react";
 import { Link, redirect, useFetcher, useNavigation, useSubmit } from "react-router";
@@ -8,8 +17,15 @@ import { FormActions, FormSection, PageHeader } from "~/ui";
 import { logServerError } from "~/lib/errors";
 import { ingressPath, validateDns1123Label } from "~/lib/format";
 import { createIngress } from "~/ingresses/ingresses.server";
+import {
+  groupMembership,
+  labelsMembership,
+  parseMatchLabelsText,
+  singleVmMembership,
+} from "~/backends/membership";
 import { listClusters } from "~/vms/vms.server";
 import type {
+  BackendMembershipMode,
   ClusterCatalog,
   CreateIngressRequest,
   IngressPathType,
@@ -24,6 +40,13 @@ type VmOption = {
 
 type VmsFetcherData = { vms: VmOption[] };
 
+const MEMBERSHIP_OPTIONS: Array<{ value: BackendMembershipMode; label: string }> =
+  [
+    { value: "single-vm", label: "Single VM" },
+    { value: "group", label: "VM group" },
+    { value: "labels", label: "Label selector" },
+  ];
+
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Create Ingress · kmc" }];
 }
@@ -37,7 +60,12 @@ export async function action({ request }: Route.ActionArgs) {
   const cluster = String(form.get("cluster") ?? "").trim();
   const namespace = String(form.get("namespace") ?? "").trim();
   const name = String(form.get("name") ?? "").trim();
+  const membershipMode = String(
+    form.get("membershipMode") ?? "single-vm",
+  ).trim() as BackendMembershipMode;
   const vmName = String(form.get("vmName") ?? "").trim();
+  const vmNamesRaw = String(form.get("vmNames") ?? "").trim();
+  const matchLabelsText = String(form.get("matchLabelsText") ?? "").trim();
   const host = String(form.get("host") ?? "").trim();
   const path = String(form.get("path") ?? "").trim() || "/";
   const pathType = (String(form.get("pathType") ?? "Prefix").trim() ||
@@ -50,20 +78,37 @@ export async function action({ request }: Route.ActionArgs) {
   const servicePort = Number(servicePortRaw);
   const targetPort = Number(targetPortRaw);
 
-  const payload: CreateIngressRequest = {
-    cluster,
-    namespace,
-    name,
-    vmName,
-    host,
-    path,
-    pathType,
-    servicePort: Number.isFinite(servicePort) ? servicePort : 80,
-    targetPort: Number.isFinite(targetPort) ? targetPort : 80,
-    ingressClassName,
-  };
-
   try {
+    let membership;
+    if (membershipMode === "single-vm") {
+      if (!vmName) throw new Error("target VM is required");
+      membership = singleVmMembership(vmName);
+    } else if (membershipMode === "group") {
+      const vmNames = vmNamesRaw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (vmNames.length === 0) throw new Error("select at least one VM");
+      membership = groupMembership(name, vmNames);
+    } else if (membershipMode === "labels") {
+      membership = labelsMembership(parseMatchLabelsText(matchLabelsText));
+    } else {
+      throw new Error(`Unsupported membership mode: ${membershipMode}`);
+    }
+
+    const payload: CreateIngressRequest = {
+      cluster,
+      namespace,
+      name,
+      membership,
+      host,
+      path,
+      pathType,
+      servicePort: Number.isFinite(servicePort) ? servicePort : 80,
+      targetPort: Number.isFinite(targetPort) ? targetPort : 80,
+      ingressClassName,
+    };
+
     await createIngress(payload);
     return redirect(ingressPath(payload));
   } catch (err) {
@@ -72,6 +117,7 @@ export async function action({ request }: Route.ActionArgs) {
         cluster,
         namespace,
         name,
+        membershipMode,
         vmName,
       }),
     };
@@ -94,7 +140,10 @@ export default function CreateIngressPage({
       cluster: "",
       namespace: "",
       name: "",
+      membershipMode: "single-vm" as BackendMembershipMode,
       vmName: "",
+      vmNames: [] as string[],
+      matchLabelsText: "",
       host: "",
       path: "/",
       pathType: "Prefix" as IngressPathType,
@@ -106,7 +155,22 @@ export default function CreateIngressPage({
       cluster: (v) => (!v ? "Required" : null),
       namespace: (v) => (!v ? "Required" : null),
       name: validateDns1123Label,
-      vmName: (v) => (!v ? "Required" : null),
+      vmName: (v, values) =>
+        values.membershipMode === "single-vm" && !v ? "Required" : null,
+      vmNames: (v, values) =>
+        values.membershipMode === "group" && (!v || v.length === 0)
+          ? "Select at least one VM"
+          : null,
+      matchLabelsText: (v, values) => {
+        if (values.membershipMode !== "labels") return null;
+        if (!v?.trim()) return "Required";
+        try {
+          parseMatchLabelsText(v);
+          return null;
+        } catch (err) {
+          return err instanceof Error ? err.message : "Invalid labels";
+        }
+      },
       host: (v) => {
         if (!v?.trim()) return "Required";
         if (/\s/.test(v)) return "Host must not contain spaces";
@@ -164,13 +228,30 @@ export default function CreateIngressPage({
     [vms, form.values.vmName],
   );
 
+  const selectedGroupVms = useMemo(
+    () => vms.filter((vm) => form.values.vmNames.includes(vm.name)),
+    [vms, form.values.vmNames],
+  );
+  const multusWarningVms = useMemo(() => {
+    if (form.values.membershipMode === "single-vm") {
+      return selectedVm && !selectedVm.podNetwork ? [selectedVm] : [];
+    }
+    if (form.values.membershipMode === "group") {
+      return selectedGroupVms.filter((vm) => !vm.podNetwork);
+    }
+    return [];
+  }, [form.values.membershipMode, selectedVm, selectedGroupVms]);
+
   const onSubmit = form.onSubmit((values) => {
     submit(
       {
         cluster: values.cluster,
         namespace: values.namespace,
         name: values.name,
+        membershipMode: values.membershipMode,
         vmName: values.vmName,
+        vmNames: values.vmNames.join(","),
+        matchLabelsText: values.matchLabelsText,
         host: values.host,
         path: values.path,
         pathType: values.pathType,
@@ -186,7 +267,7 @@ export default function CreateIngressPage({
     <Stack gap="md" pb={80}>
       <PageHeader
         title="Create Ingress"
-        description="Expose a pod-network VM via ClusterIP Service + Ingress (same CNI path as any backend pod)"
+        description="Expose pod-network VM(s) via ClusterIP Service + Ingress (same CNI path as any backend pod)"
       />
 
       {actionData && "error" in actionData && actionData.error && (
@@ -196,10 +277,11 @@ export default function CreateIngressPage({
       )}
 
       <Alert color="gray" variant="light" title="How binding works">
-        kmc creates a ClusterIP Service that selects the virt-launcher pod (
-        <code>kubevirt.io/vm=&lt;name&gt;</code>) and an Ingress that points at that
-        Service. The guest process must listen on the target port. Multus guest IPs
-        are not used as backends.
+        kmc creates a ClusterIP Service that selects virt-launcher pods and an
+        Ingress that points at that Service. Membership chooses the Service
+        selector: a single VM (<code>kubevirt.io/vm</code>), a stamped group
+        label, or arbitrary pod-template labels. Multus guest IPs are not used
+        as backends.
       </Alert>
 
       <form onSubmit={onSubmit}>
@@ -216,6 +298,7 @@ export default function CreateIngressPage({
                 form.setFieldValue("cluster", v ?? "");
                 form.setFieldValue("namespace", "");
                 form.setFieldValue("vmName", "");
+                form.setFieldValue("vmNames", []);
               }}
             />
             <Select
@@ -230,6 +313,7 @@ export default function CreateIngressPage({
               onChange={(v) => {
                 form.setFieldValue("namespace", v ?? "");
                 form.setFieldValue("vmName", "");
+                form.setFieldValue("vmNames", []);
               }}
             />
           </FormSection>
@@ -244,28 +328,85 @@ export default function CreateIngressPage({
             />
           </FormSection>
 
-          <FormSection title="Target VM">
+          <FormSection title="Backend membership">
             <Select
-              label="Virtual machine"
-              placeholder={
-                form.values.namespace ? "Select VM" : "Select namespace first"
-              }
-              data={vmOptions}
+              label="Membership"
+              data={MEMBERSHIP_OPTIONS}
               required
-              searchable
-              disabled={!form.values.namespace}
-              value={form.values.vmName || null}
-              error={form.errors.vmName}
-              onChange={(v) => form.setFieldValue("vmName", v ?? "")}
-              nothingFoundMessage={
-                vmsFetcher.state !== "idle" ? "Loading…" : "No VMs in this namespace"
+              value={form.values.membershipMode}
+              onChange={(v) =>
+                form.setFieldValue(
+                  "membershipMode",
+                  (v as BackendMembershipMode) ?? "single-vm",
+                )
               }
             />
-            {selectedVm && !selectedVm.podNetwork && (
+
+            {form.values.membershipMode === "single-vm" && (
+              <Select
+                label="Virtual machine"
+                placeholder={
+                  form.values.namespace ? "Select VM" : "Select namespace first"
+                }
+                data={vmOptions}
+                required
+                searchable
+                disabled={!form.values.namespace}
+                value={form.values.vmName || null}
+                error={form.errors.vmName}
+                onChange={(v) => form.setFieldValue("vmName", v ?? "")}
+                nothingFoundMessage={
+                  vmsFetcher.state !== "idle"
+                    ? "Loading…"
+                    : "No VMs in this namespace"
+                }
+              />
+            )}
+
+            {form.values.membershipMode === "group" && (
+              <>
+                <MultiSelect
+                  label="Virtual machines"
+                  description="kmc stamps kmc.ianunruh.com/backend-group on each VM pod template. Running VMs may need a restart before endpoints appear."
+                  placeholder={
+                    form.values.namespace
+                      ? "Select one or more VMs"
+                      : "Select namespace first"
+                  }
+                  data={vmOptions}
+                  required
+                  searchable
+                  disabled={!form.values.namespace}
+                  value={form.values.vmNames}
+                  error={form.errors.vmNames}
+                  onChange={(v) => form.setFieldValue("vmNames", v)}
+                  nothingFoundMessage={
+                    vmsFetcher.state !== "idle"
+                      ? "Loading…"
+                      : "No VMs in this namespace"
+                  }
+                />
+              </>
+            )}
+
+            {form.values.membershipMode === "labels" && (
+              <Textarea
+                label="Match labels"
+                description="Pod-template labels on virt-launcher (key=value, one per line or comma-separated). Labels must already exist on the VMs."
+                placeholder={"app=web\ntier=frontend"}
+                minRows={3}
+                required
+                {...form.getInputProps("matchLabelsText")}
+              />
+            )}
+
+            {multusWarningVms.length > 0 && (
               <Alert color="yellow" variant="light" title="Multus network">
-                This VM uses Multus, not the pod network. The Service still selects
-                the virt-launcher pod IP — Multus guest addresses are not used as
-                Ingress backends.
+                {multusWarningVms.length === 1
+                  ? `${multusWarningVms[0].name} uses Multus, not the pod network.`
+                  : `${multusWarningVms.length} selected VMs use Multus.`}{" "}
+                The Service still selects virt-launcher pod IPs — Multus guest
+                addresses are not used as Ingress backends.
               </Alert>
             )}
           </FormSection>

@@ -129,6 +129,7 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
         ing.namespace,
         ing.cluster,
         ing.vmName,
+        ing.membershipMode,
         ing.className,
         ...(ing.hosts ?? []),
         ing.address,
@@ -180,7 +181,7 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
     <Stack gap="md">
       <PageHeader
         title="Ingresses"
-        description={`${filtered.length} shown · ${items.length} total · bound to VMs via Service`}
+        description={`${filtered.length} shown · ${items.length} total · Service backends (single VM, group, or labels)`}
         actions={
           <Button
             component={Link}
@@ -260,7 +261,7 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
               "Cluster",
               "Namespace",
               "Hosts",
-              "VM",
+              "Backend",
               "Class",
               "Age",
               "",
@@ -308,7 +309,15 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
                     </Text>
                   </Table.Td>
                   <Table.Td>
-                    {ing.vmName ? (
+                    {ing.membershipMode === "group" ? (
+                      <Text size="sm" c="dimmed">
+                        VM group
+                      </Text>
+                    ) : ing.membershipMode === "labels" ? (
+                      <Text size="sm" c="dimmed">
+                        Labels
+                      </Text>
+                    ) : ing.vmName ? (
                       <ResourceLink
                         to={vmPath({
                           cluster: ing.cluster,

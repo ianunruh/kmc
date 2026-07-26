@@ -5,6 +5,7 @@ import {
   DetailSection,
   ResourceLink,
   ResourceTable,
+  StatusBadge,
   Table,
 } from "~/ui";
 import {
@@ -24,6 +25,10 @@ function membershipModeLabel(
   switch (membership.mode) {
     case "single-vm":
       return "Single VM";
+    case "labels":
+      return "Label selector";
+    case "group":
+      return "VM group";
     case "unknown":
       return "Unknown";
     default: {
@@ -46,6 +51,8 @@ export default function IngressOverviewTab() {
   const { ing } = data;
   const backend = ing.backend;
   const selectorText = backend ? formatSelector(backend.selector) : "";
+  const matchedVms = backend?.matchedVms ?? [];
+  const membership = backend?.membership;
 
   return (
     <Stack gap="md">
@@ -110,39 +117,58 @@ export default function IngressOverviewTab() {
                 }
               />
               <DetailField label="Service type" value={backend.serviceType} />
-              <DetailField
-                label="Target VM"
-                value={
-                  ing.vmName ? (
-                    ing.vm?.exists === false ? (
-                      <Text size="sm" c="dimmed">
-                        {ing.vmName} (missing)
-                      </Text>
+
+              {membership?.mode === "single-vm" && (
+                <DetailField
+                  label="Target VM"
+                  value={
+                    ing.vmName ? (
+                      ing.vm?.exists === false ? (
+                        <Text size="sm" c="dimmed">
+                          {ing.vmName} (missing)
+                        </Text>
+                      ) : (
+                        <Group gap="xs" wrap="wrap">
+                          <ResourceLink
+                            to={vmPath({
+                              cluster: ing.cluster,
+                              namespace: ing.namespace,
+                              name: ing.vmName,
+                            })}
+                          >
+                            {ing.vmName}
+                          </ResourceLink>
+                          {ing.vm && !ing.vm.podNetwork && (
+                            <Badge size="sm" variant="light" color="orange">
+                              Multus only
+                            </Badge>
+                          )}
+                        </Group>
+                      )
                     ) : (
-                      <Group gap="xs" wrap="wrap">
-                        <ResourceLink
-                          to={vmPath({
-                            cluster: ing.cluster,
-                            namespace: ing.namespace,
-                            name: ing.vmName,
-                          })}
-                        >
-                          {ing.vmName}
-                        </ResourceLink>
-                        {ing.vm && !ing.vm.podNetwork && (
-                          <Badge size="sm" variant="light" color="orange">
-                            Multus only
-                          </Badge>
-                        )}
-                      </Group>
+                      <Text size="sm" c="dimmed">
+                        —
+                      </Text>
                     )
-                  ) : (
-                    <Text size="sm" c="dimmed">
-                      —
-                    </Text>
-                  )
-                }
-              />
+                  }
+                />
+              )}
+
+              {membership?.mode === "group" && (
+                <DetailField label="Group id" value={membership.groupId} />
+              )}
+
+              {membership?.mode === "labels" && (
+                <DetailField
+                  label="Match labels"
+                  value={
+                    <Code style={{ whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+                      {formatSelector(membership.matchLabels) || "—"}
+                    </Code>
+                  }
+                />
+              )}
+
               <DetailField
                 label="Selector"
                 value={
@@ -161,6 +187,55 @@ export default function IngressOverviewTab() {
           )}
         </DetailSection>
       </SimpleGrid>
+
+      {backend?.exists && (
+        <DetailSection
+          title={`Matched VMs${matchedVms.length ? ` (${matchedVms.length})` : ""}`}
+        >
+          {matchedVms.length === 0 ? (
+            <Text size="sm" c="dimmed">
+              No VMs in this namespace match the Service selector. For group
+              membership, running guests may need a restart before virt-launcher
+              pods pick up the new labels.
+            </Text>
+          ) : (
+            <ResourceTable
+              headers={["Name", "Status", "Network"]}
+              isEmpty={false}
+            >
+              {matchedVms.map((vm) => (
+                <Table.Tr key={vm.name}>
+                  <Table.Td>
+                    <ResourceLink
+                      to={vmPath({
+                        cluster: ing.cluster,
+                        namespace: ing.namespace,
+                        name: vm.name,
+                      })}
+                    >
+                      {vm.name}
+                    </ResourceLink>
+                  </Table.Td>
+                  <Table.Td>
+                    <StatusBadge status={vm.status} />
+                  </Table.Td>
+                  <Table.Td>
+                    {vm.podNetwork ? (
+                      <Text size="sm" c="dimmed">
+                        Pod
+                      </Text>
+                    ) : (
+                      <Badge size="sm" variant="light" color="orange">
+                        Multus only
+                      </Badge>
+                    )}
+                  </Table.Td>
+                </Table.Tr>
+              ))}
+            </ResourceTable>
+          )}
+        </DetailSection>
+      )}
 
       <DetailSection title="Service ports">
         {ing.servicePorts && ing.servicePorts.length > 0 ? (
