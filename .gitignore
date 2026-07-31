@@ -1,17 +1,25 @@
 .DS_Store
-.env
-/node_modules/
 
-# React Router
-/.react-router/
-/build/
+# Console (Node)
+console/.env
+console/node_modules/
+console/.react-router/
+console/build/
+console/.eslintcache
+console/**/*.tsbuildinfo
 
-# Tooling caches
+# Auth secrets / local cluster registry (console)
+console/config/secrets/
+console/config/clusters.yaml
+
+# Controller (Go)
+/bin/
+*.out
+*.test
+coverage.out
+
+# Shared tooling
 .eslintcache
 *.tsbuildinfo
 __pycache__/
 *.py[cod]
-
-# Auth secrets
-config/secrets/
-config/clusters.yaml

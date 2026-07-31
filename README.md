@@ -1,51 +1,102 @@
-# kmc — multi-cluster KubeVirt console
+# kmc — multi-cluster KubeVirt private cloud
 
-Local web console for listing and managing KubeVirt virtual machines across Kubernetes clusters. Single React Router app (loaders, actions, resource routes).
+Polyglot monorepo:
+
+| Component | Path | Role |
+|-----------|------|------|
+| **Console** | `console/` | Multi-cluster React Router UI (loaders/actions, consoles) |
+| **Controller** | `cmd/`, `api/`, `internal/` | In-cluster Go reconcilers (starting with `IPAddress`) |
+| **Deploy** | `deploy/` | Cluster manifests (impersonator SA, controller) |
+
+The console still owns most orchestration today (VM create, VPC/router, scan-based IPAM). The controller is the migration path for race-safe, multi-replica domain logic — **console is not wired to `IPAddress` yet**.
 
 ## Stack
+
+**Console**
 
 - React Router 8 (framework mode, SSR)
 - TypeScript + Vite
 - Mantine (dark) + Geist Mono
 - `@kubernetes/client-node` (server-only)
 
+**Controller**
+
+- Go + controller-runtime
+- CRDs under `kmc.ianunruh.com/v1alpha1`
+
 ## Layout
 
 ```
-app/
-  routes/           # React Router route modules
-  lib/
-    auth/           # session, GitHub OAuth, actor + root middleware
-    k8s/            # clients, cluster registry, catalog, events, yaml
-  ui/               # shared UI primitives
-  shell/            # app chrome, refresh control, loading bar
-  vms/ datavolumes/ instancetypes/ ssh-keys/
-config/
-  clusters.example.yaml
-  clusters.yaml     # local (gitignored) — apiServer + SA tokens
-  secrets/          # local (gitignored) — platform SA tokens
-deploy/impersonator/  # cluster-side SA + impersonate + settings RBAC
+console/                 # web console (Node)
+  app/                   # routes, domain modules, UI
+  config/                # clusters.example.yaml; secrets gitignored
+  scripts/               # snapshot-run CronJob entrypoint
+  Dockerfile             # image: ghcr.io/ianunruh/kmc
+api/v1alpha1/            # CRD Go types (IPAddress, …)
+cmd/kmc-controller/      # controller main
+internal/
+  controller/            # reconcilers
+  ipam/                  # pure helpers
+deploy/
+  impersonator/          # platform SA + impersonate RBAC (console)
+  controller/            # CRDs, RBAC, Deployment (kustomize)
+Dockerfile.controller    # image: ghcr.io/ianunruh/kmc-controller
+Makefile
 ```
 
 ## Prerequisites
 
-- Node 22+
-- pnpm
-- Working `kubectl` against your clusters (OIDC/exec auth is fine for local mode)
+- Node 22+ and pnpm (console)
+- Go 1.24+ (controller; `GOTOOLCHAIN=auto` works with newer toolchains)
+- Working `kubectl` against your clusters (OIDC/exec auth is fine for local console mode)
 
 Default clusters: `prod-sjc1`, `homelab`.
 
-## Setup (local / kubeconfig mode)
+## Setup — console (local / kubeconfig mode)
 
 ```bash
+cd console
 pnpm install
 pnpm dev
+# or from repo root: make console-dev
 ```
 
 Open [http://localhost:5173](http://localhost:5173).
 
-Default **auth mode is `kubeconfig`**: no login, API calls use your local kubeconfig contexts (same as before).
+Default **auth mode is `kubeconfig`**: no login, API calls use your local kubeconfig contexts.
 
+## Setup — controller
+
+```bash
+# Generate DeepCopy + CRD YAML (after editing api/)
+make generate
+
+# Unit tests + binary
+make controller-test
+make controller-build
+
+# Install CRD + controller into the current cluster (image must be pullable)
+kubectl apply -k deploy/controller
+
+# Or run against kubeconfig without deploying the image
+make controller-run   # --leader-elect=false
+```
+
+Example resource:
+
+```bash
+kubectl apply -f deploy/controller/examples/ipaddress.yaml
+kubectl get ipaddr -A
+```
+
+`IPAddress` is namespaced. Recommended object name: IPv4 with dots → dashes (`10.40.1.20` → `10-40-1-20`) so concurrent creates collide with HTTP 409.
+
+**Images**
+
+| Image | Contents |
+|-------|----------|
+| `ghcr.io/ianunruh/kmc` | Console + snapshot job (`scripts/snapshot-run.ts`) |
+| `ghcr.io/ianunruh/kmc-controller` | Go controller |
 ## Auth modes
 
 | Mode                     | `KMC_AUTH_MODE`       | Behavior                                                                                                                                                                                                                        |
@@ -65,7 +116,7 @@ GitHub session → Kubernetes principal (matches apiserver OIDC shape):
 
 Example: `oidc:me@ianunruh.com` + `oidc:kcloud-ops:k8s-admins`.
 
-Auth is applied once in **root middleware** (`app/lib/auth/middleware.server.ts`). Loaders/actions stay flat — `getClusterClients()` reads the request-scoped actor from AsyncLocalStorage.
+Auth is applied once in **root middleware** (`console/app/lib/auth/middleware.server.ts`). Loaders/actions stay flat — `getClusterClients()` reads the request-scoped actor from AsyncLocalStorage.
 
 ### Platform SA (already applied on prod-sjc1 / homelab)
 
@@ -75,12 +126,15 @@ Mint a token:
 
 ```bash
 kubectl --context=homelab -n kmc-system create token kmc --duration=8760h \
-  > config/secrets/homelab.token
+  > console/config/secrets/homelab.token
 ```
 
 ### Cluster registry
 
+Run these from `console/` (or pass absolute paths):
+
 ```bash
+cd console
 cp config/clusters.example.yaml config/clusters.yaml
 # point tokenFile / tokenEnv at your SA tokens
 ```
@@ -141,13 +195,14 @@ No separate IPAM database — the cluster is the source of truth. Concurrent cre
 3. Configure env:
 
 ```bash
+cd console
 cp .env.example .env
 # edit .env — set KMC_AUTH_MODE=impersonate, GitHub client id/secret
 # KMC_SESSION_SECRET: openssl rand -hex 32
 pnpm dev
 ```
 
-`.env` is gitignored; `.env.example` is the template. Vite/React Router loads `.env` into `process.env` on `pnpm dev`.
+`console/.env` is gitignored; `.env.example` is the template. Vite/React Router loads `.env` into `process.env` on `pnpm dev` (CWD = `console/`).
 
 Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl auth whoami`.
 
@@ -156,7 +211,7 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 | Env                        | Default                 | Description                                                                   |
 | -------------------------- | ----------------------- | ----------------------------------------------------------------------------- |
 | `KMC_AUTH_MODE`            | `kubeconfig`            | `kubeconfig` \| `impersonate`                                                 |
-| `KMC_CLUSTERS_CONFIG`      | `config/clusters.yaml`  | Cluster identity registry                                                     |
+| `KMC_CLUSTERS_CONFIG`      | `config/clusters.yaml`  | Cluster identity registry (relative to console CWD)                           |
 | `KMC_SETTINGS_CLUSTER`     | first cluster in YAML   | Cluster for app-level prefs (SSH keys ConfigMaps in `kmc-system`)             |
 | `KMC_CONTEXTS`             | `prod-sjc1,homelab`     | Fallback cluster list when YAML missing (kubeconfig mode)                     |
 | `KMC_IMAGE_NAMESPACE`      | `vm-images`             | Namespace for golden images (list/import + Launch VM PVC scan)                |
@@ -306,7 +361,7 @@ address returns to the public pool. Held addresses can be re-associated later
 without re-allocating. Deleting a guest VM also disassociates its floating IPs
 into the held state (leases are removed; public addresses are not released).
 
-**In-guest agent** (`app/vpcs/kmc-router-agent.py`, Python 3 stdlib only):
+**In-guest agent** (`console/app/vpcs/kmc-router-agent.py`, Python 3 stdlib only):
 
 - Bootstrap copy is written by cloud-init; runtime source of truth is ConfigMap `agent.py`
 - **Owns private Multus L3**: for each policy interface, waits for MAC, `ip link set up`, `ip addr replace gateway/prefix` (not cloud-init netplan)
@@ -387,9 +442,21 @@ Apply the updated `deploy/impersonator/rbac.yaml` so SA `kmc` can manage ConfigM
 
 - **kubeconfig mode:** binds as a local console with no login. Do not expose beyond localhost.
 - **impersonate mode:** session cookie + GitHub OAuth. Still do not expose without TLS and a hardened deployment. Prefer smoke-test VMs when exercising delete/stop.
-- Platform SA tokens and `config/clusters.yaml` are gitignored under `config/secrets/` / local overrides.
+- Platform SA tokens and `console/config/clusters.yaml` are gitignored under `console/config/secrets/` / local overrides.
 
 ## Scripts
+
+From **repo root** (Makefile):
+
+```bash
+make console-dev          # cd console && pnpm dev
+make console-check        # typecheck + lint + format
+make controller-build     # bin/kmc-controller
+make controller-test      # go test ./...
+make generate             # DeepCopy + CRD + RBAC from markers
+```
+
+From **`console/`**:
 
 ```bash
 pnpm dev           # Vite dev server (HMR + serial console WS proxy)
@@ -408,8 +475,7 @@ pnpm check         # typecheck + lint + format:check
 - Proxy: browser WebSocket → `ws(s)://…/api/vms/…/serial` → KubeVirt
   `…/virtualmachineinstances/{name}/console` (`plain.kubevirt.io`)
 - Dev: Vite plugin attaches the upgrade handler on the same port as HMR
-- Prod: `server.ts` (replaces `react-router-serve`)
-- Requires a live VMI and `get` on the console subresource
+- Prod: `console/server.ts` (replaces `react-router-serve`)- Requires a live VMI and `get` on the console subresource
 - Passwordless images: useful mainly for cloud-init / boot logs (no login)
 
 ### SSH terminal (browser shell)

@@ -1,0 +1,15 @@
+.DS_Store
+.git
+.github
+.agents
+.react-router
+build
+node_modules
+README.md
+.env
+.env.*
+config/secrets
+config/clusters.yaml
+**/*.md
+.eslintcache
+*.tsbuildinfo

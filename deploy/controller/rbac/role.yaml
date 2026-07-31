@@ -1,0 +1,39 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kmc-controller
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - kmc.ianunruh.com
+  resources:
+  - ipaddresses
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - kmc.ianunruh.com
+  resources:
+  - ipaddresses/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - kmc.ianunruh.com
+  resources:
+  - ipaddresses/status
+  verbs:
+  - get
+  - patch
+  - update
