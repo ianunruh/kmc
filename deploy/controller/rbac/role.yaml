@@ -7,10 +7,30 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - configmaps
+  - secrets
+  - serviceaccounts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - events
   verbs:
   - create
   - patch
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts/token
+  verbs:
+  - create
 - apiGroups:
   - k8s.cni.cncf.io
   resources:
@@ -30,6 +50,7 @@ rules:
   - ipaddresses
   - ippools
   - portforwards
+  - routers
   - vlanpools
   - vpcs
   verbs:
@@ -47,6 +68,7 @@ rules:
   - ipaddresses/finalizers
   - ippools/finalizers
   - portforwards/finalizers
+  - routers/finalizers
   - vlanpools/finalizers
   - vpcs/finalizers
   verbs:
@@ -58,9 +80,35 @@ rules:
   - ipaddresses/status
   - ippools/status
   - portforwards/status
+  - routers/status
   - vlanpools/status
   - vpcs/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - kubevirt.io
+  resources:
+  - virtualmachines
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  - roles
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch

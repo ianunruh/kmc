@@ -1,0 +1,330 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.17.3
+  name: routers.kmc.ianunruh.com
+spec:
+  group: kmc.ianunruh.com
+  names:
+    kind: Router
+    listKind: RouterList
+    plural: routers
+    shortNames:
+    - rtr
+    singular: router
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.interfaces[*].vpc
+      name: VPCs
+      type: string
+    - jsonPath: .status.external.primaryCidr
+      name: External
+      type: string
+    - jsonPath: .status.agent.status
+      name: Agent
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Router is a namespaced shared router (DHCP/DNS gateway + optional external SNAT).
+          It owns the policy ConfigMap, agent RBAC, gateway IPAddress claims, and the
+          KubeVirt appliance VirtualMachine. FloatingIP and PortForward CRs are projected
+          into the policy document; DHCP leases project from IPAddress.spec.interface.
+
+          GVK: routers.kmc.ianunruh.com (shortName rtr).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: RouterSpec defines the desired state of a shared router.
+            properties:
+              appliance:
+                description: Appliance sizing, image, and access.
+                properties:
+                  cpuCores:
+                    description: CPU cores when not using instanceType.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                  diskSize:
+                    description: Root disk size (e.g. 20Gi).
+                    minLength: 1
+                    type: string
+                  image:
+                    description: Golden image to clone for the root disk.
+                    properties:
+                      kind:
+                        default: pvc
+                        description: Kind of image source. Only "pvc" is supported.
+                        enum:
+                        - pvc
+                        type: string
+                      name:
+                        description: Name of the source PVC.
+                        minLength: 1
+                        type: string
+                      namespace:
+                        description: Namespace of the source PVC (e.g. vm-images).
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    - namespace
+                    type: object
+                  instanceType:
+                    description: Optional cluster instance type name.
+                    type: string
+                  memory:
+                    description: Memory quantity when not using instanceType (e.g.
+                      2Gi).
+                    type: string
+                  runStrategy:
+                    description: KubeVirt run strategy. Defaults to Always.
+                    enum:
+                    - Always
+                    - Halted
+                    - Manual
+                    - RerunOnFailure
+                    type: string
+                  sshPublicKeys:
+                    description: SSH public keys injected via cloud-init.
+                    items:
+                      type: string
+                    minItems: 1
+                    type: array
+                  storageClass:
+                    description: Optional storage class for the root DataVolume.
+                    type: string
+                required:
+                - diskSize
+                - image
+                - sshPublicKeys
+                type: object
+              external:
+                description: Optional public Multus external gateway.
+                properties:
+                  address:
+                    description: Optional preferred public IPv4. Empty means allocate
+                      from the matching IPPool.
+                    type: string
+                  multusNetwork:
+                    description: Multus network name (or IPPool name when MultusNetwork
+                      matches pool id).
+                    minLength: 1
+                    type: string
+                  snat:
+                    description: SNAT (MASQUERADE) for guest egress. Defaults to true
+                      when omitted.
+                    type: boolean
+                required:
+                - multusNetwork
+                type: object
+              vpcs:
+                description: VPCs to attach (private Multus interfaces + DHCP/DNS).
+                items:
+                  description: RouterVPCAttachment is a desired private interface
+                    on a shared router.
+                  properties:
+                    gateway:
+                      description: Optional gateway IPv4 inside the VPC CIDR. Empty
+                        means first usable host.
+                      type: string
+                    name:
+                      description: Name of the VPC / Multus NAD in the same namespace.
+                      minLength: 1
+                      type: string
+                  required:
+                  - name
+                  type: object
+                minItems: 1
+                type: array
+            required:
+            - appliance
+            - vpcs
+            type: object
+          status:
+            description: RouterStatus defines the observed state of Router.
+            properties:
+              agent:
+                description: Agent status projected from policy ConfigMap annotations.
+                properties:
+                  appliedAt:
+                    description: Last successful apply timestamp (RFC3339).
+                    type: string
+                  heartbeatAt:
+                    description: Last heartbeat timestamp (RFC3339).
+                    type: string
+                  lastError:
+                    description: Last agent error message.
+                    type: string
+                  observedGeneration:
+                    description: Agent-reported observed policy generation.
+                    type: string
+                  status:
+                    description: Ready | Pending | Error | Stale
+                    type: string
+                  version:
+                    description: Agent version / script hash prefix.
+                    type: string
+                type: object
+              conditions:
+                description: Conditions represent the latest available observations.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              external:
+                description: Observed external gateway.
+                properties:
+                  gateway:
+                    description: Public default gateway.
+                    type: string
+                  mac:
+                    description: MAC of the external Multus NIC.
+                    type: string
+                  multusNetwork:
+                    description: Multus network name.
+                    type: string
+                  primaryCidr:
+                    description: Primary public address/prefix (e.g. 74.82.62.10/27).
+                    type: string
+                  snat:
+                    description: Whether SNAT is enabled.
+                    type: boolean
+                type: object
+              interfaces:
+                description: Observed private interfaces.
+                items:
+                  description: RouterInterfaceStatus is an observed private interface.
+                  properties:
+                    cidr:
+                      description: Private CIDR.
+                      type: string
+                    domain:
+                      description: DHCP domain (e.g. app-net.vpc.local).
+                      type: string
+                    gateway:
+                      description: Gateway IPv4 on this interface.
+                      type: string
+                    mac:
+                      description: MAC address assigned to the Multus NIC.
+                      type: string
+                    vpc:
+                      description: VPC / NAD name.
+                      type: string
+                  type: object
+                type: array
+              observedGeneration:
+                description: ObservedGeneration is the .metadata.generation last processed.
+                format: int64
+                type: integer
+              phase:
+                description: 'Phase is a high-level summary: Pending, Ready, or Error.'
+                type: string
+              policyConfigMap:
+                description: PolicyConfigMap is the name of the owned policy ConfigMap.
+                type: string
+              policyGeneration:
+                description: PolicyGeneration is the generation embedded in policy.json
+                  metadata.
+                format: int64
+                type: integer
+              vmMissing:
+                description: VMMissing is true when the policy exists but the appliance
+                  VM does not.
+                type: boolean
+              vmName:
+                description: Appliance VirtualMachine name (same namespace).
+                type: string
+              vmReady:
+                description: ApplianceReady is true when the VirtualMachine exists
+                  and is Ready.
+                type: boolean
+              vmStatus:
+                description: Appliance VM printable status when known.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

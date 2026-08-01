@@ -1,6 +1,7 @@
 package ipam
 
 import (
+	"crypto/rand"
 	"fmt"
 	"net"
 	"strings"
@@ -151,4 +152,40 @@ func ipToUint32(ip net.IP) uint32 {
 
 func uint32ToIP(n uint32) net.IP {
 	return net.IPv4(byte(n>>24), byte(n>>16), byte(n>>8), byte(n)).To4()
+}
+
+// FirstUsableHost returns the first usable host address in an IPv4 CIDR
+// (network+1 for prefix <= 30; matches console default gateway rule).
+func FirstUsableHost(cidr string) (string, error) {
+	network, err := ParseIPv4CIDR(cidr)
+	if err != nil {
+		return "", err
+	}
+	ones, bits := network.Mask.Size()
+	if bits != 32 {
+		return "", fmt.Errorf("cidr must be IPv4")
+	}
+	ip4 := network.IP.To4()
+	if ip4 == nil {
+		return "", fmt.Errorf("cidr must be IPv4")
+	}
+	base := ipToUint32(ip4)
+	var first uint32
+	if ones <= 30 {
+		first = base + 1
+	} else {
+		first = base
+	}
+	return uint32ToIP(first).String(), nil
+}
+
+// GenerateLocalMAC returns a locally administered unicast MAC (xx:xx:xx:xx:xx:xx).
+func GenerateLocalMAC() (string, error) {
+	b := make([]byte, 6)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	// Unicast (bit0 clear) + locally administered (bit1 set).
+	b[0] = (b[0] & 0xfe) | 0x02
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", b[0], b[1], b[2], b[3], b[4], b[5]), nil
 }

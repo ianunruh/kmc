@@ -38,7 +38,7 @@ const (
 	AnnotationGateway     = "kmc.ianunruh.com/gateway"
 	AnnotationDNS         = "kmc.ianunruh.com/dns"
 	AnnotationDescription = "kmc.ianunruh.com/description"
-	// AnnotationRouter is set by a future Router controller (same-namespace router name).
+	// AnnotationRouter is set by the Router controller (same-namespace router name).
 	AnnotationRouter = "kmc.ianunruh.com/router"
 )
 
@@ -84,9 +84,8 @@ type VPCStatus struct {
 	// +optional
 	NetworkAttachmentReady bool `json:"networkAttachmentReady,omitempty"`
 
-	// RouterRef is set by a future Router controller when a shared router attaches
-	// to this VPC (mirrors annotation kmc.ianunruh.com/router). Reserved; not
-	// written by the VPC controller today.
+	// RouterRef is set when a shared router attaches to this VPC (mirrors
+	// annotation kmc.ianunruh.com/router on the Multus NAD).
 	// +optional
 	RouterRef *corev1.LocalObjectReference `json:"routerRef,omitempty"`
 
@@ -113,9 +112,8 @@ type VPCStatus struct {
 // VPC is a namespaced self-service private network (Multus bridge + VLAN).
 // Object name is the Multus NetworkAttachmentDefinition name tenants attach VMs to.
 //
-// Router attachment is intentionally out of band: a future Router CR will set
-// status.routerRef / annotation kmc.ianunruh.com/router. Reserved GVK for that
-// work: routers.kmc.ianunruh.com (kind Router, shortName rtr).
+// Router attachment is out of band: the Router controller sets
+// annotation kmc.ianunruh.com/router; the VPC controller mirrors status.routerRef.
 type VPC struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

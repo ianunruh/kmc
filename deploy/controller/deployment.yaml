@@ -35,6 +35,10 @@ spec:
             - --leader-elect=true
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=:8080
+            # Required for Router appliance cloud-init (pod NIC routes to apiserver).
+            # Match your cluster CNI / service range (example values).
+            - --cluster-pod-cidrs=10.19.0.0/16
+            - --cluster-service-cidrs=10.20.0.0/16
           ports:
             - name: metrics
               containerPort: 8080

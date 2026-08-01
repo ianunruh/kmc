@@ -90,14 +90,39 @@ make controller-run   # --leader-elect=false
 | **IPPool** | Cluster | `ippool` | Operator Multus IPv4 pool (from `ipPools`) |
 | **VPC** | Namespaced | `vpc` | Self-service private network; controller assigns VLAN + owns Multus NAD |
 | **IPAddress** | Namespaced | `ipaddr` | Single IPv4 claim (create = allocate race via name); status.gateway/dns filled from IPPool/VPC when present |
-| **FloatingIP** | Namespaced | `fip` | Public float hold/associate; owns companion `IPAddress` claim; Router programs SNAT/DNAT later |
-| **PortForward** | Namespaced | `pf` | Port DNAT rule (Router programs later) |
+| **FloatingIP** | Namespaced | `fip` | Public float hold/associate; owns companion `IPAddress` claim; Router projects SNAT/DNAT |
+| **PortForward** | Namespaced | `pf` | Port DNAT rule (Router projects into policy) |
+| **Router** | Namespaced | `rtr` | Shared router: policy ConfigMap, agent RBAC, gateway claims, KubeVirt appliance |
 
-**Router is reserved, not implemented.** A future `Router` CR (`routers.kmc.ianunruh.com`, shortName `rtr`) will own the appliance VM, policy ConfigMap, and agent. Room is already planned:
+**Router CR** (`routers.kmc.ianunruh.com`, shortName `rtr`) is implemented in the Go controller. It owns:
 
-- `VPC.status.routerRef` / NAD annotation `kmc.ianunruh.com/router`
-- `FloatingIP.spec.routerRef` / `PortForward.spec.routerRef` (Ready stays false with `RouterNotImplemented` until then)
-- `IPAddress.spec.claimRef` may point at a Router; DHCP leases project from `IPAddress.spec.interface`
+- Policy ConfigMap `kmc-router-<name>` (`policy.json` + embedded `agent.py`)
+- Agent ServiceAccount / Role / RoleBinding
+- Gateway (and optional public) `IPAddress` claims
+- KubeVirt appliance VirtualMachine + cloud-init Secret
+- VPC NAD annotation `kmc.ianunruh.com/router` (mirrored to `VPC.status.routerRef`)
+
+Policy projection:
+
+| Source | Policy field |
+|--------|----------------|
+| `Router.spec.vpcs` + gateway claims | `interfaces[]` |
+| `Router.spec.external` | `external` |
+| `IPAddress` on attached VPC with `spec.interface.mac` | `leases[]` |
+| `FloatingIP` for attached VPC | `floatingIPs[]` |
+| `PortForward` for attached VPC | `portForwards[]` |
+
+`FloatingIP` / `PortForward` set `status.programmed` when the Router has rendered policy, and Ready when the agent reports Ready.
+
+**Console dual-path:** The console still creates routers via ConfigMap + VM orchestration. Controller-managed Routers coexist until a later cutover — do not attach the same VPC to both paths.
+
+Controller flags for appliance cloud-init (pod NIC routes):
+
+```text
+--cluster-pod-cidrs=10.19.0.0/16
+--cluster-service-cidrs=10.20.0.0/16
+--apiserver-url=https://…   # optional; default in-cluster
+```
 
 Examples:
 
@@ -108,9 +133,10 @@ kubectl apply -f deploy/controller/examples/vpc.yaml
 kubectl apply -f deploy/controller/examples/ipaddress.yaml
 kubectl apply -f deploy/controller/examples/floatingip.yaml
 kubectl apply -f deploy/controller/examples/portforward.yaml
+kubectl apply -f deploy/controller/examples/router.yaml
 
 kubectl get vlanpool,ippool
-kubectl get vpc,ipaddr,fip,pf -A
+kubectl get vpc,ipaddr,fip,pf,rtr -A
 ```
 
 `IPAddress` / `FloatingIP` recommended object name: IPv4 with dots → dashes (`10.40.1.20` → `10-40-1-20`) so concurrent creates collide with HTTP 409.

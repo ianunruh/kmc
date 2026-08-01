@@ -17,7 +17,7 @@ rules:
     verbs: ["get", "list", "watch"]
   # Tenant networking
   - apiGroups: ["kmc.ianunruh.com"]
-    resources: ["vpcs", "ipaddresses", "floatingips", "portforwards"]
+    resources: ["vpcs", "ipaddresses", "floatingips", "portforwards", "routers"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 # Example namespace binding:

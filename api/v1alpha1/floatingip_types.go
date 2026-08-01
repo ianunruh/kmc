@@ -24,7 +24,7 @@ const (
 )
 
 // FloatingIPSpec defines a public floating address for a VPC.
-// Realization (SNAT/DNAT on the appliance) requires a future Router controller.
+// Realization (SNAT/DNAT on the appliance) is done by the Router controller.
 type FloatingIPSpec struct {
 	// PoolRef identifies the public IPv4 pool (typically kind IPPool).
 	// +kubebuilder:validation:Required
@@ -38,8 +38,8 @@ type FloatingIPSpec struct {
 	// +kubebuilder:validation:Required
 	VPCRef corev1.LocalObjectReference `json:"vpcRef"`
 
-	// Router that should program SNAT/DNAT. Reserved for the Router CR; Ready
-	// stays false until a Router controller exists and sets status.programmed.
+	// Router that should program SNAT/DNAT. When empty, the Router attaching
+	// the VPC is used. Ready becomes true when that router's agent is Ready.
 	// +optional
 	RouterRef *corev1.LocalObjectReference `json:"routerRef,omitempty"`
 
@@ -66,7 +66,7 @@ type FloatingIPStatus struct {
 	// +optional
 	PrefixLength int32 `json:"prefixLength,omitempty"`
 
-	// Programmed is true when a future Router controller has applied this mapping.
+	// Programmed is true when a Router has projected this mapping into policy.
 	// +optional
 	Programmed bool `json:"programmed,omitempty"`
 
@@ -93,8 +93,8 @@ type FloatingIPStatus struct {
 // FloatingIP is a namespaced public floating IPv4 for a VPC (hold or associate).
 // Recommended object name: public address with dots → dashes (10-20-30-40).
 //
-// Until the Router CR exists, the controller only validates and sets Held/Associated
-// from the spec; Ready remains false (RouterNotImplemented).
+// The FloatingIP controller claims the public address; the Router controller
+// projects SNAT/DNAT into the appliance policy. Ready is true when the agent is Ready.
 type FloatingIP struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

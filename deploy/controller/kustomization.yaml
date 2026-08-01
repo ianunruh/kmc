@@ -11,6 +11,7 @@ resources:
   - crds/kmc.ianunruh.com_vpcs.yaml
   - crds/kmc.ianunruh.com_floatingips.yaml
   - crds/kmc.ianunruh.com_portforwards.yaml
+  - crds/kmc.ianunruh.com_routers.yaml
   - rbac/service_account.yaml
   - rbac/role.yaml
   - rbac/role_binding.yaml

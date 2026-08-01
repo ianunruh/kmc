@@ -30,13 +30,13 @@ const (
 
 // PortForwardSpec defines a port-level DNAT rule through a router external gateway.
 // Distinct from FloatingIP (full 1:1): multiple PortForwards may share one public address.
-// Realization requires a future Router controller.
+// Realization is done by the Router controller (policy projection + agent).
 type PortForwardSpec struct {
 	// VPC that owns the private address (same namespace).
 	// +kubebuilder:validation:Required
 	VPCRef corev1.LocalObjectReference `json:"vpcRef"`
 
-	// Router that should program DNAT. Reserved for the Router CR.
+	// Router that should program DNAT. When empty, the Router attaching the VPC is used.
 	// +optional
 	RouterRef *corev1.LocalObjectReference `json:"routerRef,omitempty"`
 
@@ -78,7 +78,7 @@ type PortForwardStatus struct {
 	// +optional
 	Phase string `json:"phase,omitempty"`
 
-	// Programmed is true when a future Router controller has applied this rule.
+	// Programmed is true when a Router has projected this rule into policy.
 	// +optional
 	Programmed bool `json:"programmed,omitempty"`
 
@@ -104,11 +104,11 @@ type PortForwardStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // PortForward is a namespaced port DNAT rule (publicIP:port → privateIP:port).
-// Until the Router CR exists, the controller only validates; Ready stays false
-// with reason RouterNotImplemented.
+// The PortForward controller validates; the Router controller projects DNAT
+// into policy. Ready is true when the agent is Ready.
 //
 // A public address must not be both a full FloatingIP association and a
-// PortForward host — enforced by the future Router controller (or a webhook).
+// PortForward host — the Router render prefers the FloatingIP association.
 type PortForward struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

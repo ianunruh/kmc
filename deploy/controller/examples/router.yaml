@@ -1,0 +1,30 @@
+# Shared router attached to a VPC (DHCP/DNS gateway).
+# Requires: VPC Ready with CIDR, golden image PVC, cluster pod/service CIDRs
+# configured on the controller (--cluster-pod-cidrs / --cluster-service-cidrs).
+#
+# Optional external Multus enables SNAT + FloatingIP / PortForward programming.
+apiVersion: kmc.ianunruh.com/v1alpha1
+kind: Router
+metadata:
+  name: shared
+  namespace: default
+spec:
+  vpcs:
+    - name: app-net
+      # gateway: 10.40.1.1  # optional; defaults to first usable host / VPC gateway
+  # external:
+  #   multusNetwork: bridge-external
+  #   # address: 74.82.62.10
+  #   snat: true
+  appliance:
+    image:
+      kind: pvc
+      namespace: vm-images
+      name: ubuntu-24.04
+    # instanceType: u1.medium
+    cpuCores: 2
+    memory: 2Gi
+    diskSize: 20Gi
+    sshPublicKeys:
+      - ssh-ed25519 AAAA... replace-me
+    runStrategy: Always

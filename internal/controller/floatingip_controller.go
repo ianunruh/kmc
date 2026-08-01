@@ -10,11 +10,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kmcv1alpha1 "github.com/ianunruh/kmc/api/v1alpha1"
 	"github.com/ianunruh/kmc/internal/ipam"
@@ -22,7 +25,7 @@ import (
 
 // FloatingIPReconciler reconciles FloatingIP objects.
 // Claims a companion IPAddress for the public address. Programming onto a
-// router appliance is deferred to a future Router controller.
+// router appliance is projected by the Router controller.
 type FloatingIPReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -109,22 +112,49 @@ func (r *FloatingIPReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		phase = kmcv1alpha1.FloatingIPPhaseAssociated
 	}
 
-	// Router CR not implemented: never Ready / Programmed.
-	msg := "public address claimed; waiting for Router controller to program SNAT/DNAT"
-	if obj.Spec.RouterRef == nil || strings.TrimSpace(obj.Spec.RouterRef.Name) == "" {
-		msg = "public address claimed; routerRef unset — future Router controller will program SNAT/DNAT"
+	routerName := ""
+	if obj.Spec.RouterRef != nil {
+		routerName = strings.TrimSpace(obj.Spec.RouterRef.Name)
+	}
+	prog, err := lookupRouterForVPC(ctx, r.Client, obj.Namespace, obj.Spec.VPCRef.Name, routerName)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	programmed := false
+	ready := false
+	reason := "WaitingForRouter"
+	msg := "public address claimed; waiting for a Router attached to this VPC to program SNAT/DNAT"
+	if prog.Found {
+		if prog.PolicyReady {
+			programmed = true
+			reason = "WaitingForAgent"
+			msg = "projected into router policy; waiting for agent Ready"
+		} else {
+			reason = "WaitingForRouter"
+			msg = "router " + prog.Name + " found; waiting for policy render"
+		}
+		if prog.AgentReady && programmed {
+			ready = true
+			reason = "Ready"
+			msg = "router agent has programmed SNAT/DNAT"
+		}
 	}
 
 	if err := r.patchStatus(ctx, &obj, func(o *kmcv1alpha1.FloatingIP) {
 		o.Status.Phase = phase
 		o.Status.Address = addr
 		o.Status.PrefixLength = prefix
-		o.Status.Programmed = false
+		o.Status.Programmed = programmed
 		o.Status.ObservedGeneration = o.Generation
+		status := metav1.ConditionFalse
+		if ready {
+			status = metav1.ConditionTrue
+		}
 		meta.SetStatusCondition(&o.Status.Conditions, metav1.Condition{
 			Type:               kmcv1alpha1.FloatingIPConditionReady,
-			Status:             metav1.ConditionFalse,
-			Reason:             "RouterNotImplemented",
+			Status:             status,
+			Reason:             reason,
 			Message:            msg,
 			ObservedGeneration: o.Generation,
 		})
@@ -436,6 +466,40 @@ func (r *FloatingIPReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kmcv1alpha1.FloatingIP{}).
 		Owns(&kmcv1alpha1.IPAddress{}).
+		Watches(&kmcv1alpha1.Router{}, handler.EnqueueRequestsFromMapFunc(r.mapRouterToFloatingIPs)).
 		Named("floatingip").
 		Complete(r)
+}
+
+func (r *FloatingIPReconciler) mapRouterToFloatingIPs(ctx context.Context, obj client.Object) []reconcile.Request {
+	rt, ok := obj.(*kmcv1alpha1.Router)
+	if !ok {
+		return nil
+	}
+	vpcs := map[string]struct{}{}
+	for _, att := range rt.Spec.VPCs {
+		if n := strings.TrimSpace(att.Name); n != "" {
+			vpcs[n] = struct{}{}
+		}
+	}
+	var list kmcv1alpha1.FloatingIPList
+	if err := r.List(ctx, &list, client.InNamespace(rt.Namespace)); err != nil {
+		return nil
+	}
+	var reqs []reconcile.Request
+	for i := range list.Items {
+		fip := &list.Items[i]
+		if fip.Spec.RouterRef != nil && strings.TrimSpace(fip.Spec.RouterRef.Name) == rt.Name {
+			reqs = append(reqs, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: fip.Namespace, Name: fip.Name},
+			})
+			continue
+		}
+		if _, ok := vpcs[strings.TrimSpace(fip.Spec.VPCRef.Name)]; ok {
+			reqs = append(reqs, reconcile.Request{
+				NamespacedName: types.NamespacedName{Namespace: fip.Namespace, Name: fip.Name},
+			})
+		}
+	}
+	return reqs
 }

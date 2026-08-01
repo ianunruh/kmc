@@ -39,9 +39,8 @@ spec:
           VPC is a namespaced self-service private network (Multus bridge + VLAN).
           Object name is the Multus NetworkAttachmentDefinition name tenants attach VMs to.
 
-          Router attachment is intentionally out of band: a future Router CR will set
-          status.routerRef / annotation kmc.ianunruh.com/router. Reserved GVK for that
-          work: routers.kmc.ianunruh.com (kind Router, shortName rtr).
+          Router attachment is out of band: the Router controller sets
+          annotation kmc.ianunruh.com/router; the VPC controller mirrors status.routerRef.
         properties:
           apiVersion:
             description: |-
@@ -179,9 +178,8 @@ spec:
                 type: string
               routerRef:
                 description: |-
-                  RouterRef is set by a future Router controller when a shared router attaches
-                  to this VPC (mirrors annotation kmc.ianunruh.com/router). Reserved; not
-                  written by the VPC controller today.
+                  RouterRef is set when a shared router attaches to this VPC (mirrors
+                  annotation kmc.ianunruh.com/router on the Multus NAD).
                 properties:
                   name:
                     default: ""

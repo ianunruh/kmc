@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, …)
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -31,17 +32,38 @@ func init() {
 	utilruntime.Must(kmcv1alpha1.AddToScheme(scheme))
 }
 
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func main() {
 	var (
 		metricsAddr          string
 		probeAddr            string
 		enableLeaderElection bool
 		secureMetrics        bool
+		clusterPodCIDRs      string
+		clusterServiceCIDRs  string
+		apiServerURL         string
 	)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", true, "Enable leader election for controller manager.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", false, "If true, serve metrics via HTTPS.")
+	flag.StringVar(&clusterPodCIDRs, "cluster-pod-cidrs", "", "Comma-separated cluster pod CIDRs for router appliance cloud-init routes.")
+	flag.StringVar(&clusterServiceCIDRs, "cluster-service-cidrs", "", "Comma-separated cluster service CIDRs for router appliance cloud-init routes.")
+	flag.StringVar(&apiServerURL, "apiserver-url", "", "Optional Kubernetes API server URL embedded in router agent kubeconfig (default: in-cluster).")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -119,6 +141,17 @@ func main() {
 		Recorder: mgr.GetEventRecorderFor("portforward-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PortForward")
+		os.Exit(1)
+	}
+	if err := (&controller.RouterReconciler{
+		Client:              mgr.GetClient(),
+		Scheme:              mgr.GetScheme(),
+		Recorder:            mgr.GetEventRecorderFor("router-controller"),
+		ClusterPodCIDRs:     splitCSV(clusterPodCIDRs),
+		ClusterServiceCIDRs: splitCSV(clusterServiceCIDRs),
+		APIServerURL:        apiServerURL,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Router")
 		os.Exit(1)
 	}
 
