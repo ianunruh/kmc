@@ -1,0 +1,13 @@
+# Cluster-scoped VLAN range for self-service VPCs (mirrors clusters.yaml vlanPools).
+apiVersion: kmc.ianunruh.com/v1alpha1
+kind: VLANPool
+metadata:
+  name: default
+spec:
+  start: 3000
+  end: 3100
+  bridge: br0
+  dns:
+    - 1.1.1.1
+  # exclude:
+  #   - 3000

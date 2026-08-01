@@ -1,0 +1,36 @@
+# Example RBAC for tenant networking CRs (VPC, IPAddress, FloatingIP, PortForward).
+# Cluster-scoped pools (VLANPool, IPPool) are read-only for tenants; operators create them.
+#
+#   kubectl apply -f deploy/controller/rbac/user-networking-example.yaml
+#   # bind kmc-networking-user to OIDC groups via RoleBinding / ClusterRoleBinding
+#
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kmc-networking-user
+  labels:
+    app.kubernetes.io/part-of: kmc
+rules:
+  # Operator pools — list/get only
+  - apiGroups: ["kmc.ianunruh.com"]
+    resources: ["vlanpools", "ippools"]
+    verbs: ["get", "list", "watch"]
+  # Tenant networking
+  - apiGroups: ["kmc.ianunruh.com"]
+    resources: ["vpcs", "ipaddresses", "floatingips", "portforwards"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# Example namespace binding:
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: RoleBinding
+# metadata:
+#   name: kmc-networking-user
+#   namespace: team-a
+# roleRef:
+#   apiGroup: rbac.authorization.k8s.io
+#   kind: ClusterRole
+#   name: kmc-networking-user
+# subjects:
+#   - kind: Group
+#     name: oidc:kcloud-ops:k8s-admins
+#     apiGroup: rbac.authorization.k8s.io

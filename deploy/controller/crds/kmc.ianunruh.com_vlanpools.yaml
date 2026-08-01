@@ -4,27 +4,30 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.3
-  name: ipaddresses.kmc.ianunruh.com
+  name: vlanpools.kmc.ianunruh.com
 spec:
   group: kmc.ianunruh.com
   names:
-    kind: IPAddress
-    listKind: IPAddressList
-    plural: ipaddresses
+    kind: VLANPool
+    listKind: VLANPoolList
+    plural: vlanpools
     shortNames:
-    - ipaddr
-    singular: ipaddress
-  scope: Namespaced
+    - vlanpool
+    singular: vlanpool
+  scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.address
-      name: Address
+    - jsonPath: .spec.start
+      name: Start
+      type: integer
+    - jsonPath: .spec.end
+      name: End
+      type: integer
+    - jsonPath: .spec.bridge
+      name: Bridge
       type: string
     - jsonPath: .status.phase
       name: Phase
-      type: string
-    - jsonPath: .spec.poolRef.name
-      name: Pool
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -33,9 +36,8 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          IPAddress is a single allocated IPv4 address. Create is the allocation race:
-          use a deterministic name (dots → dashes, e.g. 10-40-1-20) so concurrent
-          creates collide with HTTP 409.
+          VLANPool is a cluster-scoped pool of 802.1Q VLAN ids for self-service VPCs.
+          Object name is the pool id (e.g. "default"), matching clusters.yaml vlanPools[].id.
         properties:
           apiVersion:
             description: |-
@@ -55,101 +57,57 @@ spec:
           metadata:
             type: object
           spec:
-            description: IPAddressSpec defines the desired state of IPAddress.
+            description: VLANPoolSpec defines an operator-managed VLAN id range for
+              self-service VPCs.
             properties:
-              address:
-                description: Address is the IPv4 address being claimed.
+              bridge:
+                description: Hypervisor Linux bridge that carries these VLANs (e.g.
+                  br0).
                 minLength: 1
                 type: string
-              claimRef:
-                description: ClaimRef is the object that owns this allocation (VM,
-                  FloatingIP, Router, …).
-                properties:
-                  apiVersion:
-                    description: API version of the referent.
-                    type: string
-                  fieldPath:
-                    description: |-
-                      If referring to a piece of an object instead of an entire object, this string
-                      should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2].
-                      For example, if the object reference is to a container within a pod, this would take on a value like:
-                      "spec.containers{name}" (where "name" refers to the name of the container that triggered
-                      the event) or if no container name is specified "spec.containers[2]" (container with
-                      index 2 in this pod). This syntax is chosen only to have some well-defined way of
-                      referencing a part of an object.
-                    type: string
-                  kind:
-                    description: |-
-                      Kind of the referent.
-                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
-                    type: string
-                  name:
-                    description: |-
-                      Name of the referent.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                    type: string
-                  namespace:
-                    description: |-
-                      Namespace of the referent.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
-                    type: string
-                  resourceVersion:
-                    description: |-
-                      Specific resourceVersion to which this reference is made, if any.
-                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency
-                    type: string
-                  uid:
-                    description: |-
-                      UID of the referent.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids
-                    type: string
-                type: object
-                x-kubernetes-map-type: atomic
-              interface:
-                description: Interface holds optional guest NIC metadata for DHCP.
-                properties:
-                  hostname:
-                    description: Hostname advertised via DHCP.
-                    type: string
-                  mac:
-                    description: MAC address of the guest interface (e.g. for dnsmasq
-                      dhcp-host).
-                    type: string
-                type: object
-              poolRef:
-                description: PoolRef identifies the pool this address was taken from.
-                properties:
-                  kind:
-                    description: 'Kind of pool. Allowed: "VPC", "IPPool".'
-                    enum:
-                    - VPC
-                    - IPPool
-                    minLength: 1
-                    type: string
-                  name:
-                    description: Name of the pool resource (namespaced for VPC; cluster-scoped
-                      for IPPool).
-                    minLength: 1
-                    type: string
-                required:
-                - kind
-                - name
-                type: object
-              prefixLength:
-                description: PrefixLength is the CIDR prefix length for the address
-                  (0–32).
+              dns:
+                description: Default DNS resolvers for VPC private IPAM when the VPC
+                  does not set dns.
+                items:
+                  type: string
+                type: array
+              end:
+                description: Inclusive end VLAN id (1–4094).
                 format: int32
-                maximum: 32
-                minimum: 0
+                maximum: 4094
+                minimum: 1
+                type: integer
+              exclude:
+                description: VLAN ids never allocated (hand-managed segments already
+                  in the range).
+                items:
+                  format: int32
+                  type: integer
+                type: array
+              start:
+                description: Inclusive start VLAN id (1–4094).
+                format: int32
+                maximum: 4094
+                minimum: 1
                 type: integer
             required:
-            - address
-            - poolRef
-            - prefixLength
+            - bridge
+            - end
+            - start
             type: object
           status:
-            description: IPAddressStatus defines the observed state of IPAddress.
+            description: VLANPoolStatus defines the observed state of VLANPool.
             properties:
+              allocated:
+                description: Allocated is the number of VPCs currently holding a VLAN
+                  from this pool.
+                format: int32
+                type: integer
+              available:
+                description: Available is free VLANs remaining (range size minus exclude
+                  minus allocated).
+                format: int32
+                type: integer
               conditions:
                 description: Conditions represent the latest available observations.
                 items:
@@ -210,22 +168,13 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              dns:
-                description: DNS is the resolver list for this address when known.
-                items:
-                  type: string
-                type: array
-              gateway:
-                description: Gateway is the default gateway for this address when
-                  known.
-                type: string
               observedGeneration:
                 description: ObservedGeneration is the .metadata.generation last processed
                   by the controller.
                 format: int64
                 type: integer
               phase:
-                description: 'Phase is a high-level summary: Pending, Bound, or Released.'
+                description: 'Phase is a high-level summary: Pending or Ready.'
                 type: string
             type: object
         type: object

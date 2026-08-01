@@ -6,6 +6,11 @@ namespace: kmc-system
 resources:
   - namespace.yaml
   - crds/kmc.ianunruh.com_ipaddresses.yaml
+  - crds/kmc.ianunruh.com_vlanpools.yaml
+  - crds/kmc.ianunruh.com_ippools.yaml
+  - crds/kmc.ianunruh.com_vpcs.yaml
+  - crds/kmc.ianunruh.com_floatingips.yaml
+  - crds/kmc.ianunruh.com_portforwards.yaml
   - rbac/service_account.yaml
   - rbac/role.yaml
   - rbac/role_binding.yaml

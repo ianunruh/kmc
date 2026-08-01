@@ -4,27 +4,27 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.3
-  name: ipaddresses.kmc.ianunruh.com
+  name: ippools.kmc.ianunruh.com
 spec:
   group: kmc.ianunruh.com
   names:
-    kind: IPAddress
-    listKind: IPAddressList
-    plural: ipaddresses
+    kind: IPPool
+    listKind: IPPoolList
+    plural: ippools
     shortNames:
-    - ipaddr
-    singular: ipaddress
-  scope: Namespaced
+    - ippool
+    singular: ippool
+  scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.address
-      name: Address
+    - jsonPath: .spec.cidr
+      name: CIDR
+      type: string
+    - jsonPath: .spec.multusNetwork
+      name: Network
       type: string
     - jsonPath: .status.phase
       name: Phase
-      type: string
-    - jsonPath: .spec.poolRef.name
-      name: Pool
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -33,9 +33,9 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          IPAddress is a single allocated IPv4 address. Create is the allocation race:
-          use a deterministic name (dots → dashes, e.g. 10-40-1-20) so concurrent
-          creates collide with HTTP 409.
+          IPPool is a cluster-scoped IPv4 allocation pool for Multus networks.
+          Object name is the pool id (e.g. "public"), matching clusters.yaml ipPools[].id
+          and IPAddress.spec.poolRef.name when kind is IPPool.
         properties:
           apiVersion:
             description: |-
@@ -55,100 +55,71 @@ spec:
           metadata:
             type: object
           spec:
-            description: IPAddressSpec defines the desired state of IPAddress.
+            description: |-
+              IPPoolSpec defines a cluster-scoped IPv4 pool bound to a Multus network.
+              Referenced by IPAddress.poolRef with kind "IPPool".
             properties:
-              address:
-                description: Address is the IPv4 address being claimed.
+              cidr:
+                description: IPv4 CIDR for the pool (e.g. 74.82.62.0/27).
                 minLength: 1
                 type: string
-              claimRef:
-                description: ClaimRef is the object that owns this allocation (VM,
-                  FloatingIP, Router, …).
+              cni:
+                description: Optional CNI template to materialize a Multus NAD in
+                  tenant namespaces.
                 properties:
-                  apiVersion:
-                    description: API version of the referent.
-                    type: string
-                  fieldPath:
-                    description: |-
-                      If referring to a piece of an object instead of an entire object, this string
-                      should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2].
-                      For example, if the object reference is to a container within a pod, this would take on a value like:
-                      "spec.containers{name}" (where "name" refers to the name of the container that triggered
-                      the event) or if no container name is specified "spec.containers[2]" (container with
-                      index 2 in this pod). This syntax is chosen only to have some well-defined way of
-                      referencing a part of an object.
-                    type: string
-                  kind:
-                    description: |-
-                      Kind of the referent.
-                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
-                    type: string
-                  name:
-                    description: |-
-                      Name of the referent.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                    type: string
-                  namespace:
-                    description: |-
-                      Namespace of the referent.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
-                    type: string
-                  resourceVersion:
-                    description: |-
-                      Specific resourceVersion to which this reference is made, if any.
-                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency
-                    type: string
-                  uid:
-                    description: |-
-                      UID of the referent.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids
-                    type: string
-                type: object
-                x-kubernetes-map-type: atomic
-              interface:
-                description: Interface holds optional guest NIC metadata for DHCP.
-                properties:
-                  hostname:
-                    description: Hostname advertised via DHCP.
-                    type: string
-                  mac:
-                    description: MAC address of the guest interface (e.g. for dnsmasq
-                      dhcp-host).
-                    type: string
-                type: object
-              poolRef:
-                description: PoolRef identifies the pool this address was taken from.
-                properties:
-                  kind:
-                    description: 'Kind of pool. Allowed: "VPC", "IPPool".'
-                    enum:
-                    - VPC
-                    - IPPool
+                  bridge:
+                    description: Linux bridge on hypervisors (e.g. br-external).
                     minLength: 1
                     type: string
-                  name:
-                    description: Name of the pool resource (namespaced for VPC; cluster-scoped
-                      for IPPool).
+                  type:
+                    description: CNI plugin type (typically "bridge").
                     minLength: 1
                     type: string
+                  vlan:
+                    description: Optional 802.1Q VLAN id on the bridge.
+                    format: int32
+                    maximum: 4094
+                    minimum: 1
+                    type: integer
                 required:
-                - kind
-                - name
+                - bridge
+                - type
                 type: object
-              prefixLength:
-                description: PrefixLength is the CIDR prefix length for the address
-                  (0–32).
-                format: int32
-                maximum: 32
-                minimum: 0
-                type: integer
+              dns:
+                description: DNS resolvers advertised to guests.
+                items:
+                  type: string
+                type: array
+              end:
+                description: Optional allocation window end (IPv4) within the CIDR.
+                type: string
+              exclude:
+                description: Addresses never allocated (routers, VIPs, etc.).
+                items:
+                  type: string
+                type: array
+              gateway:
+                description: Default gateway for guest routes. Optional for pure-L2
+                  pools.
+                type: string
+              interface:
+                description: Guest interface name for netplan match (e.g. enp1s0).
+                type: string
+              multusNetwork:
+                description: |-
+                  Multus NetworkAttachmentDefinition this pool serves.
+                  Accepts "bridge-external" or "namespace/bridge-external".
+                minLength: 1
+                type: string
+              start:
+                description: Optional allocation window start (IPv4) within the CIDR.
+                type: string
             required:
-            - address
-            - poolRef
-            - prefixLength
+            - cidr
+            - multusNetwork
             type: object
           status:
-            description: IPAddressStatus defines the observed state of IPAddress.
+            description: IPPoolStatus defines the observed state of IPPool.
             properties:
               conditions:
                 description: Conditions represent the latest available observations.
@@ -210,22 +181,13 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              dns:
-                description: DNS is the resolver list for this address when known.
-                items:
-                  type: string
-                type: array
-              gateway:
-                description: Gateway is the default gateway for this address when
-                  known.
-                type: string
               observedGeneration:
                 description: ObservedGeneration is the .metadata.generation last processed
                   by the controller.
                 format: int64
                 type: integer
               phase:
-                description: 'Phase is a high-level summary: Pending, Bound, or Released.'
+                description: 'Phase is a high-level summary: Pending or Ready.'
                 type: string
             type: object
         type: object

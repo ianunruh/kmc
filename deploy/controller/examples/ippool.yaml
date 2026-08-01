@@ -1,0 +1,18 @@
+# Cluster-scoped public/shared Multus IPv4 pool (mirrors clusters.yaml ipPools).
+# Referenced by IPAddress / FloatingIP with poolRef.kind: IPPool.
+apiVersion: kmc.ianunruh.com/v1alpha1
+kind: IPPool
+metadata:
+  name: public
+spec:
+  multusNetwork: bridge-external
+  cidr: 74.82.62.0/27
+  gateway: 74.82.62.1
+  dns:
+    - 1.1.1.1
+    - 1.0.0.1
+  # exclude:
+  #   - 74.82.62.2
+  # cni:
+  #   type: bridge
+  #   bridge: br-external

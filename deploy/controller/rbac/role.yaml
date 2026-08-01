@@ -12,9 +12,9 @@ rules:
   - create
   - patch
 - apiGroups:
-  - kmc.ianunruh.com
+  - k8s.cni.cncf.io
   resources:
-  - ipaddresses
+  - network-attachment-definitions
   verbs:
   - create
   - delete
@@ -26,13 +26,40 @@ rules:
 - apiGroups:
   - kmc.ianunruh.com
   resources:
+  - floatingips
+  - ipaddresses
+  - ippools
+  - portforwards
+  - vlanpools
+  - vpcs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - kmc.ianunruh.com
+  resources:
+  - floatingips/finalizers
   - ipaddresses/finalizers
+  - ippools/finalizers
+  - portforwards/finalizers
+  - vlanpools/finalizers
+  - vpcs/finalizers
   verbs:
   - update
 - apiGroups:
   - kmc.ianunruh.com
   resources:
+  - floatingips/status
   - ipaddresses/status
+  - ippools/status
+  - portforwards/status
+  - vlanpools/status
+  - vpcs/status
   verbs:
   - get
   - patch

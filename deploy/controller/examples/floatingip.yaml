@@ -1,0 +1,20 @@
+# Floating public IP for a VPC (hold or associate).
+# Ready stays false until a future Router controller programs SNAT/DNAT.
+# Recommended name: public address with dots → dashes.
+apiVersion: kmc.ianunruh.com/v1alpha1
+kind: FloatingIP
+metadata:
+  name: 74-82-62-10
+  namespace: default
+spec:
+  poolRef:
+    kind: IPPool
+    name: public
+  address: 74.82.62.10
+  vpcRef:
+    name: app-net
+  # routerRef:
+  #   name: shared-router
+  # privateAddress: 10.40.1.20
+  # targetVM:
+  #   name: web-1

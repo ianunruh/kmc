@@ -1,0 +1,19 @@
+# Port-level DNAT (publicIP:port → privateIP:port).
+# Ready stays false until a future Router controller programs the appliance.
+apiVersion: kmc.ianunruh.com/v1alpha1
+kind: PortForward
+metadata:
+  name: web-https
+  namespace: default
+spec:
+  vpcRef:
+    name: app-net
+  # routerRef:
+  #   name: shared-router
+  publicAddress: 74.82.62.2
+  publicPort: 443
+  privateAddress: 10.40.1.20
+  privatePort: 443
+  protocol: TCP
+  # targetVM:
+  #   name: web-1

@@ -5,10 +5,10 @@ Polyglot monorepo:
 | Component | Path | Role |
 |-----------|------|------|
 | **Console** | `console/` | Multi-cluster React Router UI (loaders/actions, consoles) |
-| **Controller** | `cmd/`, `api/`, `internal/` | In-cluster Go reconcilers (starting with `IPAddress`) |
+| **Controller** | `cmd/`, `api/`, `internal/` | In-cluster Go reconcilers (`IPAddress`, `VPC`, pools, FIP/PF, …) |
 | **Deploy** | `deploy/` | Cluster manifests (impersonator SA, controller) |
 
-The console still owns most orchestration today (VM create, VPC/router, scan-based IPAM). The controller is the migration path for race-safe, multi-replica domain logic — **console is not wired to `IPAddress` yet**.
+The console still owns most orchestration today (VM create, VPC/router via Multus NAD + ConfigMap policy, scan-based IPAM). The controller is the migration path for race-safe, multi-replica domain logic. Networking CRDs exist under `kmc.ianunruh.com/v1alpha1`; the console is not fully wired to them yet (optional `KMC_IPADDRESS_CR` for IP claims).
 
 ## Stack
 
@@ -32,7 +32,7 @@ console/                 # web console (Node)
   config/                # clusters.example.yaml; secrets gitignored
   scripts/               # snapshot-run CronJob entrypoint
   Dockerfile             # image: ghcr.io/ianunruh/kmc
-api/v1alpha1/            # CRD Go types (IPAddress, …)
+api/v1alpha1/            # CRD Go types (IPAddress, VPC, pools, FIP, PF, …)
 cmd/kmc-controller/      # controller main
 internal/
   controller/            # reconcilers
@@ -82,14 +82,40 @@ kubectl apply -k deploy/controller
 make controller-run   # --leader-elect=false
 ```
 
-Example resource:
+### Networking CRDs (`kmc.ianunruh.com/v1alpha1`)
+
+| Kind | Scope | Short | Role |
+|------|--------|-------|------|
+| **VLANPool** | Cluster | `vlanpool` | Operator VLAN range for self-service VPCs (from `vlanPools` in clusters.yaml) |
+| **IPPool** | Cluster | `ippool` | Operator Multus IPv4 pool (from `ipPools`) |
+| **VPC** | Namespaced | `vpc` | Self-service private network; controller assigns VLAN + owns Multus NAD |
+| **IPAddress** | Namespaced | `ipaddr` | Single IPv4 claim (create = allocate race via name) |
+| **FloatingIP** | Namespaced | `fip` | Public float hold/associate (Router programs later) |
+| **PortForward** | Namespaced | `pf` | Port DNAT rule (Router programs later) |
+
+**Router is reserved, not implemented.** A future `Router` CR (`routers.kmc.ianunruh.com`, shortName `rtr`) will own the appliance VM, policy ConfigMap, and agent. Room is already planned:
+
+- `VPC.status.routerRef` / NAD annotation `kmc.ianunruh.com/router`
+- `FloatingIP.spec.routerRef` / `PortForward.spec.routerRef` (Ready stays false with `RouterNotImplemented` until then)
+- `IPAddress.spec.claimRef` may point at a Router; DHCP leases project from `IPAddress.spec.interface`
+
+Examples:
 
 ```bash
+kubectl apply -f deploy/controller/examples/vlanpool.yaml
+kubectl apply -f deploy/controller/examples/ippool.yaml
+kubectl apply -f deploy/controller/examples/vpc.yaml
 kubectl apply -f deploy/controller/examples/ipaddress.yaml
-kubectl get ipaddr -A
+kubectl apply -f deploy/controller/examples/floatingip.yaml
+kubectl apply -f deploy/controller/examples/portforward.yaml
+
+kubectl get vlanpool,ippool
+kubectl get vpc,ipaddr,fip,pf -A
 ```
 
-`IPAddress` is namespaced. Recommended object name: IPv4 with dots → dashes (`10.40.1.20` → `10-40-1-20`) so concurrent creates collide with HTTP 409.
+`IPAddress` / `FloatingIP` recommended object name: IPv4 with dots → dashes (`10.40.1.20` → `10-40-1-20`) so concurrent creates collide with HTTP 409.
+
+Tenant RBAC example: `deploy/controller/rbac/user-networking-example.yaml` (CRUD on namespaced CRs; get/list on cluster pools).
 
 ### Console IPAM via `IPAddress` CRs
 

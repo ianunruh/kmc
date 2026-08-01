@@ -28,11 +28,12 @@ const (
 	LabelPool    = "kmc.ianunruh.com/pool"
 )
 
-// PoolReference points at a pool-like resource (VPC CR, IPPool CR, or a
-// logical pool name until those CRDs exist).
+// PoolReference points at a pool-like resource.
+// Allowed kinds today: "VPC" (namespaced), "IPPool" (cluster-scoped).
 type PoolReference struct {
-	// Kind of pool. Examples: "VPC", "IPPool".
+	// Kind of pool. Allowed: "VPC", "IPPool".
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Enum=VPC;IPPool
 	Kind string `json:"kind"`
 
 	// Name of the pool resource (namespaced for VPC; cluster-scoped for IPPool).

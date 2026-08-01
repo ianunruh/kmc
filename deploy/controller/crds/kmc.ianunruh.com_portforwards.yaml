@@ -4,27 +4,33 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.3
-  name: ipaddresses.kmc.ianunruh.com
+  name: portforwards.kmc.ianunruh.com
 spec:
   group: kmc.ianunruh.com
   names:
-    kind: IPAddress
-    listKind: IPAddressList
-    plural: ipaddresses
+    kind: PortForward
+    listKind: PortForwardList
+    plural: portforwards
     shortNames:
-    - ipaddr
-    singular: ipaddress
+    - pf
+    singular: portforward
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.address
-      name: Address
+    - jsonPath: .spec.publicAddress
+      name: Public
+      type: string
+    - jsonPath: .spec.publicPort
+      name: Port
+      type: integer
+    - jsonPath: .spec.protocol
+      name: Protocol
+      type: string
+    - jsonPath: .spec.privateAddress
+      name: Private
       type: string
     - jsonPath: .status.phase
       name: Phase
-      type: string
-    - jsonPath: .spec.poolRef.name
-      name: Pool
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -33,9 +39,12 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          IPAddress is a single allocated IPv4 address. Create is the allocation race:
-          use a deterministic name (dots → dashes, e.g. 10-40-1-20) so concurrent
-          creates collide with HTTP 409.
+          PortForward is a namespaced port DNAT rule (publicIP:port → privateIP:port).
+          Until the Router CR exists, the controller only validates; Ready stays false
+          with reason RouterNotImplemented.
+
+          A public address must not be both a full FloatingIP association and a
+          PortForward host — enforced by the future Router controller (or a webhook).
         properties:
           apiVersion:
             description: |-
@@ -55,100 +64,90 @@ spec:
           metadata:
             type: object
           spec:
-            description: IPAddressSpec defines the desired state of IPAddress.
+            description: |-
+              PortForwardSpec defines a port-level DNAT rule through a router external gateway.
+              Distinct from FloatingIP (full 1:1): multiple PortForwards may share one public address.
+              Realization requires a future Router controller.
             properties:
-              address:
-                description: Address is the IPv4 address being claimed.
+              privateAddress:
+                description: Private target address in the VPC (no prefix).
                 minLength: 1
                 type: string
-              claimRef:
-                description: ClaimRef is the object that owns this allocation (VM,
-                  FloatingIP, Router, …).
+              privatePort:
+                description: Private target port.
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
+              protocol:
+                description: 'Protocol: TCP or UDP.'
+                enum:
+                - TCP
+                - UDP
+                type: string
+              publicAddress:
+                description: Public listen address (no prefix).
+                minLength: 1
+                type: string
+              publicPort:
+                description: Public listen port.
+                format: int32
+                maximum: 65535
+                minimum: 1
+                type: integer
+              routerRef:
+                description: Router that should program DNAT. Reserved for the Router
+                  CR.
                 properties:
-                  apiVersion:
-                    description: API version of the referent.
-                    type: string
-                  fieldPath:
-                    description: |-
-                      If referring to a piece of an object instead of an entire object, this string
-                      should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2].
-                      For example, if the object reference is to a container within a pod, this would take on a value like:
-                      "spec.containers{name}" (where "name" refers to the name of the container that triggered
-                      the event) or if no container name is specified "spec.containers[2]" (container with
-                      index 2 in this pod). This syntax is chosen only to have some well-defined way of
-                      referencing a part of an object.
-                    type: string
-                  kind:
-                    description: |-
-                      Kind of the referent.
-                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
-                    type: string
                   name:
+                    default: ""
                     description: |-
                       Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
                       More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                    type: string
-                  namespace:
-                    description: |-
-                      Namespace of the referent.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
-                    type: string
-                  resourceVersion:
-                    description: |-
-                      Specific resourceVersion to which this reference is made, if any.
-                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency
-                    type: string
-                  uid:
-                    description: |-
-                      UID of the referent.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
-              interface:
-                description: Interface holds optional guest NIC metadata for DHCP.
+              targetVM:
+                description: Optional target VirtualMachine (same namespace).
                 properties:
-                  hostname:
-                    description: Hostname advertised via DHCP.
-                    type: string
-                  mac:
-                    description: MAC address of the guest interface (e.g. for dnsmasq
-                      dhcp-host).
-                    type: string
-                type: object
-              poolRef:
-                description: PoolRef identifies the pool this address was taken from.
-                properties:
-                  kind:
-                    description: 'Kind of pool. Allowed: "VPC", "IPPool".'
-                    enum:
-                    - VPC
-                    - IPPool
-                    minLength: 1
-                    type: string
                   name:
-                    description: Name of the pool resource (namespaced for VPC; cluster-scoped
-                      for IPPool).
-                    minLength: 1
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
                     type: string
-                required:
-                - kind
-                - name
                 type: object
-              prefixLength:
-                description: PrefixLength is the CIDR prefix length for the address
-                  (0–32).
-                format: int32
-                maximum: 32
-                minimum: 0
-                type: integer
+                x-kubernetes-map-type: atomic
+              vpcRef:
+                description: VPC that owns the private address (same namespace).
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
             required:
-            - address
-            - poolRef
-            - prefixLength
+            - privateAddress
+            - privatePort
+            - protocol
+            - publicAddress
+            - publicPort
+            - vpcRef
             type: object
           status:
-            description: IPAddressStatus defines the observed state of IPAddress.
+            description: PortForwardStatus defines the observed state of PortForward.
             properties:
               conditions:
                 description: Conditions represent the latest available observations.
@@ -210,23 +209,18 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              dns:
-                description: DNS is the resolver list for this address when known.
-                items:
-                  type: string
-                type: array
-              gateway:
-                description: Gateway is the default gateway for this address when
-                  known.
-                type: string
               observedGeneration:
                 description: ObservedGeneration is the .metadata.generation last processed
                   by the controller.
                 format: int64
                 type: integer
               phase:
-                description: 'Phase is a high-level summary: Pending, Bound, or Released.'
+                description: 'Phase: Pending, Ready, or Error.'
                 type: string
+              programmed:
+                description: Programmed is true when a future Router controller has
+                  applied this rule.
+                type: boolean
             type: object
         type: object
     served: true

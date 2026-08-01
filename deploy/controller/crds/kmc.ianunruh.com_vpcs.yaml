@@ -4,26 +4,29 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.3
-  name: ipaddresses.kmc.ianunruh.com
+  name: vpcs.kmc.ianunruh.com
 spec:
   group: kmc.ianunruh.com
   names:
-    kind: IPAddress
-    listKind: IPAddressList
-    plural: ipaddresses
+    kind: VPC
+    listKind: VPCList
+    plural: vpcs
     shortNames:
-    - ipaddr
-    singular: ipaddress
+    - vpc
+    singular: vpc
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.address
-      name: Address
+    - jsonPath: .status.vlan
+      name: VLAN
+      type: integer
+    - jsonPath: .spec.cidr
+      name: CIDR
       type: string
     - jsonPath: .status.phase
       name: Phase
       type: string
-    - jsonPath: .spec.poolRef.name
+    - jsonPath: .spec.vlanPoolRef.name
       name: Pool
       type: string
     - jsonPath: .metadata.creationTimestamp
@@ -33,9 +36,12 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          IPAddress is a single allocated IPv4 address. Create is the allocation race:
-          use a deterministic name (dots → dashes, e.g. 10-40-1-20) so concurrent
-          creates collide with HTTP 409.
+          VPC is a namespaced self-service private network (Multus bridge + VLAN).
+          Object name is the Multus NetworkAttachmentDefinition name tenants attach VMs to.
+
+          Router attachment is intentionally out of band: a future Router CR will set
+          status.routerRef / annotation kmc.ianunruh.com/router. Reserved GVK for that
+          work: routers.kmc.ianunruh.com (kind Router, shortName rtr).
         properties:
           apiVersion:
             description: |-
@@ -55,101 +61,50 @@ spec:
           metadata:
             type: object
           spec:
-            description: IPAddressSpec defines the desired state of IPAddress.
+            description: |-
+              VPCSpec defines the desired state of a self-service private network.
+              One optional private CIDR (subnet) per VPC — matches the console product model.
             properties:
-              address:
-                description: Address is the IPv4 address being claimed.
-                minLength: 1
+              cidr:
+                description: Optional private IPv4 CIDR for IPAM on this VPC (e.g.
+                  10.40.1.0/24).
                 type: string
-              claimRef:
-                description: ClaimRef is the object that owns this allocation (VM,
-                  FloatingIP, Router, …).
+              description:
+                description: Human-readable description.
+                type: string
+              dns:
+                description: Optional DNS resolvers for guests on this VPC.
+                items:
+                  type: string
+                type: array
+              gateway:
+                description: Optional default gateway inside the CIDR (often the future
+                  router interface IP).
+                type: string
+              vlanPoolRef:
+                description: VLANPoolRef names a cluster-scoped VLANPool to allocate
+                  a VLAN from.
                 properties:
-                  apiVersion:
-                    description: API version of the referent.
-                    type: string
-                  fieldPath:
-                    description: |-
-                      If referring to a piece of an object instead of an entire object, this string
-                      should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2].
-                      For example, if the object reference is to a container within a pod, this would take on a value like:
-                      "spec.containers{name}" (where "name" refers to the name of the container that triggered
-                      the event) or if no container name is specified "spec.containers[2]" (container with
-                      index 2 in this pod). This syntax is chosen only to have some well-defined way of
-                      referencing a part of an object.
-                    type: string
-                  kind:
-                    description: |-
-                      Kind of the referent.
-                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
-                    type: string
                   name:
+                    default: ""
                     description: |-
                       Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
                       More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                    type: string
-                  namespace:
-                    description: |-
-                      Namespace of the referent.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
-                    type: string
-                  resourceVersion:
-                    description: |-
-                      Specific resourceVersion to which this reference is made, if any.
-                      More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency
-                    type: string
-                  uid:
-                    description: |-
-                      UID of the referent.
-                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids
                     type: string
                 type: object
                 x-kubernetes-map-type: atomic
-              interface:
-                description: Interface holds optional guest NIC metadata for DHCP.
-                properties:
-                  hostname:
-                    description: Hostname advertised via DHCP.
-                    type: string
-                  mac:
-                    description: MAC address of the guest interface (e.g. for dnsmasq
-                      dhcp-host).
-                    type: string
-                type: object
-              poolRef:
-                description: PoolRef identifies the pool this address was taken from.
-                properties:
-                  kind:
-                    description: 'Kind of pool. Allowed: "VPC", "IPPool".'
-                    enum:
-                    - VPC
-                    - IPPool
-                    minLength: 1
-                    type: string
-                  name:
-                    description: Name of the pool resource (namespaced for VPC; cluster-scoped
-                      for IPPool).
-                    minLength: 1
-                    type: string
-                required:
-                - kind
-                - name
-                type: object
-              prefixLength:
-                description: PrefixLength is the CIDR prefix length for the address
-                  (0–32).
-                format: int32
-                maximum: 32
-                minimum: 0
-                type: integer
             required:
-            - address
-            - poolRef
-            - prefixLength
+            - vlanPoolRef
             type: object
           status:
-            description: IPAddressStatus defines the observed state of IPAddress.
+            description: VPCStatus defines the observed state of VPC.
             properties:
+              bridge:
+                description: Bridge copied from the VLANPool at assignment time.
+                type: string
               conditions:
                 description: Conditions represent the latest available observations.
                 items:
@@ -210,23 +165,39 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              dns:
-                description: DNS is the resolver list for this address when known.
-                items:
-                  type: string
-                type: array
-              gateway:
-                description: Gateway is the default gateway for this address when
-                  known.
-                type: string
+              networkAttachmentReady:
+                description: NetworkAttachmentReady is true when the owned Multus
+                  NAD exists and matches.
+                type: boolean
               observedGeneration:
                 description: ObservedGeneration is the .metadata.generation last processed
                   by the controller.
                 format: int64
                 type: integer
               phase:
-                description: 'Phase is a high-level summary: Pending, Bound, or Released.'
+                description: 'Phase is a high-level summary: Pending, Ready, or Error.'
                 type: string
+              routerRef:
+                description: |-
+                  RouterRef is set by a future Router controller when a shared router attaches
+                  to this VPC (mirrors annotation kmc.ianunruh.com/router). Reserved; not
+                  written by the VPC controller today.
+                properties:
+                  name:
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                    type: string
+                type: object
+                x-kubernetes-map-type: atomic
+              vlan:
+                description: VLAN assigned from the VLANPool (immutable once set).
+                format: int32
+                type: integer
             type: object
         type: object
     served: true

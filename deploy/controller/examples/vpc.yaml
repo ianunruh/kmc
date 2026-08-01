@@ -1,0 +1,15 @@
+# Namespaced self-service VPC. Controller allocates a VLAN from the VLANPool
+# and creates a Multus NetworkAttachmentDefinition with the same name.
+apiVersion: kmc.ianunruh.com/v1alpha1
+kind: VPC
+metadata:
+  name: app-net
+  namespace: default
+spec:
+  vlanPoolRef:
+    name: default
+  cidr: 10.40.1.0/24
+  gateway: 10.40.1.1
+  dns:
+    - 10.40.1.1
+  description: Application private network
