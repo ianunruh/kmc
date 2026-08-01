@@ -28,6 +28,12 @@ import { getClusterClients, getConfiguredContexts } from "~/lib/k8s/clients.serv
 import { toResourceYaml } from "~/lib/k8s/yaml.server";
 import { DNS1123_LABEL } from "~/lib/format";
 import {
+  deleteIpAddressClaim,
+  deleteIpAddressClaimsForVm,
+  isIpAddressCrEnabled,
+  releaseIpAddressClaims,
+} from "~/lib/ipam/ipaddress-cr.server";
+import {
   allocateIpv4ForMultus,
   findIpPoolForMultus,
   generateLocalMacAddress,
@@ -405,8 +411,25 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
   const multusNames = [...vpcNames];
   const allocations: AllocatedIp[] = [];
   const extraUsed: string[] = [];
+  const claimedAddresses: string[] = [];
   const interfaceSpecs: RouterPolicyDoc["interfaces"] = [];
+  const routerClaim = {
+    name: routerName,
+    namespace: input.namespace,
+  };
+  const trackClaim = (address: string) => {
+    if (isIpAddressCrEnabled()) claimedAddresses.push(address);
+  };
+  const releaseClaims = async () => {
+    if (!isIpAddressCrEnabled() || claimedAddresses.length === 0) return;
+    await releaseIpAddressClaims(
+      input.cluster,
+      input.namespace,
+      claimedAddresses,
+    );
+  };
 
+  try {
   for (const vpc of vpcDetails) {
     const privateGateway = vpc.gateway?.trim() || defaultGatewayAddress(vpc.cidr);
     validateGatewayInCidr(vpc.cidr, privateGateway);
@@ -416,6 +439,7 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
       claimGateway: true,
       gatewayOverride: null,
       extraUsed,
+      claim: routerClaim,
     });
     if (!alloc) {
       throw new Error(
@@ -423,6 +447,7 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
       );
     }
     extraUsed.push(alloc.address);
+    trackClaim(alloc.address);
     allocations.push(alloc);
 
     interfaceSpecs.push({
@@ -445,7 +470,7 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
       input.cluster,
       externalNet,
       input.namespace,
-      { extraUsed },
+      { extraUsed, claim: routerClaim },
     );
     if (!publicAlloc) {
       throw new Error(`Could not allocate public IP on Multus "${externalNet}"`);
@@ -453,6 +478,7 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
     multusNames.push(externalNet);
     allocations.push(publicAlloc);
     extraUsed.push(publicAlloc.address);
+    trackClaim(publicAlloc.address);
   }
 
   // Dual-home (pod first + Multus): always stamp Multus MACs for netplan / agent.
@@ -693,7 +719,14 @@ export async function createRouter(input: CreateRouterRequest): Promise<VmSummar
     } catch {
       /* ignore */
     }
+    await releaseClaims();
     throw new Error(formatError(err), { cause: err });
+  }
+  } catch (err) {
+    // Failures after IP claim but before the VM create try/catch above
+    // (or rethrow from that block without double-wrapping).
+    await releaseClaims();
+    throw err;
   }
 }
 
@@ -764,6 +797,22 @@ export async function deleteRouter(
   }
 
   const vpcNames = (doc?.interfaces ?? []).map((i) => i.vpc);
+
+  // Free IPAddress claims (gateway + optional public) before dropping the VM.
+  if (isIpAddressCrEnabled() && doc) {
+    const addrs: string[] = [];
+    for (const iface of doc.interfaces ?? []) {
+      const a = iface.gateway?.split("/")[0]?.trim();
+      if (a) addrs.push(a);
+    }
+    const pub = doc.external?.primaryCidr?.split("/")[0]?.trim();
+    if (pub) addrs.push(pub);
+    try {
+      await deleteIpAddressClaimsForVm(cluster, namespace, name, addrs);
+    } catch (err) {
+      console.error("deleteRouter IPAddress claims:", formatError(err));
+    }
+  }
 
   const { custom, core } = getClusterClients(cluster);
   try {
@@ -901,17 +950,30 @@ export async function setRouterExternalGateway(
     input.cluster,
     publicNet,
     input.namespace,
+    {
+      claim: { name: input.routerName.trim(), namespace: input.namespace },
+    },
   );
   if (!publicAlloc) {
     throw new Error(`Could not allocate public IP on Multus "${publicNet}"`);
   }
 
   // Bind MAC for the public NIC only (private MACs already in policy).
-  const publicBound = bindAllocationsToNetworks([publicNet], [publicAlloc], {
-    forceMac: true,
-  })[0];
-  if (!publicBound?.macAddress) {
-    throw new Error("Failed to assign MAC for external gateway NIC");
+  let publicBound: AllocatedIp | undefined;
+  try {
+    publicBound = bindAllocationsToNetworks([publicNet], [publicAlloc], {
+      forceMac: true,
+    })[0];
+    if (!publicBound?.macAddress) {
+      throw new Error("Failed to assign MAC for external gateway NIC");
+    }
+  } catch (err) {
+    if (isIpAddressCrEnabled()) {
+      await releaseIpAddressClaims(input.cluster, input.namespace, [
+        publicAlloc.address,
+      ]);
+    }
+    throw err;
   }
 
   const doc: RouterPolicyDoc = {
@@ -924,16 +986,25 @@ export async function setRouterExternalGateway(
       snat: true,
     },
   };
-  await replaceRouterPolicyDoc(input.cluster, input.namespace, routerName, doc, {
-    bumpGeneration: true,
-  });
+  try {
+    await replaceRouterPolicyDoc(input.cluster, input.namespace, routerName, doc, {
+      bumpGeneration: true,
+    });
 
-  await recreateRouterVmFromPolicy({
-    cluster: input.cluster,
-    namespace: input.namespace,
-    routerName,
-    sshPublicKey: input.sshPublicKey.trim(),
-  });
+    await recreateRouterVmFromPolicy({
+      cluster: input.cluster,
+      namespace: input.namespace,
+      routerName,
+      sshPublicKey: input.sshPublicKey.trim(),
+    });
+  } catch (err) {
+    if (isIpAddressCrEnabled()) {
+      await releaseIpAddressClaims(input.cluster, input.namespace, [
+        publicAlloc.address,
+      ]);
+    }
+    throw err;
+  }
 }
 
 export type RecreateRouterVmRequest = {
@@ -1829,6 +1900,7 @@ export async function attachRouterVpc(
     claimGateway: true,
     gatewayOverride: null,
     extraUsed,
+    claim: { name: routerName, namespace: input.namespace },
   });
   if (!alloc) {
     throw new Error(`Could not allocate gateway IP on VPC ${input.namespace}/${vpcName}`);
@@ -1901,6 +1973,11 @@ export async function attachRouterVpc(
     });
     return applied;
   } catch (err) {
+    if (isIpAddressCrEnabled()) {
+      await releaseIpAddressClaims(input.cluster, input.namespace, [
+        alloc.address,
+      ]);
+    }
     // Best-effort rollback: drop interface from policy if hotplug/metadata failed
     try {
       await mutateRouterPolicyDoc(
@@ -2017,6 +2094,10 @@ export async function detachRouterVpc(
     );
   }
 
+  const detachedIface = doc.interfaces.find((i) => i.vpc === vpcName);
+  const detachedGateway =
+    detachedIface?.gateway?.split("/")[0]?.trim() || undefined;
+
   let heldFloats = false;
   await mutateRouterPolicyDoc(
     input.cluster,
@@ -2064,6 +2145,14 @@ export async function detachRouterVpc(
     },
     { bumpGeneration: true },
   );
+
+  if (isIpAddressCrEnabled() && detachedGateway) {
+    await deleteIpAddressClaim(
+      input.cluster,
+      input.namespace,
+      detachedGateway,
+    );
+  }
 
   try {
     await hotunplugRouterMultusNic({

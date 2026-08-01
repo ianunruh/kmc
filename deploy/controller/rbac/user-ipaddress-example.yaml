@@ -1,0 +1,31 @@
+# Example Role for tenants that create VMs / claim Multus IPs via the console
+# when KMC_IPADDRESS_CR=true. Bind this (or a ClusterRole) to your OIDC groups.
+#
+#   kubectl apply -f deploy/controller/rbac/user-ipaddress-example.yaml
+#   # then RoleBinding subjects → your users/groups
+#
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kmc-ipaddress-user
+  labels:
+    app.kubernetes.io/part-of: kmc
+rules:
+  - apiGroups: ["kmc.ianunruh.com"]
+    resources: ["ipaddresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+# Example: bind in one namespace (repeat or use ClusterRoleBinding for cluster-wide).
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: RoleBinding
+# metadata:
+#   name: kmc-ipaddress-user
+#   namespace: team-a
+# roleRef:
+#   apiGroup: rbac.authorization.k8s.io
+#   kind: ClusterRole
+#   name: kmc-ipaddress-user
+# subjects:
+#   - kind: Group
+#     name: oidc:kcloud-ops:k8s-admins
+#     apiGroup: rbac.authorization.k8s.io

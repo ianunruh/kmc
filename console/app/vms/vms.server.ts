@@ -35,8 +35,14 @@ import { ensureStaticMultusNads } from "~/lib/k8s/static-nads.server";
 import {
   allocateIpv4ForMultus,
   parseMultusNetworkRef,
+  parseIpv4AnnotationList,
 } from "~/lib/ipam/pools.server";
 import { IPAM_ANNOTATION_IPV4 } from "~/lib/ipam/constants";
+import {
+  deleteIpAddressClaimsForVm,
+  isIpAddressCrEnabled,
+  releaseIpAddressClaims,
+} from "~/lib/ipam/ipaddress-cr.server";
 import { getPlatformConsolePublicKey } from "~/vms/console-ssh-key.server";
 import {
   KMC_ANN_DISK_SIZE,
@@ -62,7 +68,6 @@ import {
 } from "~/lib/k8s/constants";
 import { DNS1123_LABEL } from "~/lib/format";
 import { addressFromIpv4Annotation } from "~/lib/ipam/cidr";
-import { parseIpv4AnnotationList } from "~/lib/ipam/pools.server";
 import {
   ensureRouterVmIpamAnnotations,
   listFloatingIpsFromRouterPolicies,
@@ -1867,172 +1872,198 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
 
   const { custom } = getClusterClients(input.cluster);
 
-  // Sequential so multi-attach can reserve prior picks via extraUsed when
-  // two NADs resolve to the same pool (or we add more attachments later).
-  const rawAllocations: Array<Awaited<ReturnType<typeof allocateIpv4ForMultus>>> =
-    [];
-  const extraUsed: string[] = [];
-  for (const name of multusNames) {
-    const alloc = await allocateIpv4ForMultus(
+  const vmName = input.name.trim();
+  const claimedAddresses: string[] = [];
+  const releaseClaims = async () => {
+    if (!isIpAddressCrEnabled() || claimedAddresses.length === 0) return;
+    await releaseIpAddressClaims(
       input.cluster,
-      name,
       input.namespace,
-      { extraUsed },
+      claimedAddresses,
     );
-    rawAllocations.push(alloc);
-    if (alloc) extraUsed.push(alloc.address);
-  }
-  // Dual-home Multus VMs by default so browser Terminal (port-forward) works.
-  const dualHome = multusNames.length > 0 && input.includePodNetwork !== false;
-  const allocations = bindAllocationsToNetworks(multusNames, rawAllocations, {
-    forceMac: dualHome,
-  });
-
-  // Shared router: DHCP for VPC NICs + register static leases on the router policy.
-  for (let i = 0; i < multusNames.length; i++) {
-    const multusName = multusNames[i]!;
-    const alloc = allocations[i];
-    if (!alloc?.macAddress) continue;
-    const ref = parseMultusNetworkRef(multusName, input.namespace);
-    if (ref.namespace !== input.namespace) continue;
-    const routerName = await readVpcRouterName(
-      input.cluster,
-      ref.namespace,
-      ref.name,
-    );
-    if (!routerName) continue;
-    alloc.dhcp4 = true;
-    alloc.gateway = undefined;
-    alloc.dns = [];
-    try {
-      await upsertRouterLease(input.cluster, input.namespace, routerName, {
-        vpc: ref.name,
-        mac: alloc.macAddress,
-        ip: alloc.address,
-        hostname: input.name.trim(),
-        vm: input.name.trim(),
-      });
-    } catch (leaseErr) {
-      throw new Error(
-        `Failed to register DHCP lease on router ${routerName}: ${formatError(leaseErr)}`,
-        { cause: leaseErr },
-      );
-    }
-  }
-
-  // Standalone root disk (not dataVolumeTemplates) so DV outlives the VM by default.
-  let createdRootDv: string | null = null;
-  if (diskSource === "image") {
-    try {
-      const result = await ensureRootDataVolumeFromImage({
-        cluster: input.cluster,
-        namespace: input.namespace,
-        name: input.name.trim(),
-        diskSize: input.diskSize!,
-        storageClass: input.storageClass,
-        image: {
-          namespace: input.image!.namespace,
-          name: input.image!.name,
-        },
-      });
-      if (result.created) createdRootDv = result.name;
-    } catch (err) {
-      throw new Error(
-        `Failed to create root DataVolume: ${formatError(err)}`,
-        { cause: err },
-      );
-    }
-  }
-
-  // Secondary data disks (standalone blank / existing DVs).
-  const extraDisksInput = input.extraDisks ?? [];
-  let resolvedExtraDisks: ResolvedExtraDisk[] = [];
-  let createdExtraDvs: string[] = [];
-  if (extraDisksInput.length > 0) {
-    const material = await materializeExtraDisks({
-      cluster: input.cluster,
-      namespace: input.namespace,
-      vmName: input.name.trim(),
-      extraDisks: extraDisksInput,
-      reservedNames: new Set(["root", "cloudinit"]),
-    });
-    resolvedExtraDisks = material.resolved;
-    createdExtraDvs = material.createdDvNames;
-  }
-
-  // Platform console key so browser Terminal can SSH without the user's private key.
-  const platformPub = await getPlatformConsolePublicKey();
-  // Dual-home: route cluster CIDRs via masquerade GW (not Multus default).
-  let clusterCidrs: string[] | undefined;
-  if (dualHome) {
-    const net = getClusterNetwork(input.cluster);
-    if (net) {
-      const { podCIDRs, serviceCIDRs } = clusterNetworkCidrList(net);
-      clusterCidrs = [...podCIDRs, ...serviceCIDRs].map((c) => c.trim()).filter(Boolean);
-    }
-  }
-  const body = buildVirtualMachineManifest(input, allocations, {
-    extraAuthorizedKeys: platformPub ? [platformPub] : [],
-    includePodNetwork: dualHome,
-    clusterCidrs,
-    extraDisks: resolvedExtraDisks,
-  }) as {
-    metadata?: { annotations?: Record<string, string> };
-    [key: string]: unknown;
-  };
-  if (rootDiskSizeAnn) {
-    body.metadata = body.metadata ?? {};
-    body.metadata.annotations = {
-      ...(body.metadata.annotations ?? {}),
-      [KMC_ANN_DISK_SIZE]: rootDiskSizeAnn,
-    };
-  }
-
-  const rollbackCreatedDisks = async () => {
-    if (createdRootDv) {
-      try {
-        await deleteDataVolumeRaw(input.cluster, input.namespace, createdRootDv);
-      } catch {
-        /* ignore */
-      }
-    }
-    for (const dv of createdExtraDvs) {
-      try {
-        await deleteDataVolumeRaw(input.cluster, input.namespace, dv);
-      } catch {
-        /* ignore */
-      }
-    }
   };
 
   try {
-    const created = (await custom.createNamespacedCustomObject({
-      group: "kubevirt.io",
-      version: "v1",
-      namespace: input.namespace,
-      plural: "virtualmachines",
-      body,
-    })) as KubeVm;
-    const instanceTypes = input.instanceType
-      ? await loadInstanceTypeSizes(input.cluster)
-      : undefined;
-    const summary = mapVm(input.cluster, created, instanceTypes);
-    if (!summary.disk && rootDiskSizeAnn) summary.disk = rootDiskSizeAnn;
-    return summary;
-  } catch (err) {
-    // Best-effort: drop leases if VM create failed
-    try {
-      await removeRouterLeasesForVm(
+    // Sequential so multi-attach can reserve prior picks via extraUsed when
+    // two NADs resolve to the same pool (or we add more attachments later).
+    const rawAllocations: Array<
+      Awaited<ReturnType<typeof allocateIpv4ForMultus>>
+    > = [];
+    const extraUsed: string[] = [];
+    for (const name of multusNames) {
+      const alloc = await allocateIpv4ForMultus(
         input.cluster,
+        name,
         input.namespace,
-        input.name.trim(),
+        {
+          extraUsed,
+          claim: { name: vmName, namespace: input.namespace },
+        },
       );
-    } catch {
-      /* ignore */
+      rawAllocations.push(alloc);
+      if (alloc) {
+        extraUsed.push(alloc.address);
+        if (isIpAddressCrEnabled()) claimedAddresses.push(alloc.address);
+      }
     }
-    // Remove DVs we just created so retries are clean
-    await rollbackCreatedDisks();
-    throw new Error(formatError(err), { cause: err });
+    // Dual-home Multus VMs by default so browser Terminal (port-forward) works.
+    const dualHome =
+      multusNames.length > 0 && input.includePodNetwork !== false;
+    const allocations = bindAllocationsToNetworks(multusNames, rawAllocations, {
+      forceMac: dualHome,
+    });
+
+    // Shared router: DHCP for VPC NICs + register static leases on the router policy.
+    for (let i = 0; i < multusNames.length; i++) {
+      const multusName = multusNames[i]!;
+      const alloc = allocations[i];
+      if (!alloc?.macAddress) continue;
+      const ref = parseMultusNetworkRef(multusName, input.namespace);
+      if (ref.namespace !== input.namespace) continue;
+      const routerName = await readVpcRouterName(
+        input.cluster,
+        ref.namespace,
+        ref.name,
+      );
+      if (!routerName) continue;
+      alloc.dhcp4 = true;
+      alloc.gateway = undefined;
+      alloc.dns = [];
+      try {
+        await upsertRouterLease(input.cluster, input.namespace, routerName, {
+          vpc: ref.name,
+          mac: alloc.macAddress,
+          ip: alloc.address,
+          hostname: vmName,
+          vm: vmName,
+        });
+      } catch (leaseErr) {
+        throw new Error(
+          `Failed to register DHCP lease on router ${routerName}: ${formatError(leaseErr)}`,
+          { cause: leaseErr },
+        );
+      }
+    }
+
+    // Standalone root disk (not dataVolumeTemplates) so DV outlives the VM by default.
+    let createdRootDv: string | null = null;
+    if (diskSource === "image") {
+      try {
+        const result = await ensureRootDataVolumeFromImage({
+          cluster: input.cluster,
+          namespace: input.namespace,
+          name: vmName,
+          diskSize: input.diskSize!,
+          storageClass: input.storageClass,
+          image: {
+            namespace: input.image!.namespace,
+            name: input.image!.name,
+          },
+        });
+        if (result.created) createdRootDv = result.name;
+      } catch (err) {
+        throw new Error(
+          `Failed to create root DataVolume: ${formatError(err)}`,
+          { cause: err },
+        );
+      }
+    }
+
+    // Secondary data disks (standalone blank / existing DVs).
+    const extraDisksInput = input.extraDisks ?? [];
+    let resolvedExtraDisks: ResolvedExtraDisk[] = [];
+    let createdExtraDvs: string[] = [];
+    if (extraDisksInput.length > 0) {
+      const material = await materializeExtraDisks({
+        cluster: input.cluster,
+        namespace: input.namespace,
+        vmName,
+        extraDisks: extraDisksInput,
+        reservedNames: new Set(["root", "cloudinit"]),
+      });
+      resolvedExtraDisks = material.resolved;
+      createdExtraDvs = material.createdDvNames;
+    }
+
+    // Platform console key so browser Terminal can SSH without the user's private key.
+    const platformPub = await getPlatformConsolePublicKey();
+    // Dual-home: route cluster CIDRs via masquerade GW (not Multus default).
+    let clusterCidrs: string[] | undefined;
+    if (dualHome) {
+      const net = getClusterNetwork(input.cluster);
+      if (net) {
+        const { podCIDRs, serviceCIDRs } = clusterNetworkCidrList(net);
+        clusterCidrs = [...podCIDRs, ...serviceCIDRs]
+          .map((c) => c.trim())
+          .filter(Boolean);
+      }
+    }
+    const body = buildVirtualMachineManifest(input, allocations, {
+      extraAuthorizedKeys: platformPub ? [platformPub] : [],
+      includePodNetwork: dualHome,
+      clusterCidrs,
+      extraDisks: resolvedExtraDisks,
+    }) as {
+      metadata?: { annotations?: Record<string, string> };
+      [key: string]: unknown;
+    };
+    if (rootDiskSizeAnn) {
+      body.metadata = body.metadata ?? {};
+      body.metadata.annotations = {
+        ...(body.metadata.annotations ?? {}),
+        [KMC_ANN_DISK_SIZE]: rootDiskSizeAnn,
+      };
+    }
+
+    const rollbackCreatedDisks = async () => {
+      if (createdRootDv) {
+        try {
+          await deleteDataVolumeRaw(
+            input.cluster,
+            input.namespace,
+            createdRootDv,
+          );
+        } catch {
+          /* ignore */
+        }
+      }
+      for (const dv of createdExtraDvs) {
+        try {
+          await deleteDataVolumeRaw(input.cluster, input.namespace, dv);
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+
+    try {
+      const created = (await custom.createNamespacedCustomObject({
+        group: "kubevirt.io",
+        version: "v1",
+        namespace: input.namespace,
+        plural: "virtualmachines",
+        body,
+      })) as KubeVm;
+      const instanceTypes = input.instanceType
+        ? await loadInstanceTypeSizes(input.cluster)
+        : undefined;
+      const summary = mapVm(input.cluster, created, instanceTypes);
+      if (!summary.disk && rootDiskSizeAnn) summary.disk = rootDiskSizeAnn;
+      return summary;
+    } catch (err) {
+      // Best-effort: drop leases if VM create failed
+      try {
+        await removeRouterLeasesForVm(input.cluster, input.namespace, vmName);
+      } catch {
+        /* ignore */
+      }
+      // Remove DVs we just created so retries are clean
+      await rollbackCreatedDisks();
+      throw new Error(formatError(err), { cause: err });
+    }
+  } catch (err) {
+    await releaseClaims();
+    throw err;
   }
 }
 
@@ -2780,6 +2811,17 @@ export async function deleteVm(
     await removeRouterLeasesForVm(cluster, namespace, name);
   } catch (err) {
     console.error("removeRouterLeasesForVm:", formatError(err));
+  }
+
+  // Free IPAddress CRs (when KMC_IPADDRESS_CR=true path was used).
+  if (isIpAddressCrEnabled()) {
+    try {
+      const ann = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
+      const addrs = ann ? parseIpv4AnnotationList(ann) : [];
+      await deleteIpAddressClaimsForVm(cluster, namespace, name, addrs);
+    } catch (err) {
+      console.error("deleteIpAddressClaimsForVm:", formatError(err));
+    }
   }
 
   try {

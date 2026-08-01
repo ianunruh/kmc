@@ -91,6 +91,18 @@ kubectl get ipaddr -A
 
 `IPAddress` is namespaced. Recommended object name: IPv4 with dots → dashes (`10.40.1.20` → `10-40-1-20`) so concurrent creates collide with HTTP 409.
 
+### Console IPAM via `IPAddress` CRs
+
+By default the console still uses scan-based allocate (VM annotations + in-process lock).
+
+To claim leases through CRs (safer across multiple console replicas):
+
+1. Install the controller CRDs/RBAC: `kubectl apply -k deploy/controller`
+2. Grant tenants create/list/delete on `ipaddresses.kmc.ianunruh.com` (see `deploy/controller/rbac/user-ipaddress-example.yaml`)
+3. Set on the console process: `KMC_IPADDRESS_CR=true`
+
+With the flag on, `allocateIpv4ForMultus` creates an `IPAddress` after picking a free address (409 → try next). VM/router delete and floating-IP release delete the claim. Create-VM failure rolls back claims best-effort.
+
 **Images**
 
 | Image | Contents |
@@ -224,6 +236,7 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 | `KMC_GROUPS_PREFIX`        | `oidc:`                 | Match apiserver groups prefix                                                 |
 | `KMC_CONSOLE_SSH_USER`     | `ubuntu`                | Guest username for browser SSH terminal                                       |
 | `KMC_SNAPSHOT_JOB_IMAGE`   | `ghcr.io/ianunruh/kmc:latest` | Container image for per-VM snapshot CronJobs (`scripts/snapshot-run.ts`) |
+| `KMC_IPADDRESS_CR`         | off                     | Set to `true` to claim Multus IPs via `IPAddress` CRs (needs controller) |
 
 ## Features (MVP)
 

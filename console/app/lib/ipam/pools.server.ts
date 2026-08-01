@@ -24,8 +24,16 @@ import {
   type ParsedCidr,
 } from "./cidr";
 import { IPAM_ANNOTATION_IPV4, IPAM_ANNOTATION_POOL } from "./constants";
+import {
+  createIpAddressClaim,
+  isIpAddressAlreadyExists,
+  isIpAddressCrEnabled,
+  listIpAddressClaimAddresses,
+  type IpAddressClaimRef,
+} from "./ipaddress-cr.server";
 
 export type { IpPoolConfig };
+export { isIpAddressCrEnabled } from "./ipaddress-cr.server";
 
 export type AllocatedIp = {
   poolId: string;
@@ -524,12 +532,48 @@ export type AllocateIpv4Opts = {
    * Omit to use the pool gateway as usual.
    */
   gatewayOverride?: string | null;
+  /**
+   * Optional claimRef on the IPAddress CR (VM / router name).
+   * Required fields only used when KMC_IPADDRESS_CR=true.
+   */
+  claim?: IpAddressClaimRef;
 };
+
+const IPADDRESS_CLAIM_MAX_ATTEMPTS = 64;
+
+function buildAllocatedIp(
+  pool: IpPoolConfig,
+  parsed: ParsedCidr,
+  address: string,
+  opts?: AllocateIpv4Opts,
+): AllocatedIp {
+  let gateway: string | undefined;
+  if (opts?.gatewayOverride === null) {
+    gateway = undefined;
+  } else if (opts?.gatewayOverride !== undefined) {
+    gateway = opts.gatewayOverride.trim() || undefined;
+  } else {
+    gateway = pool.gateway?.trim() || undefined;
+  }
+
+  return {
+    poolId: pool.id,
+    address,
+    prefix: parsed.prefix,
+    cidrHost: `${address}/${parsed.prefix}`,
+    gateway,
+    dns: (pool.dns ?? []).map((d) => d.trim()).filter(Boolean),
+    interfaceName: pool.interface?.trim() || undefined,
+  };
+}
 
 /**
  * Allocate the next free IPv4 from the pool bound to this Multus NAD.
  * Returns null when the network has no configured pool.
  * Pass `namespace` so self-service VPC NADs (dynamic pools) can be resolved.
+ *
+ * When `KMC_IPADDRESS_CR=true`, creates a namespaced IPAddress CR as the lease
+ * (409 → try next free). Namespace is required in that mode.
  */
 export async function allocateIpv4ForMultus(
   cluster: ClusterId,
@@ -539,6 +583,14 @@ export async function allocateIpv4ForMultus(
 ): Promise<AllocatedIp | null> {
   const pool = await resolveIpPoolForMultus(cluster, multusNetworkName, namespace);
   if (!pool) return null;
+
+  const crEnabled = isIpAddressCrEnabled();
+  const ns = namespace?.trim() ?? "";
+  if (crEnabled && !ns) {
+    throw new Error(
+      "namespace is required when KMC_IPADDRESS_CR=true (IPAddress claims are namespaced)",
+    );
+  }
 
   const lockKey = `${cluster}::${pool.id}`;
   return withPoolLock(lockKey, async () => {
@@ -554,8 +606,27 @@ export async function allocateIpv4ForMultus(
       if (addr) used.add(addr);
     }
 
+    if (crEnabled) {
+      const staticPool = !pool.id.startsWith("vpc:");
+      const fromCrs = await listIpAddressClaimAddresses({
+        cluster,
+        namespace: ns,
+        clusterWide: staticPool,
+      });
+      for (const a of fromCrs) {
+        try {
+          if (containsIpv4(parsed, a)) used.add(a);
+        } catch {
+          /* skip */
+        }
+      }
+    }
+
     const preferred = opts?.preferredAddress?.trim();
-    let address: string | null = null;
+    const claimExclude = new Set(exclude);
+    if (preferred && opts?.claimGateway) {
+      claimExclude.delete(preferred);
+    }
 
     if (preferred) {
       parseIpv4(preferred);
@@ -570,49 +641,76 @@ export async function allocateIpv4ForMultus(
           `Preferred address ${preferred} is outside the allocation window for pool "${pool.id}"`,
         );
       }
-      // Router VMs may claim the reserved gateway / exclude list entry.
-      if (opts?.claimGateway) {
-        exclude.delete(preferred);
-      }
       if (used.has(preferred)) {
         throw new Error(
           `Preferred address ${preferred} is already in use in pool "${pool.id}"`,
         );
       }
-      if (exclude.has(preferred)) {
+      if (claimExclude.has(preferred)) {
         throw new Error(
           `Preferred address ${preferred} is reserved in pool "${pool.id}"`,
         );
       }
-      address = preferred;
-    } else {
-      address = firstFreeIpv4(range, used, exclude);
+
+      if (crEnabled) {
+        try {
+          await createIpAddressClaim({
+            cluster,
+            namespace: ns,
+            address: preferred,
+            prefixLength: parsed.prefix,
+            pool,
+            claim: opts?.claim,
+          });
+        } catch (err) {
+          if (isIpAddressAlreadyExists(err)) {
+            throw new Error(
+              `Preferred address ${preferred} is already in use in pool "${pool.id}"`,
+              { cause: err },
+            );
+          }
+          throw err;
+        }
+      }
+
+      return buildAllocatedIp(pool, parsed, preferred, opts);
     }
 
-    if (!address) {
-      throw new Error(
-        `IP pool "${pool.id}" (${parsed.cidr}) on cluster ${cluster} is exhausted`,
-      );
+    // Auto-pick: optionally claim via CR with 409 retry.
+    for (let attempt = 0; attempt < IPADDRESS_CLAIM_MAX_ATTEMPTS; attempt++) {
+      const address = firstFreeIpv4(range, used, claimExclude);
+      if (!address) {
+        throw new Error(
+          `IP pool "${pool.id}" (${parsed.cidr}) on cluster ${cluster} is exhausted`,
+        );
+      }
+
+      if (!crEnabled) {
+        return buildAllocatedIp(pool, parsed, address, opts);
+      }
+
+      try {
+        await createIpAddressClaim({
+          cluster,
+          namespace: ns,
+          address,
+          prefixLength: parsed.prefix,
+          pool,
+          claim: opts?.claim,
+        });
+        return buildAllocatedIp(pool, parsed, address, opts);
+      } catch (err) {
+        if (isIpAddressAlreadyExists(err)) {
+          used.add(address);
+          continue;
+        }
+        throw err;
+      }
     }
 
-    let gateway: string | undefined;
-    if (opts?.gatewayOverride === null) {
-      gateway = undefined;
-    } else if (opts?.gatewayOverride !== undefined) {
-      gateway = opts.gatewayOverride.trim() || undefined;
-    } else {
-      gateway = pool.gateway?.trim() || undefined;
-    }
-
-    return {
-      poolId: pool.id,
-      address,
-      prefix: parsed.prefix,
-      cidrHost: `${address}/${parsed.prefix}`,
-      gateway,
-      dns: (pool.dns ?? []).map((d) => d.trim()).filter(Boolean),
-      interfaceName: pool.interface?.trim() || undefined,
-    };
+    throw new Error(
+      `IP pool "${pool.id}" (${parsed.cidr}) on cluster ${cluster}: too many allocation conflicts`,
+    );
   });
 }
 

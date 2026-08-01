@@ -51,9 +51,11 @@ import {
   allocateIpv4ForMultus,
   findIpPoolForMultus,
   ipamAnnotations,
+  isIpAddressCrEnabled,
   parseIpv4AnnotationList,
   type AllocatedIp,
 } from "~/lib/ipam/pools.server";
+import { deleteIpAddressClaim } from "~/lib/ipam/ipaddress-cr.server";
 import { getRouterAgentScript } from "~/vpcs/router-agent-script";
 
 /** JSON document stored in the router policy ConfigMap. */
@@ -1508,13 +1510,25 @@ export async function associateRouterFloatingIp(
       input.cluster,
       input.publicMultusNetwork,
       input.namespace,
-      { preferredAddress: publicAddr },
+      {
+        preferredAddress: publicAddr,
+        claim: {
+          name: input.targetVm?.trim() || input.routerName,
+          namespace: input.namespace,
+        },
+      },
     );
   } else {
     const alloc = await allocateIpv4ForMultus(
       input.cluster,
       input.publicMultusNetwork,
       input.namespace,
+      {
+        claim: {
+          name: input.targetVm?.trim() || input.routerName,
+          namespace: input.namespace,
+        },
+      },
     );
     if (!alloc) throw new Error("Could not allocate a public floating IP");
     publicAddr = alloc.address;
@@ -1649,13 +1663,19 @@ export async function reserveRouterFloatingIp(
       input.cluster,
       input.publicMultusNetwork,
       input.namespace,
-      { preferredAddress: publicAddr },
+      {
+        preferredAddress: publicAddr,
+        claim: { name: input.routerName, namespace: input.namespace },
+      },
     );
   } else {
     const alloc = await allocateIpv4ForMultus(
       input.cluster,
       input.publicMultusNetwork,
       input.namespace,
+      {
+        claim: { name: input.routerName, namespace: input.namespace },
+      },
     );
     if (!alloc) throw new Error("Could not allocate a public floating IP");
     publicAddr = alloc.address;
@@ -1777,6 +1797,9 @@ export async function releaseRouterFloatingIp(
     input.routerName,
     floatingIpsFromRouterDoc(policy.doc),
   );
+  if (isIpAddressCrEnabled() && pub) {
+    await deleteIpAddressClaim(input.cluster, input.namespace, pub);
+  }
 }
 
 function portForwardId(publicAddr: string, protocol: string, publicPort: number): string {
@@ -1847,6 +1870,12 @@ export async function createRouterPortForward(
       input.cluster,
       input.publicMultusNetwork,
       input.namespace,
+      {
+        claim: {
+          name: input.targetVm?.trim() || input.routerName,
+          namespace: input.namespace,
+        },
+      },
     );
     if (!alloc) throw new Error("Could not allocate a public IP for port forwards");
     publicAddr = alloc.address;
@@ -1907,7 +1936,13 @@ export async function createRouterPortForward(
       input.cluster,
       input.publicMultusNetwork,
       input.namespace,
-      { preferredAddress: publicAddr },
+      {
+        preferredAddress: publicAddr,
+        claim: {
+          name: input.targetVm?.trim() || input.routerName,
+          namespace: input.namespace,
+        },
+      },
     );
     doc.floatingIPs = [
       ...doc.floatingIPs,
