@@ -95,6 +95,88 @@ func TestIPAddressReconcile_BindsValidSpec(t *testing.T) {
 	}
 }
 
+func TestIPAddressReconcile_EnrichesFromIPPool(t *testing.T) {
+	scheme := testScheme(t)
+	pool := &kmcv1alpha1.IPPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "public"},
+		Spec: kmcv1alpha1.IPPoolSpec{
+			MultusNetwork: "bridge-external",
+			CIDR:          "74.82.62.0/27",
+			Gateway:       "74.82.62.1",
+			DNS:           []string{"1.1.1.1"},
+		},
+	}
+	obj := newIPAddress("74-82-62-10", func(o *kmcv1alpha1.IPAddress) {
+		o.Spec.Address = "74.82.62.10"
+		o.Spec.PrefixLength = 27
+		o.Spec.PoolRef = kmcv1alpha1.PoolReference{Kind: "IPPool", Name: "public"}
+		controllerutil.AddFinalizer(o, kmcv1alpha1.IPAddressFinalizer)
+	})
+
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&kmcv1alpha1.IPAddress{}).
+		WithObjects(pool, obj).
+		Build()
+
+	r := &IPAddressReconciler{Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(10)}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: obj.Name, Namespace: obj.Namespace},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var got kmcv1alpha1.IPAddress
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(obj), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != kmcv1alpha1.IPAddressPhaseBound {
+		t.Fatalf("phase = %q", got.Status.Phase)
+	}
+	if got.Status.Gateway != "74.82.62.1" {
+		t.Fatalf("gateway = %q", got.Status.Gateway)
+	}
+	if len(got.Status.DNS) != 1 || got.Status.DNS[0] != "1.1.1.1" {
+		t.Fatalf("dns = %v", got.Status.DNS)
+	}
+}
+
+func TestIPAddressReconcile_RejectsOutsidePool(t *testing.T) {
+	scheme := testScheme(t)
+	pool := &kmcv1alpha1.IPPool{
+		ObjectMeta: metav1.ObjectMeta{Name: "public"},
+		Spec: kmcv1alpha1.IPPoolSpec{
+			MultusNetwork: "bridge-external",
+			CIDR:          "74.82.62.0/27",
+		},
+	}
+	obj := newIPAddress("10-0-0-1", func(o *kmcv1alpha1.IPAddress) {
+		o.Spec.Address = "10.0.0.1"
+		o.Spec.PrefixLength = 24
+		o.Spec.PoolRef = kmcv1alpha1.PoolReference{Kind: "IPPool", Name: "public"}
+		controllerutil.AddFinalizer(o, kmcv1alpha1.IPAddressFinalizer)
+	})
+
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&kmcv1alpha1.IPAddress{}).
+		WithObjects(pool, obj).
+		Build()
+
+	r := &IPAddressReconciler{Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(10)}
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Name: obj.Name, Namespace: obj.Namespace},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var got kmcv1alpha1.IPAddress
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(obj), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != kmcv1alpha1.IPAddressPhasePending {
+		t.Fatalf("phase = %q, want Pending", got.Status.Phase)
+	}
+}
+
 func TestIPAddressReconcile_AddsFinalizer(t *testing.T) {
 	scheme := testScheme(t)
 	obj := newIPAddress("10-40-1-21")

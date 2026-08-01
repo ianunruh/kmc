@@ -30,6 +30,8 @@ type IPAddressReconciler struct {
 // +kubebuilder:rbac:groups=kmc.ianunruh.com,resources=ipaddresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kmc.ianunruh.com,resources=ipaddresses/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=kmc.ianunruh.com,resources=ipaddresses/finalizers,verbs=update
+// +kubebuilder:rbac:groups=kmc.ianunruh.com,resources=ippools,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kmc.ianunruh.com,resources=vpcs,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 func (r *IPAddressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -85,8 +87,31 @@ func (r *IPAddressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
+	gateway, dns, poolErr := r.resolvePoolInfo(ctx, &obj)
+	if poolErr != nil {
+		if statusErr := r.patchStatus(ctx, &obj, func(o *kmcv1alpha1.IPAddress) {
+			o.Status.Phase = kmcv1alpha1.IPAddressPhasePending
+			o.Status.ObservedGeneration = o.Generation
+			meta.SetStatusCondition(&o.Status.Conditions, metav1.Condition{
+				Type:               kmcv1alpha1.IPAddressConditionReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             "PoolError",
+				Message:            poolErr.Error(),
+				ObservedGeneration: o.Generation,
+			})
+		}); statusErr != nil {
+			return ctrl.Result{}, statusErr
+		}
+		if r.Recorder != nil {
+			r.Recorder.Event(&obj, corev1.EventTypeWarning, "PoolError", poolErr.Error())
+		}
+		return ctrl.Result{}, nil
+	}
+
 	if err := r.patchStatus(ctx, &obj, func(o *kmcv1alpha1.IPAddress) {
 		o.Status.Phase = kmcv1alpha1.IPAddressPhaseBound
+		o.Status.Gateway = gateway
+		o.Status.DNS = dns
 		o.Status.ObservedGeneration = o.Generation
 		meta.SetStatusCondition(&o.Status.Conditions, metav1.Condition{
 			Type:               kmcv1alpha1.IPAddressConditionReady,
@@ -104,6 +129,58 @@ func (r *IPAddressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	logger.Info("bound", "address", obj.Spec.Address)
 	return ctrl.Result{}, nil
+}
+
+// resolvePoolInfo loads gateway/DNS from IPPool or VPC when present.
+// Missing pool is soft (migration): Bound without enrichment.
+// Hard errors: pool exists but address outside CIDR / bad CIDR on pool.
+func (r *IPAddressReconciler) resolvePoolInfo(ctx context.Context, obj *kmcv1alpha1.IPAddress) (gateway string, dns []string, err error) {
+	kind := strings.TrimSpace(obj.Spec.PoolRef.Kind)
+	name := strings.TrimSpace(obj.Spec.PoolRef.Name)
+
+	switch kind {
+	case "IPPool":
+		var pool kmcv1alpha1.IPPool
+		if getErr := r.Get(ctx, client.ObjectKey{Name: name}, &pool); getErr != nil {
+			if apierrors.IsNotFound(getErr) {
+				return "", nil, nil
+			}
+			return "", nil, getErr
+		}
+		window, werr := ipam.ParsePoolWindow(pool.Spec.CIDR, pool.Spec.Gateway, pool.Spec.Start, pool.Spec.End, pool.Spec.Exclude)
+		if werr != nil {
+			return "", nil, fmt.Errorf("IPPool %q: %w", name, werr)
+		}
+		if !window.Contains(obj.Spec.Address) {
+			return "", nil, fmt.Errorf("address %s is outside IPPool %q cidr %s", obj.Spec.Address, name, pool.Spec.CIDR)
+		}
+		return strings.TrimSpace(pool.Spec.Gateway), append([]string(nil), pool.Spec.DNS...), nil
+
+	case "VPC":
+		var vpc kmcv1alpha1.VPC
+		if getErr := r.Get(ctx, client.ObjectKey{Namespace: obj.Namespace, Name: name}, &vpc); getErr != nil {
+			if apierrors.IsNotFound(getErr) {
+				return "", nil, nil
+			}
+			return "", nil, getErr
+		}
+		cidr := strings.TrimSpace(vpc.Spec.CIDR)
+		if cidr == "" {
+			// L2-only VPC: no IPAM validation
+			return strings.TrimSpace(vpc.Spec.Gateway), append([]string(nil), vpc.Spec.DNS...), nil
+		}
+		window, werr := ipam.ParsePoolWindow(cidr, vpc.Spec.Gateway, "", "", nil)
+		if werr != nil {
+			return "", nil, fmt.Errorf("VPC %q: %w", name, werr)
+		}
+		if !window.Contains(obj.Spec.Address) {
+			return "", nil, fmt.Errorf("address %s is outside VPC %q cidr %s", obj.Spec.Address, name, cidr)
+		}
+		return strings.TrimSpace(vpc.Spec.Gateway), append([]string(nil), vpc.Spec.DNS...), nil
+
+	default:
+		return "", nil, nil
+	}
 }
 
 func validateIPAddressSpec(obj *kmcv1alpha1.IPAddress) error {

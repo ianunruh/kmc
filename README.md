@@ -89,8 +89,8 @@ make controller-run   # --leader-elect=false
 | **VLANPool** | Cluster | `vlanpool` | Operator VLAN range for self-service VPCs (from `vlanPools` in clusters.yaml) |
 | **IPPool** | Cluster | `ippool` | Operator Multus IPv4 pool (from `ipPools`) |
 | **VPC** | Namespaced | `vpc` | Self-service private network; controller assigns VLAN + owns Multus NAD |
-| **IPAddress** | Namespaced | `ipaddr` | Single IPv4 claim (create = allocate race via name) |
-| **FloatingIP** | Namespaced | `fip` | Public float hold/associate (Router programs later) |
+| **IPAddress** | Namespaced | `ipaddr` | Single IPv4 claim (create = allocate race via name); status.gateway/dns filled from IPPool/VPC when present |
+| **FloatingIP** | Namespaced | `fip` | Public float hold/associate; owns companion `IPAddress` claim; Router programs SNAT/DNAT later |
 | **PortForward** | Namespaced | `pf` | Port DNAT rule (Router programs later) |
 
 **Router is reserved, not implemented.** A future `Router` CR (`routers.kmc.ianunruh.com`, shortName `rtr`) will own the appliance VM, policy ConfigMap, and agent. Room is already planned:
