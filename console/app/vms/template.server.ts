@@ -39,6 +39,11 @@ export type BuildNetworkSpecOpts = {
    * lets shared routers reach the apiserver from the guest agent.
    */
   includePodNetwork?: boolean;
+  /**
+   * Guest MAC for the masquerade interface when dual-homed. Netplan matches
+   * the pod NIC by this MAC (not name en*).
+   */
+  podMacAddress?: string;
 };
 
 /**
@@ -73,7 +78,15 @@ export function buildNetworkSpec(
 
   // Pod first when dual-homed: KubeVirt port-forward dials interfaces[0].IP.
   if (opts?.includePodNetwork) {
-    interfaces.push({ name: POD_NETWORK_NAME, masquerade: {} });
+    const podIface: Record<string, unknown> = {
+      name: POD_NETWORK_NAME,
+      masquerade: {},
+    };
+    const podMac = opts.podMacAddress?.trim();
+    if (podMac) {
+      podIface.macAddress = podMac;
+    }
+    interfaces.push(podIface);
     networks.push({ name: POD_NETWORK_NAME, pod: {} });
   }
 
@@ -99,8 +112,8 @@ export function buildNetworkSpec(
 
 export type BindAllocationsOpts = {
   /**
-   * Dual-home Multus + pod: always stamp Multus MACs so netplan can match by
-   * MAC (and set-name), leaving the pod NIC for dhcp4 match on en*.
+   * Dual-home Multus + pod: always stamp Multus MACs so netplan can match by MAC.
+   * The pod NIC is matched by its own stamped MAC (not leftover en*).
    */
   forceMac?: boolean;
 };
@@ -188,13 +201,13 @@ export type BuildVmManifestOpts = {
   extraDisks?: ResolvedExtraDisk[];
   /**
    * Shared router: Multus NICs keep MACs for the agent; private gateway L3 is
-   * owned by kmc-router-agent. Netplan still set-names private Multus NICs and
+   * owned by kmc-router-agent. Netplan MAC-matches private Multus NICs and
    * configures pod (+ optional external Multus IP).
    */
   routerAgentOwnsPrivateL3?: boolean;
   /**
    * When routerAgentOwnsPrivateL3, Multus allocation used for public netplan
-   * (external gateway). Private Multus use set-name only (no addresses).
+   * (external gateway). Private Multus are MAC-matched only (no addresses).
    */
   routerExternalAllocation?: AllocatedIp | null;
 };
@@ -269,8 +282,13 @@ export function buildVirtualMachineManifest(
   const start = input.start !== false;
   const multusNames = multusNetworksFromRequest(input);
   const includePodNetwork = opts?.includePodNetwork === true;
+  // Stable MAC for dual-home masquerade so netplan matches by MAC (not en*).
+  const podMacAddress = includePodNetwork
+    ? generateLocalMacAddress()
+    : undefined;
   const { interfaces, networks } = buildNetworkSpec(multusNames, allocations, {
     includePodNetwork,
+    podMacAddress,
   });
 
   const rootDiskName =
@@ -306,7 +324,7 @@ export function buildVirtualMachineManifest(
   }
 
   if (opts?.routerAgentOwnsPrivateL3) {
-    // Private Multus: set-name by MAC only; agent assigns gateway IPs.
+    // Private Multus: MAC match only; agent assigns gateway IPs.
     // External (if any) still gets public IP + default route from netplan.
     const external = opts.routerExternalAllocation ?? null;
     const privateMultus = allocations.filter((a) => {
@@ -317,6 +335,7 @@ export function buildVirtualMachineManifest(
       clusterCidrs: includePodNetwork ? opts?.clusterCidrs : undefined,
       privateMultus,
       external,
+      podMacAddress,
     });
   } else if (allocations.length > 0) {
     cloudInitNoCloud.networkData = buildNetworkData(allocations, {
@@ -324,6 +343,7 @@ export function buildVirtualMachineManifest(
       includePodDhcp: includePodNetwork,
       // Specific routes so guest→pod/service does not follow Multus default.
       clusterCidrs: includePodNetwork ? opts?.clusterCidrs : undefined,
+      podMacAddress,
     });
   }
 

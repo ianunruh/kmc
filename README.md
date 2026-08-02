@@ -247,7 +247,7 @@ When a Multus network on create matches a cluster `ipPools` entry **or** a self-
 
 **Multi-attach:** Launch VM can attach multiple Multus NADs (up to 8). Each attachment that has a pool gets its own address; netplan matches NICs by MAC. Only one default route is installed (first Multus with a gateway, else the first pooled NIC). Empty network list keeps the historical **pod network only** behavior.
 
-**Dual-home (default):** When any Multus network is selected, kmc also attaches the **pod network** (masquerade) as the **first** interface so KubeVirt port-forward / browser Terminal can reach guest `:22`. Multus remains L3 primary (default route). Cloud-init installs **cluster routes** (`network.podCIDR` / `serviceCIDR` from `clusters.yaml`) via the masquerade gateway (`10.0.2.1`) so guest → pod/service traffic uses the pod NIC. Opt out on Launch VM → “Include pod network (management)” for Multus-only guests.
+**Dual-home (default):** When any Multus network is selected, kmc also attaches the **pod network** (masquerade) as the **first** interface so KubeVirt port-forward / browser Terminal can reach guest `:22`. Multus remains L3 primary (default route). Both NICs get stamped MACs; cloud-init netplan matches them by MAC (no interface rename). Cluster routes (`network.podCIDR` / `serviceCIDR` from `clusters.yaml`) go via the masquerade gateway (`10.0.2.1`) so guest → pod/service traffic uses the pod NIC. Opt out on Launch VM → “Include pod network (management)” for Multus-only guests.
 No separate IPAM database — the cluster is the source of truth. Concurrent creates in a single kmc process are serialized per pool; multi-replica kmc can still race (use one replica or graduate to explicit leases later).
 
 ### GitHub OAuth App (impersonate mode)
