@@ -13,7 +13,10 @@ import type {
   RouterSummary,
 } from "~/lib/types";
 import { assertVmNamespaceAllowed } from "~/lib/k8s/catalog.server";
-import { getConfiguredContexts } from "~/lib/k8s/clients.server";
+import {
+  getClusterClients,
+  getConfiguredContexts,
+} from "~/lib/k8s/clients.server";
 import { toResourceYaml } from "~/lib/k8s/yaml.server";
 import { DNS1123_LABEL, formatAge } from "~/lib/format";
 import { KMC_MAX_MULTUS_ATTACHMENTS } from "~/lib/k8s/constants";
@@ -35,10 +38,30 @@ import {
   type FloatingIpCr,
   type IpAddressCr,
   type PortForwardCr,
+  type RouterApplianceSpec,
   type RouterCr,
   type RouterExternalSpec,
   type VpcCr,
 } from "~/lib/k8s/networking-cr.server";
+import { getPlatformConsolePublicKey } from "~/vms/console-ssh-key.server";
+
+/**
+ * User SSH key plus the platform console key (browser Terminal auth).
+ * Dedupes exact lines so re-saves stay idempotent.
+ */
+async function applianceSshPublicKeys(userKey: string): Promise<string[]> {
+  const keys: string[] = [];
+  const user = userKey.trim();
+  if (user) keys.push(user);
+  const platform = await getPlatformConsolePublicKey();
+  if (platform?.trim() && !keys.includes(platform.trim())) {
+    keys.push(platform.trim());
+  }
+  if (keys.length === 0) {
+    throw new Error("At least one SSH public key is required");
+  }
+  return keys;
+}
 
 export function routerPolicyConfigMapName(routerName: string): string {
   return `kmc-router-${routerName}`;
@@ -431,7 +454,8 @@ export async function createRouter(
         ...(input.storageClass?.trim()
           ? { storageClass: input.storageClass.trim() }
           : {}),
-        sshPublicKeys: [input.sshPublicKey.trim()],
+        // User key + platform console key (browser Terminal uses the latter).
+        sshPublicKeys: await applianceSshPublicKeys(input.sshPublicKey),
         runStrategy: input.start === false ? "Halted" : "Always",
       },
     },
@@ -520,8 +544,9 @@ export async function setRouterExternalGateway(
 }
 
 /**
- * Controller owns the appliance; recreate is not supported from the console.
- * Surface a clear error if the UI still offers the action.
+ * Patch appliance sizing/image/SSH keys on the Router CR, then delete the
+ * KubeVirt VM + root DataVolume so the controller rebuilds cloud-init
+ * (including the platform console key for browser Terminal).
  */
 export type RecreateRouterVmRequest = {
   cluster: ClusterId;
@@ -537,11 +562,108 @@ export type RecreateRouterVmRequest = {
 };
 
 export async function recreateRouterVm(
-  _input: RecreateRouterVmRequest,
+  input: RecreateRouterVmRequest,
 ): Promise<void> {
-  throw new Error(
-    "Router appliance is managed by the kmc-controller. Delete and recreate the Router CR, or fix the appliance VM in-cluster.",
+  const namespace = input.namespace.trim();
+  const name = input.routerName.trim();
+  if (!input.sshPublicKey?.trim()) throw new Error("sshPublicKey is required");
+  if (!input.diskSize?.trim()) throw new Error("diskSize is required");
+  if (!input.image?.name?.trim()) throw new Error("image is required");
+  if (!input.instanceType && !(input.cpuCores && input.memory)) {
+    throw new Error("Provide instanceType or both cpuCores and memory");
+  }
+
+  let existing: RouterCr;
+  try {
+    existing = await getNamespacedCustomObject<RouterCr>(
+      input.cluster,
+      namespace,
+      PLURAL_ROUTERS,
+      name,
+    );
+  } catch (err) {
+    if (isNotFoundError(err)) {
+      throw new Error(`Router ${namespace}/${name} not found`);
+    }
+    throw err;
+  }
+
+  const sshPublicKeys = await applianceSshPublicKeys(input.sshPublicKey);
+  const prevAppliance = existing.spec?.appliance;
+  const nextAppliance: RouterApplianceSpec = {
+    image: {
+      kind: "pvc",
+      namespace: input.image.namespace.trim() || "vm-images",
+      name: input.image.name.trim(),
+    },
+    diskSize: input.diskSize.trim(),
+    sshPublicKeys,
+    runStrategy: prevAppliance?.runStrategy ?? "Always",
+    ...(input.storageClass?.trim()
+      ? { storageClass: input.storageClass.trim() }
+      : {}),
+    ...(input.instanceType?.trim()
+      ? { instanceType: input.instanceType.trim() }
+      : {
+          cpuCores: input.cpuCores,
+          memory: input.memory?.trim(),
+        }),
+  };
+
+  const next: RouterCr = {
+    ...existing,
+    spec: {
+      ...existing.spec,
+      vpcs: existing.spec?.vpcs ?? [],
+      appliance: nextAppliance,
+    },
+  };
+
+  await replaceNamespacedCustomObject(
+    input.cluster,
+    namespace,
+    PLURAL_ROUTERS,
+    name,
+    next,
   );
+
+  // Drop the appliance so the controller recreates it with fresh cloud-init.
+  // Root DV is named <router>-root (see controller dataVolumeTemplates).
+  const { custom } = getClusterClients(input.cluster);
+  try {
+    await custom.deleteNamespacedCustomObject({
+      group: "kubevirt.io",
+      version: "v1",
+      namespace,
+      plural: "virtualmachines",
+      name,
+    });
+  } catch (err) {
+    if (!isNotFoundError(err)) {
+      throw new Error(
+        `Failed to delete router VM ${namespace}/${name}: ${formatError(err)}`,
+        { cause: err },
+      );
+    }
+  }
+
+  const rootDv = `${name}-root`;
+  try {
+    await custom.deleteNamespacedCustomObject({
+      group: "cdi.kubevirt.io",
+      version: "v1beta1",
+      namespace,
+      plural: "datavolumes",
+      name: rootDv,
+    });
+  } catch (err) {
+    if (!isNotFoundError(err)) {
+      throw new Error(
+        `Failed to delete router root disk ${namespace}/${rootDv}: ${formatError(err)}`,
+        { cause: err },
+      );
+    }
+  }
 }
 
 export async function attachRouterVpc(
