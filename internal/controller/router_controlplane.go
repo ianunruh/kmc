@@ -9,6 +9,8 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	kmcv1alpha1 "github.com/ianunruh/kmc/api/v1alpha1"
@@ -82,7 +84,8 @@ func (r *RouterReconciler) ensureRouterControlPlane(ctx context.Context, obj *km
 		return fmt.Errorf("rolebinding: %w", err)
 	}
 
-	// Policy ConfigMap
+	// Policy ConfigMap — only write data keys when they change, and retry on
+	// conflict with agent annotation heartbeats (same object).
 	policyJSON, err := router.MarshalPolicyDoc(doc)
 	if err != nil {
 		return err
@@ -92,10 +95,34 @@ func (r *RouterReconciler) ensureRouterControlPlane(ctx context.Context, obj *km
 		script += "\n"
 	}
 
-	cm := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: cmName, Namespace: ns},
-	}
-	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		cm := &corev1.ConfigMap{}
+		err := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: cmName}, cm)
+		if apierrors.IsNotFound(err) {
+			cm = &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      cmName,
+					Namespace: ns,
+					Labels:    labels,
+					Annotations: map[string]string{
+						kmcv1alpha1.AnnotationAgentStatus: "Pending",
+					},
+				},
+				Data: map[string]string{
+					kmcv1alpha1.RouterPolicyDataKey:  policyJSON,
+					kmcv1alpha1.RouterAgentScriptKey: script,
+				},
+			}
+			if err := controllerutil.SetControllerReference(obj, cm, r.Scheme); err != nil {
+				return err
+			}
+			return r.Create(ctx, cm)
+		}
+		if err != nil {
+			return err
+		}
+
+		before := cm.DeepCopy()
 		cm.Labels = mergeLabels(cm.Labels, labels)
 		if cm.Annotations == nil {
 			cm.Annotations = map[string]string{}
@@ -106,13 +133,53 @@ func (r *RouterReconciler) ensureRouterControlPlane(ctx context.Context, obj *km
 		if cm.Data == nil {
 			cm.Data = map[string]string{}
 		}
-		cm.Data[kmcv1alpha1.RouterPolicyDataKey] = policyJSON
-		cm.Data[kmcv1alpha1.RouterAgentScriptKey] = script
-		return controllerutil.SetControllerReference(obj, cm, r.Scheme)
+		// Skip no-op data rewrites so we do not fight the agent on resourceVersion
+		// when policy generation is stable.
+		dataChanged := cm.Data[kmcv1alpha1.RouterPolicyDataKey] != policyJSON ||
+			cm.Data[kmcv1alpha1.RouterAgentScriptKey] != script
+		if dataChanged {
+			cm.Data[kmcv1alpha1.RouterPolicyDataKey] = policyJSON
+			cm.Data[kmcv1alpha1.RouterAgentScriptKey] = script
+		}
+		if err := controllerutil.SetControllerReference(obj, cm, r.Scheme); err != nil {
+			return err
+		}
+		// No meaningful change (data stable, labels/owners already set).
+		if !dataChanged &&
+			mapsEqual(before.Labels, cm.Labels) &&
+			mapsEqual(before.Annotations, cm.Annotations) &&
+			ownerRefsEqual(before.OwnerReferences, cm.OwnerReferences) {
+			return nil
+		}
+		return r.Update(ctx, cm)
 	}); err != nil {
 		return fmt.Errorf("configmap: %w", err)
 	}
 	return nil
+}
+
+func mapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
+}
+
+func ownerRefsEqual(a, b []metav1.OwnerReference) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].UID != b[i].UID || a[i].Name != b[i].Name || a[i].Kind != b[i].Kind {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *RouterReconciler) deleteRouterControlPlane(ctx context.Context, obj *kmcv1alpha1.Router) error {

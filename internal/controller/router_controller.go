@@ -17,8 +17,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	kmcv1alpha1 "github.com/ianunruh/kmc/api/v1alpha1"
@@ -292,11 +294,12 @@ func (r *RouterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	// Requeue while waiting for agent / VM.
+	// Requeue while waiting for agent / VM. When Ready, still poll so agent
+	// heartbeat annotations (filtered out of ConfigMap Owns) refresh status.
 	if phase != kmcv1alpha1.RouterPhaseReady {
 		return ctrl.Result{RequeueAfter: 20 * time.Second}, nil
 	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
 }
 
 func (r *RouterReconciler) reconcileDelete(ctx context.Context, obj *kmcv1alpha1.Router) (ctrl.Result, error) {
@@ -360,7 +363,9 @@ func (r *RouterReconciler) patchStatus(ctx context.Context, obj *kmcv1alpha1.Rou
 func (r *RouterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&kmcv1alpha1.Router{}).
-		Owns(&corev1.ConfigMap{}).
+		// Agent heartbeats only touch ConfigMap annotations; ignore those so we
+		// do not reconcile (and risk policy rewrites) every ~30s.
+		Owns(&corev1.ConfigMap{}, builder.WithPredicates(configMapDataChangedPredicate())).
 		Owns(&corev1.ServiceAccount{}).
 		Owns(&corev1.Secret{}).
 		Watches(&kmcv1alpha1.FloatingIP{}, handler.EnqueueRequestsFromMapFunc(r.mapFIPToRouter)).
@@ -368,6 +373,23 @@ func (r *RouterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&kmcv1alpha1.IPAddress{}, handler.EnqueueRequestsFromMapFunc(r.mapIPAddressToRouter),
 			builder.WithPredicates()).
 		Complete(r)
+}
+
+// configMapDataChangedPredicate ignores annotation-only updates (agent
+// heartbeat / status patches) so Owned ConfigMap events do not thrash.
+func configMapDataChangedPredicate() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldCM, ok1 := e.ObjectOld.(*corev1.ConfigMap)
+			newCM, ok2 := e.ObjectNew.(*corev1.ConfigMap)
+			if !ok1 || !ok2 {
+				return true
+			}
+			return !mapsEqual(oldCM.Data, newCM.Data) ||
+				!mapsEqual(oldCM.Labels, newCM.Labels) ||
+				!ownerRefsEqual(oldCM.OwnerReferences, newCM.OwnerReferences)
+		},
+	}
 }
 
 func (r *RouterReconciler) mapFIPToRouter(ctx context.Context, obj client.Object) []reconcile.Request {

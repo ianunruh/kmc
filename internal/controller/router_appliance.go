@@ -3,8 +3,10 @@ package controller
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
@@ -48,34 +50,10 @@ func (r *RouterReconciler) ensureRouterAppliance(
 		return false, "", false, fmt.Errorf("cluster pod/service CIDRs not configured (set --cluster-pod-cidrs / --cluster-service-cidrs)")
 	}
 
-	token, err := r.mintRouterAgentToken(ctx, obj)
-	if err != nil {
-		return false, "", false, err
-	}
-	apiServer := r.APIServerURL
-	if apiServer == "" {
-		apiServer = inClusterAPIServerURL()
-	}
-	caData, err := r.loadClusterCAData()
-	if err != nil {
-		return false, "", false, err
-	}
-
-	userData := buildRouterCloudInit(routerCloudInitInput{
-		SSHPublicKeys:   obj.Spec.Appliance.SSHPublicKeys,
-		KnownMultusMACs: collectMACs(ifaces, ext),
-		PodCIDRs:        r.ClusterPodCIDRs,
-		ServiceCIDRs:    r.ClusterServiceCIDRs,
-		Namespace:       obj.Namespace,
-		PolicyConfigMap: rt.ConfigMapName(obj.Name),
-		APIServer:       apiServer,
-		CAData:          caData,
-		AgentToken:      token,
-		AgentScript:     agent.Script,
-	})
-
+	// Cloud-init is first-boot only. Reminting a TokenRequest + rewriting the
+	// Secret every reconcile owns the Secret and requeues the Router forever.
 	secretName := rt.CloudInitSecretName(obj.Name)
-	if err := r.ensureCloudInitSecret(ctx, obj, secretName, userData); err != nil {
+	if err := r.ensureCloudInitSecretOnce(ctx, obj, secretName, ifaces, ext); err != nil {
 		return false, "", false, err
 	}
 
@@ -168,20 +146,69 @@ func inClusterAPIServerURL() string {
 	return fmt.Sprintf("https://%s:%s", host, port)
 }
 
-func (r *RouterReconciler) ensureCloudInitSecret(ctx context.Context, obj *kmcv1alpha1.Router, secretName, userData string) error {
-	sec := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: obj.Namespace},
+// ensureCloudInitSecretOnce creates the cloud-init Secret if missing. Existing
+// Secrets are left alone so reconcile does not thrash on TokenRequest/Secret
+// updates (and so long-lived agent tokens stay valid until appliance recreate).
+func (r *RouterReconciler) ensureCloudInitSecretOnce(
+	ctx context.Context,
+	obj *kmcv1alpha1.Router,
+	secretName string,
+	ifaces []resolvedInterface,
+	ext *resolvedExternal,
+) error {
+	sec := &corev1.Secret{}
+	err := r.Get(ctx, client.ObjectKey{Namespace: obj.Namespace, Name: secretName}, sec)
+	if err == nil {
+		return nil
 	}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sec, func() error {
-		sec.Labels = mergeLabels(sec.Labels, routerApplianceLabels(obj.Name))
-		sec.Type = corev1.SecretTypeOpaque
-		if sec.Data == nil {
-			sec.Data = map[string][]byte{}
-		}
-		sec.Data["userdata"] = []byte(userData)
-		return controllerutil.SetControllerReference(obj, sec, r.Scheme)
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
+
+	token, err := r.mintRouterAgentToken(ctx, obj)
+	if err != nil {
+		return err
+	}
+	apiServer := r.APIServerURL
+	if apiServer == "" {
+		apiServer = inClusterAPIServerURL()
+	}
+	caData, err := r.loadClusterCAData()
+	if err != nil {
+		return err
+	}
+
+	userData := buildRouterCloudInit(routerCloudInitInput{
+		SSHPublicKeys:   obj.Spec.Appliance.SSHPublicKeys,
+		KnownMultusMACs: collectMACs(ifaces, ext),
+		PodCIDRs:        r.ClusterPodCIDRs,
+		ServiceCIDRs:    r.ClusterServiceCIDRs,
+		Namespace:       obj.Namespace,
+		PolicyConfigMap: rt.ConfigMapName(obj.Name),
+		APIServer:       apiServer,
+		CAData:          caData,
+		AgentToken:      token,
+		AgentScript:     agent.Script,
 	})
-	return err
+
+	sec = &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: obj.Namespace,
+			Labels:    routerApplianceLabels(obj.Name),
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"userdata": []byte(userData),
+		},
+	}
+	if err := controllerutil.SetControllerReference(obj, sec, r.Scheme); err != nil {
+		return err
+	}
+	if err := r.Create(ctx, sec); err != nil && !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	return nil
 }
 
 func (r *RouterReconciler) buildRouterVM(
@@ -430,8 +457,14 @@ func (r *RouterReconciler) syncRouterVMNetworks(
 		})
 	}
 
-	// Keep/add desired
-	for netName, multus := range desired {
+	// Keep/add desired in sorted order (map range is non-deterministic).
+	desiredNames := make([]string, 0, len(desired))
+	for netName := range desired {
+		desiredNames = append(desiredNames, netName)
+	}
+	sort.Strings(desiredNames)
+	for _, netName := range desiredNames {
+		multus := desired[netName]
 		if existing, ok := existingNets[netName]; ok {
 			newNetworks = append(newNetworks, existing)
 		} else {
@@ -460,10 +493,15 @@ func (r *RouterReconciler) syncRouterVMNetworks(
 	}
 
 	// Mark removed Multus interfaces as absent (hot-unplug).
-	for name, existing := range existingIfaces {
-		if _, keep := desired[name]; keep {
-			continue
+	removedNames := make([]string, 0)
+	for name := range existingIfaces {
+		if _, keep := desired[name]; !keep {
+			removedNames = append(removedNames, name)
 		}
+	}
+	sort.Strings(removedNames)
+	for _, name := range removedNames {
+		existing := existingIfaces[name]
 		cp := map[string]interface{}{}
 		for k, v := range existing {
 			cp[k] = v
@@ -498,7 +536,27 @@ func (r *RouterReconciler) syncRouterVMNetworks(
 	// Also template annotations
 	_ = unstructured.SetNestedStringMap(vm.Object, ann, "spec", "template", "metadata", "annotations")
 
+	// Skip no-op patches so we do not thrash the VM resourceVersion each reconcile.
+	if vmSpecEqual(before, vm) {
+		return nil
+	}
 	return r.Patch(ctx, vm, client.MergeFrom(before))
+}
+
+func vmSpecEqual(a, b *unstructured.Unstructured) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	// Compare spec + annotations only (status/RV noise ignored).
+	type snap struct {
+		Ann  map[string]string `json:"a"`
+		Spec interface{}       `json:"s"`
+	}
+	as := snap{Ann: a.GetAnnotations(), Spec: a.Object["spec"]}
+	bs := snap{Ann: b.GetAnnotations(), Spec: b.Object["spec"]}
+	aj, _ := json.Marshal(as)
+	bj, _ := json.Marshal(bs)
+	return string(aj) == string(bj)
 }
 
 // multusIfaceName builds a DNS1123-ish interface name from a VPC name.

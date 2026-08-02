@@ -4,6 +4,7 @@ package router
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -177,11 +178,13 @@ func ParsePolicyDoc(raw string) (*PolicyDoc, error) {
 
 // MarshalPolicyDoc returns pretty-printed JSON (console uses 2-space indent).
 // Empty lists are emitted as [] (never null) so re-parse + re-render is stable.
+// Projected list fields are sorted for deterministic generation fingerprints.
 func MarshalPolicyDoc(doc *PolicyDoc) (string, error) {
 	if doc == nil {
 		return "", fmt.Errorf("policy doc is nil")
 	}
 	normalizePolicySlices(doc)
+	sortPolicyLists(doc)
 	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return "", err
@@ -230,22 +233,51 @@ func DefaultDHCP() PolicyDHCP {
 // PolicyEqualDesired compares control-plane-owned sections (ignores generation).
 // Used to decide whether to bump policy generation.
 //
-// Nil vs empty slices for leases/floatingIPs/portForwards must compare equal:
-// project* helpers return nil when empty, while ParsePolicyDoc normalizes to [].
-// Without this, every reconcile looks like a change and policy generation races
-// upward (ConfigMap write → watch → requeue → bump).
+// Normalizes nil vs empty slices and sorts projected list fields so apiserver
+// List order cannot look like a desired change (which races generation upward:
+// ConfigMap write → agent apply → annotation watch → reconcile → bump).
 func PolicyEqualDesired(a, b *PolicyDoc) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	// Normalize for comparison by zeroing generation and fixing nil slices.
 	ac := *a
 	bc := *b
 	ac.Metadata.Generation = 0
 	bc.Metadata.Generation = 0
 	normalizePolicySlices(&ac)
 	normalizePolicySlices(&bc)
+	// Defensive: compare in sorted order even if a caller forgot to sort on write.
+	sortPolicyLists(&ac)
+	sortPolicyLists(&bc)
 	aj, _ := json.Marshal(ac)
 	bj, _ := json.Marshal(bc)
 	return string(aj) == string(bj)
+}
+
+// sortPolicyLists sorts leases / floatingIPs / portForwards for stable compare.
+func sortPolicyLists(doc *PolicyDoc) {
+	if doc == nil {
+		return
+	}
+	if len(doc.Leases) > 1 {
+		sort.Slice(doc.Leases, func(i, j int) bool {
+			if doc.Leases[i].VPC != doc.Leases[j].VPC {
+				return doc.Leases[i].VPC < doc.Leases[j].VPC
+			}
+			if doc.Leases[i].IP != doc.Leases[j].IP {
+				return doc.Leases[i].IP < doc.Leases[j].IP
+			}
+			return doc.Leases[i].MAC < doc.Leases[j].MAC
+		})
+	}
+	if len(doc.FloatingIPs) > 1 {
+		sort.Slice(doc.FloatingIPs, func(i, j int) bool {
+			return doc.FloatingIPs[i].Public < doc.FloatingIPs[j].Public
+		})
+	}
+	if len(doc.PortForwards) > 1 {
+		sort.Slice(doc.PortForwards, func(i, j int) bool {
+			return doc.PortForwards[i].ID < doc.PortForwards[j].ID
+		})
+	}
 }

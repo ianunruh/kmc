@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"sort"
 	"strings"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -56,6 +57,7 @@ func (r *RouterReconciler) buildPolicyDoc(
 	if leases == nil {
 		leases = []rt.PolicyLease{}
 	}
+	sortPolicyLeases(leases)
 	doc.Leases = leases
 
 	fips, err := r.projectFloatingIPs(ctx, obj, attached)
@@ -65,6 +67,7 @@ func (r *RouterReconciler) buildPolicyDoc(
 	if fips == nil {
 		fips = []rt.PolicyFloatingIP{}
 	}
+	sortPolicyFloatingIPs(fips)
 	doc.FloatingIPs = fips
 
 	pfs, err := r.projectPortForwards(ctx, obj, attached)
@@ -89,9 +92,36 @@ func (r *RouterReconciler) buildPolicyDoc(
 		}
 		filteredPF = append(filteredPF, pf)
 	}
+	sortPolicyPortForwards(filteredPF)
 	doc.PortForwards = filteredPF
 
 	return &doc, nil
+}
+
+// Stable ordering so apiserver List order cannot flip policy.json and race
+// generation upward (write → agent apply → annotation watch → reconcile → bump).
+func sortPolicyLeases(in []rt.PolicyLease) {
+	sort.Slice(in, func(i, j int) bool {
+		if in[i].VPC != in[j].VPC {
+			return in[i].VPC < in[j].VPC
+		}
+		if in[i].IP != in[j].IP {
+			return in[i].IP < in[j].IP
+		}
+		return in[i].MAC < in[j].MAC
+	})
+}
+
+func sortPolicyFloatingIPs(in []rt.PolicyFloatingIP) {
+	sort.Slice(in, func(i, j int) bool {
+		return in[i].Public < in[j].Public
+	})
+}
+
+func sortPolicyPortForwards(in []rt.PolicyPortForward) {
+	sort.Slice(in, func(i, j int) bool {
+		return in[i].ID < in[j].ID
+	})
 }
 
 func (r *RouterReconciler) projectLeases(ctx context.Context, namespace string, attached map[string]struct{}) ([]rt.PolicyLease, error) {
