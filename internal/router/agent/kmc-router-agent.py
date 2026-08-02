@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """kmc-router-agent — reconcile DHCP/DNS/NAT/L3 from a policy ConfigMap.
 
-Stdlib only. Watches the router policy ConfigMap, owns private Multus L3
-(``ip addr`` by MAC), renders dnsmasq static leases per VPC interface,
-applies FORWARD/SNAT/floating IPs, reports status/heartbeat, and self-updates
-when the ConfigMap data key ``agent.py`` changes.
+Stdlib only. Watches the router policy ConfigMap, owns Multus L3
+(``ip addr`` by MAC) for private VPC gateways **and** the external primary,
+renders dnsmasq static leases per VPC interface, applies FORWARD/SNAT/floating
+IPs/port forwards, reports status/heartbeat, and self-updates when the
+ConfigMap data key ``agent.py`` changes.
 
-Private Multus gateway IPs are **not** configured by cloud-init netplan;
-this agent is the L3 owner so Multus hotplug can attach VPCs without recreate.
+Multus addresses are **not** configured by cloud-init netplan on the
+controller-owned appliance path; this agent is the L3 owner so FIPs/port
+forwards and Multus hotplug work without relying on netplan.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-AGENT_VERSION = "11"
+AGENT_VERSION = "12"
 
 ENV_FILE = os.environ.get("KMC_ENV_FILE", "/etc/kmc/router-agent.env")
 STATE_DIR = Path(os.environ.get("KMC_STATE_DIR", "/var/lib/kmc"))
@@ -233,8 +235,8 @@ def gateway_address(gateway: str) -> str:
 def ensure_private_l3(mac: str, gateway: str, cidr: str) -> str | None:
     """Bring up private Multus NIC and assign gateway/prefix. None if MAC missing.
 
-    Agent owns L3 for private VPC interfaces (not cloud-init netplan) so Multus
-    hotplug can land without recreating the appliance.
+    Agent owns L3 for private VPC interfaces so Multus hotplug can land without
+    recreating the appliance.
     """
     iface = if_by_mac(mac)
     if not iface:
@@ -252,6 +254,51 @@ def ensure_private_l3(mac: str, gateway: str, cidr: str) -> str | None:
         err = (result.stderr or result.stdout or "").strip()
         raise RuntimeError(f"ip addr replace {gw}/{prefix} dev {iface}: {err}")
     run(["sysctl", "-w", f"net.ipv4.conf.{iface}.rp_filter=2"], check=False)
+    return iface
+
+
+def ensure_external_primary(mac: str, primary_cidr: str, gateway: str) -> str | None:
+    """Bring up external Multus NIC, assign primaryCidr, install default route.
+
+    Returns interface name, or None if the MAC is not present yet (hotplug lag).
+    Secondary floating IPs / port-forward host addresses are still added as /32
+    by ensure_float_addr.
+    """
+    iface = if_by_mac(mac)
+    if not iface:
+        return None
+    run(["ip", "link", "set", iface, "up"], check=False)
+    run(["sysctl", "-w", f"net.ipv4.conf.{iface}.rp_filter=2"], check=False)
+
+    primary_cidr = (primary_cidr or "").strip()
+    primary_pub = primary_cidr.split("/")[0].strip() if primary_cidr else ""
+    if primary_cidr and primary_pub:
+        # Normalize prefix: remove same-IP different-prefix (e.g. leftover /32).
+        for existing in iface_ipv4_cidrs(iface):
+            if existing.split("/")[0] == primary_pub and existing != primary_cidr:
+                run(["ip", "addr", "del", existing, "dev", iface], check=False)
+        result = run(
+            ["ip", "addr", "replace", primary_cidr, "dev", iface],
+            check=False,
+        )
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(
+                f"ip addr replace {primary_cidr} dev {iface}: {err}"
+            )
+        run(["sysctl", "-w", f"net.ipv4.conf.{iface}.arp_notify=1"], check=False)
+        send_garp(iface, primary_pub)
+
+    gw = gateway_address(gateway) if gateway else ""
+    if gw:
+        # Pod NIC only carries cluster routes; external is the SNAT default path.
+        result = run(
+            ["ip", "route", "replace", "default", "via", gw, "dev", iface],
+            check=False,
+        )
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()
+            log(f"default route via {gw} dev {iface}: {err}")
     return iface
 
 
@@ -637,8 +684,15 @@ def ensure_float_addr(iface: str, pub: str) -> None:
     send_garp(iface, pub)
 
 
-def apply_external_and_floats(doc: dict[str, Any], private_ifaces: list[str]) -> None:
-    """SNAT/MASQUERADE + floating IPs + port forwards when external gateway is set."""
+def apply_external_and_floats(
+    doc: dict[str, Any], private_ifaces: list[str]
+) -> str | None:
+    """SNAT/MASQUERADE + floating IPs + port forwards when external gateway is set.
+
+    Owns external primary L3 (primaryCidr + default via pool gateway). Returns a
+    pending message if the public Multus NIC is not present yet; None when done
+    (including when external is absent).
+    """
     external = doc.get("external") or None
     floats = doc.get("floatingIPs") or []
     port_forwards = doc.get("portForwards") or []
@@ -654,21 +708,22 @@ def apply_external_and_floats(doc: dict[str, Any], private_ifaces: list[str]) ->
             # Best-effort: cannot know public iface without external; skip del
             pass
         set_managed_floats([])
-        return
+        return None
 
     public_mac = str(external.get("mac", "")).strip().lower()
     snat = external.get("snat", True)
     if not public_mac:
         log("external present but no mac; skip SNAT/floats")
-        return
-    public_if = if_by_mac(public_mac)
+        return None
+
+    primary_cidr = str(external.get("primaryCidr", "")).strip()
+    primary_pub = primary_cidr.split("/")[0].strip() if primary_cidr else ""
+    ext_gw = str(external.get("gateway", "")).strip()
+
+    public_if = ensure_external_primary(public_mac, primary_cidr, ext_gw)
     if not public_if:
-        raise RuntimeError(f"public NIC not found for {public_mac}")
+        return f"waiting for external Multus NIC ({public_mac})"
 
-    # Primary external address is usually already on the NIC via cloud-init.
-    primary_pub = str(external.get("primaryCidr", "")).split("/")[0].strip()
-
-    # Default route should already be on public via cloud-init netplan.
     # Ensure MASQUERADE for general egress when snat enabled.
     if snat:
         if (
@@ -746,11 +801,12 @@ def apply_external_and_floats(doc: dict[str, Any], private_ifaces: list[str]) ->
             return
         seen_pub.add(pub)
         new_floats.append(f"{pub}/32")
-        # Primary is managed by netplan; still ensure secondary FIPs/port-VIP.
+        # Primary is installed with its pool prefix by ensure_external_primary;
+        # secondary FIPs / port-forward host IPs land as /32.
         if pub != primary_pub:
             ensure_float_addr(public_if, pub)
         else:
-            # Announce primary so neighbors learn the router MAC (harmless if present).
+            # Re-announce primary so neighbors learn the router MAC.
             send_garp(public_if, pub)
 
     # Port-specific DNAT first (more specific than 1:1 float rules).
@@ -865,16 +921,17 @@ def apply_external_and_floats(doc: dict[str, Any], private_ifaces: list[str]) ->
 
     set_managed_floats(new_floats)
     log(
-        f"external on {public_if}: snat={snat} floats={len(floats)} "
-        f"portForwards={pf_count} managedAddrs={len(new_floats)}"
+        f"external on {public_if}: primary={primary_cidr or '-'} snat={snat} "
+        f"floats={len(floats)} portForwards={pf_count} managedAddrs={len(new_floats)}"
     )
+    return None
 
 
 def apply_policy(doc: dict[str, Any]) -> tuple[str, str, str]:
     """Apply RouterPolicy.
 
     Returns ``(status, generation, error)`` where status is Ready, Pending, or Error.
-    Pending means one or more private Multus NICs are not yet present (hotplug lag).
+    Pending means one or more Multus NICs (private or external) are not yet present.
     """
     meta = doc.get("metadata") or {}
     generation = str(meta.get("generation", ""))
@@ -945,12 +1002,14 @@ def apply_policy(doc: dict[str, Any]) -> tuple[str, str, str]:
             ):
                 iptables("-A", "FORWARD", "-i", a, "-o", b, "-j", "ACCEPT")
 
-    apply_external_and_floats(doc, private_ifaces)
+    ext_pending = apply_external_and_floats(doc, private_ifaces)
     reload_dnsmasq(leases_all if isinstance(leases_all, list) else [])
 
     if pending_macs:
         msg = f"waiting for Multus NIC(s): {', '.join(pending_macs)}"
         return "Pending", generation, msg
+    if ext_pending:
+        return "Pending", generation, ext_pending
     if not private_ifaces and interfaces:
         return "Pending", generation, "no private interfaces ready"
     return "Ready", generation, ""

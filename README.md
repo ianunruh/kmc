@@ -425,17 +425,20 @@ address returns to the public pool. Held addresses can be re-associated later
 without re-allocating. Deleting a guest VM also disassociates its floating IPs
 into the held state (leases are removed; public addresses are not released).
 
-**In-guest agent** (`console/app/vpcs/kmc-router-agent.py`, Python 3 stdlib only):
+**In-guest agent** (`internal/router/agent/kmc-router-agent.py`, Python 3 stdlib only):
 
 - Bootstrap copy is written by cloud-init; runtime source of truth is ConfigMap `agent.py`
-- **Owns private Multus L3**: for each policy interface, waits for MAC, `ip link set up`, `ip addr replace gateway/prefix` (not cloud-init netplan)
-- Reports **Pending** while Multus hotplug NICs are missing; **Ready** when all private ifaces have L3 + dnsmasq
+- **Owns Multus L3** (not cloud-init netplan):
+  - Private VPC ifaces: wait for MAC, `ip link set up`, `ip addr replace gateway/prefix`
+  - External primary: wait for MAC, `ip addr replace primaryCidr`, default route via pool gateway, GARP
+  - Secondary floating IPs / port-forward host addresses: `/32` on the public NIC
+- Reports **Pending** while Multus NICs (private or external) are missing; **Ready** when L3 + dnsmasq are applied
 - Watches the policy ConfigMap and applies DHCP/DNS, SNAT, 1:1 DNAT/SNAT floating IPs, and port-level DNAT
 - On each apply: rewrites static `dhcp-host` entries, **stops** dnsmasq, prunes the lease DB to MAC+IP pairs still in policy, then starts dnsmasq — so deleting a VM and recreating it can reuse the IPAM address with a new MAC (without this, dnsmasq keeps the old lease and logs `not using configured address … because it is leased to <old-mac>`)
 - Heartbeats via `kmc.ianunruh.com/agent-heartbeat-at` (~30s); kmc marks the agent **Stale** if the heartbeat is older than 90s
 - When kmc updates `agent.py`, the agent rewrites itself and re-execs
 
-Cloud-init **netplan** on the router only configures the **pod** NIC (cluster routes) and, when external is set at create/recreate, the **public** Multus IP + default route. Private Multus addresses are never written by netplan.
+Cloud-init on the controller-owned appliance only bootstraps the **pod** NIC (cluster routes to the apiserver) plus the agent binary/token. Multus addresses (private gateways and the external primary) are never written by netplan on that path.
 
 **Multi-VPC attach / detach (day-2)**
 

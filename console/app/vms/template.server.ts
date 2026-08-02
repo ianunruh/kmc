@@ -200,14 +200,14 @@ export type BuildVmManifestOpts = {
    */
   extraDisks?: ResolvedExtraDisk[];
   /**
-   * Shared router: Multus NICs keep MACs for the agent; private gateway L3 is
-   * owned by kmc-router-agent. Netplan MAC-matches private Multus NICs and
-   * configures pod (+ optional external Multus IP).
+   * Shared router: Multus NICs keep MACs for the agent; Multus L3 (private
+   * gateways + external primary) is owned by kmc-router-agent. Netplan only
+   * MAC-matches private Multus NICs and configures the pod NIC.
    */
   routerAgentOwnsPrivateL3?: boolean;
   /**
-   * When routerAgentOwnsPrivateL3, Multus allocation used for public netplan
-   * (external gateway). Private Multus are MAC-matched only (no addresses).
+   * Optional public Multus allocation for legacy netplan (external gateway).
+   * Prefer agent-owned primaryCidr; private Multus stay MAC-match only.
    */
   routerExternalAllocation?: AllocatedIp | null;
 };

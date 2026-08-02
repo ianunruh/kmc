@@ -902,10 +902,11 @@ export type BuildNetworkDataOpts = {
 };
 
 /**
- * Router netplan: Multus private NICs are MAC-matched only (no addresses —
- * agent owns L3). Optional external Multus still gets public IP + default
- * route from netplan on create/recreate. Pod/masquerade gets DHCP + cluster
- * routes so the agent can reach the apiserver.
+ * Legacy router netplan helper (console dual-path / tests).
+ * Controller-owned appliances do not use this: Multus private gateways and
+ * the external primary are owned by kmc-router-agent. When used, private Multus
+ * NICs are MAC-matched only; optional external may still get public IP + default
+ * route. Pod/masquerade gets DHCP + cluster routes for apiserver reachability.
  */
 export function buildRouterNetworkData(opts: {
   clusterCidrs?: string[];
