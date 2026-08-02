@@ -867,6 +867,47 @@ export async function associateFloatingIp(
   return mapFloatingIpAssociation(created);
 }
 
+/**
+ * Wait until the FloatingIP controller has claimed a public address into
+ * status.address (or fail on Error phase / timeout). Create responses are
+ * often empty for pool-allocated addresses until the first reconcile.
+ */
+async function waitForFloatingIpAddress(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+  opts?: { timeoutMs?: number; intervalMs?: number },
+): Promise<FloatingIpCr> {
+  const timeoutMs = opts?.timeoutMs ?? 30_000;
+  const intervalMs = opts?.intervalMs ?? 400;
+  const deadline = Date.now() + timeoutMs;
+  let last: FloatingIpCr | null = null;
+
+  while (Date.now() < deadline) {
+    last = await getNamespacedCustomObject<FloatingIpCr>(
+      cluster,
+      namespace,
+      PLURAL_FLOATING_IPS,
+      name,
+    );
+    const publicAddr =
+      last.status?.address?.trim() || last.spec?.address?.trim() || "";
+    if (publicAddr) return last;
+    if (last.status?.phase === "Error") {
+      const msg =
+        last.status?.conditions?.find((c) => c.type === "Ready")?.message ||
+        "FloatingIP allocation failed";
+      throw new Error(msg);
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+
+  throw new Error(
+    `Timed out waiting for public address on FloatingIP ${namespace}/${name}` +
+      (last?.status?.phase ? ` (phase ${last.status.phase})` : ""),
+  );
+}
+
 export async function reserveFloatingIp(
   input: ReserveFloatingIpRequest,
 ): Promise<FloatingIpAssociation> {
@@ -910,7 +951,17 @@ export async function reserveFloatingIp(
     PLURAL_FLOATING_IPS,
     body,
   );
-  return mapFloatingIpAssociation(created);
+  const name = created.metadata?.name?.trim();
+  if (!name) throw new Error("FloatingIP create returned no object name");
+
+  // Pool-allocated FIPs have empty status.address until the controller claims
+  // an IPAddress. Callers (port-forward create) need the real public address.
+  const ready = await waitForFloatingIpAddress(
+    input.cluster,
+    input.namespace,
+    name,
+  );
+  return mapFloatingIpAssociation(ready);
 }
 
 async function findFloatingIpByPublic(
@@ -1258,7 +1309,14 @@ export async function createPortForward(
       namespace: input.namespace,
       vpcName: input.vpcName,
     });
-    publicAddress = held.public;
+    publicAddress = held.public?.trim();
+    if (!publicAddress) {
+      // Do not fall back to router primary — that silently maps the rule to the
+      // wrong public IP while leaving an orphaned held FIP.
+      throw new Error(
+        `Allocated FloatingIP ${held.id} but public address is not ready yet`,
+      );
+    }
   }
   if (!publicAddress) {
     const primary = router.status?.external?.primaryCidr?.trim();
