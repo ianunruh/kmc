@@ -176,15 +176,36 @@ func ParsePolicyDoc(raw string) (*PolicyDoc, error) {
 }
 
 // MarshalPolicyDoc returns pretty-printed JSON (console uses 2-space indent).
+// Empty lists are emitted as [] (never null) so re-parse + re-render is stable.
 func MarshalPolicyDoc(doc *PolicyDoc) (string, error) {
 	if doc == nil {
 		return "", fmt.Errorf("policy doc is nil")
 	}
+	normalizePolicySlices(doc)
 	b, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return "", err
 	}
 	return string(b) + "\n", nil
+}
+
+// normalizePolicySlices ensures list fields are non-nil so JSON uses [] not null.
+func normalizePolicySlices(doc *PolicyDoc) {
+	if doc == nil {
+		return
+	}
+	if doc.Interfaces == nil {
+		doc.Interfaces = []PolicyInterface{}
+	}
+	if doc.Leases == nil {
+		doc.Leases = []PolicyLease{}
+	}
+	if doc.FloatingIPs == nil {
+		doc.FloatingIPs = []PolicyFloatingIP{}
+	}
+	if doc.PortForwards == nil {
+		doc.PortForwards = []PolicyPortForward{}
+	}
 }
 
 // PortForwardID builds a stable id for a port-forward rule.
@@ -208,15 +229,22 @@ func DefaultDHCP() PolicyDHCP {
 
 // PolicyEqualDesired compares control-plane-owned sections (ignores generation).
 // Used to decide whether to bump policy generation.
+//
+// Nil vs empty slices for leases/floatingIPs/portForwards must compare equal:
+// project* helpers return nil when empty, while ParsePolicyDoc normalizes to [].
+// Without this, every reconcile looks like a change and policy generation races
+// upward (ConfigMap write → watch → requeue → bump).
 func PolicyEqualDesired(a, b *PolicyDoc) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	// Normalize for comparison by zeroing generation.
+	// Normalize for comparison by zeroing generation and fixing nil slices.
 	ac := *a
 	bc := *b
 	ac.Metadata.Generation = 0
 	bc.Metadata.Generation = 0
+	normalizePolicySlices(&ac)
+	normalizePolicySlices(&bc)
 	aj, _ := json.Marshal(ac)
 	bj, _ := json.Marshal(bc)
 	return string(aj) == string(bj)

@@ -53,11 +53,17 @@ func (r *RouterReconciler) buildPolicyDoc(
 	if err != nil {
 		return nil, err
 	}
+	if leases == nil {
+		leases = []rt.PolicyLease{}
+	}
 	doc.Leases = leases
 
 	fips, err := r.projectFloatingIPs(ctx, obj, attached)
 	if err != nil {
 		return nil, err
+	}
+	if fips == nil {
+		fips = []rt.PolicyFloatingIP{}
 	}
 	doc.FloatingIPs = fips
 
@@ -65,7 +71,9 @@ func (r *RouterReconciler) buildPolicyDoc(
 	if err != nil {
 		return nil, err
 	}
-	doc.PortForwards = pfs
+	if pfs == nil {
+		pfs = []rt.PolicyPortForward{}
+	}
 
 	// Conflict: public address used as full FIP association and port-forward host.
 	associatedPublic := map[string]struct{}{}
@@ -74,8 +82,8 @@ func (r *RouterReconciler) buildPolicyDoc(
 			associatedPublic[f.Public] = struct{}{}
 		}
 	}
-	filteredPF := doc.PortForwards[:0]
-	for _, pf := range doc.PortForwards {
+	filteredPF := make([]rt.PolicyPortForward, 0, len(pfs))
+	for _, pf := range pfs {
 		if _, ok := associatedPublic[pf.Public]; ok {
 			continue // skip conflicting PF (FIP wins)
 		}
@@ -214,14 +222,21 @@ func (r *RouterReconciler) projectPortForwards(ctx context.Context, obj *kmcv1al
 
 // nextPolicyGeneration returns prev+1 when desired content changed, else prev.
 func nextPolicyGeneration(prev *rt.PolicyDoc, next *rt.PolicyDoc) int64 {
+	if next != nil && next.Metadata.Generation <= 0 {
+		next.Metadata.Generation = 1
+	}
 	if prev == nil {
-		if next.Metadata.Generation > 0 {
+		if next != nil && next.Metadata.Generation > 0 {
 			return next.Metadata.Generation
 		}
 		return 1
 	}
 	if rt.PolicyEqualDesired(prev, next) {
-		return prev.Metadata.Generation
+		g := prev.Metadata.Generation
+		if g < 1 {
+			return 1
+		}
+		return g
 	}
 	g := prev.Metadata.Generation + 1
 	if g < 1 {
