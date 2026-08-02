@@ -1,6 +1,6 @@
 /**
  * Console client for kmc.ianunruh.com IPAddress claims.
- * When KMC_IPADDRESS_CR=true, allocate creates these objects as the multi-replica lease.
+ * Create is the multi-replica lease (409 on concurrent claim of same address name).
  */
 import type { ClusterId } from "~/lib/types";
 import type { IpPoolConfig } from "~/lib/k8s/cluster-config.server";
@@ -32,10 +32,10 @@ export type IpAddressPoolRef = {
   name: string;
 };
 
-/** Operator-controlled: only exact "true" enables CR claims. */
-export function isIpAddressCrEnabled(): boolean {
-  return (process.env.KMC_IPADDRESS_CR ?? "").trim().toLowerCase() === "true";
-}
+export type IpAddressInterface = {
+  mac?: string;
+  hostname?: string;
+};
 
 /** DNS-1123 object name from IPv4 (10.40.1.20 → 10-40-1-20). */
 export function ipAddressObjectName(address: string): string {
@@ -44,7 +44,7 @@ export function ipAddressObjectName(address: string): string {
 
 /**
  * Map console IpPoolConfig to CR poolRef.
- * Static clusters.yaml pools → kind IPPool / id.
+ * Static pools → kind IPPool / id.
  * Dynamic VPC (`vpc:ns/name`) → kind VPC / name.
  */
 export function poolRefFromConfig(pool: IpPoolConfig): IpAddressPoolRef {
@@ -110,6 +110,8 @@ type IpAddressListItem = {
   spec?: {
     address?: string;
     claimRef?: { name?: string; kind?: string; namespace?: string };
+    interface?: { mac?: string; hostname?: string };
+    poolRef?: { kind?: string; name?: string };
   };
 };
 
@@ -120,6 +122,8 @@ export type CreateIpAddressClaimInput = {
   prefixLength: number;
   pool: IpPoolConfig;
   claim?: IpAddressClaimRef;
+  /** Guest NIC binding for DHCP lease projection (Router controller). */
+  interface?: IpAddressInterface;
 };
 
 /**
@@ -138,6 +142,8 @@ export async function createIpAddressClaim(
   const poolRef = poolRefFromConfig(input.pool);
   const claimNs = input.claim?.namespace?.trim() || ns;
   const claimName = input.claim?.name?.trim();
+  const mac = input.interface?.mac?.trim().toLowerCase();
+  const hostname = input.interface?.hostname?.trim();
 
   const body = {
     apiVersion: `${IPADDRESS_GROUP}/${IPADDRESS_VERSION}`,
@@ -162,6 +168,14 @@ export async function createIpAddressClaim(
               kind: input.claim?.kind?.trim() || "VirtualMachine",
               namespace: claimNs,
               name: claimName,
+            },
+          }
+        : {}),
+      ...(mac || hostname
+        ? {
+            interface: {
+              ...(mac ? { mac } : {}),
+              ...(hostname ? { hostname } : {}),
             },
           }
         : {}),

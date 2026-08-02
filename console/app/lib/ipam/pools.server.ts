@@ -27,13 +27,19 @@ import { IPAM_ANNOTATION_IPV4, IPAM_ANNOTATION_POOL } from "./constants";
 import {
   createIpAddressClaim,
   isIpAddressAlreadyExists,
-  isIpAddressCrEnabled,
   listIpAddressClaimAddresses,
   type IpAddressClaimRef,
+  type IpAddressInterface,
 } from "./ipaddress-cr.server";
+import {
+  isForbiddenError,
+  isNotFoundError,
+  listClusterCustomObjects,
+  PLURAL_IP_POOLS,
+  type IpPoolCr,
+} from "~/lib/k8s/networking-cr.server";
 
 export type { IpPoolConfig };
-export { isIpAddressCrEnabled } from "./ipaddress-cr.server";
 
 export type AllocatedIp = {
   poolId: string;
@@ -118,17 +124,68 @@ async function withPoolLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-export function listIpPools(cluster: ClusterId): IpPoolConfig[] {
+/** Map IPPool CR → console IpPoolConfig. */
+export function ipPoolConfigFromCr(cr: IpPoolCr): IpPoolConfig | null {
+  const id = cr.metadata?.name?.trim();
+  const multusNetwork = cr.spec?.multusNetwork?.trim();
+  const cidr = cr.spec?.cidr?.trim();
+  if (!id || !multusNetwork || !cidr) return null;
+  const cniType = cr.spec?.cni?.type?.trim();
+  const cniBridge = cr.spec?.cni?.bridge?.trim();
+  return {
+    id,
+    multusNetwork,
+    cidr,
+    gateway: cr.spec?.gateway?.trim() || undefined,
+    dns: (cr.spec?.dns ?? []).map((d) => d.trim()).filter(Boolean),
+    exclude: (cr.spec?.exclude ?? []).map((e) => e.trim()).filter(Boolean),
+    start: cr.spec?.start?.trim() || undefined,
+    end: cr.spec?.end?.trim() || undefined,
+    interface: cr.spec?.interface?.trim() || undefined,
+    ...(cniType && cniBridge
+      ? {
+          cni: {
+            type: cniType,
+            bridge: cniBridge,
+            vlan: cr.spec?.cni?.vlan ?? undefined,
+          },
+        }
+      : {}),
+  };
+}
+
+/**
+ * Cluster-scoped IPPool CRs (preferred). Falls back to clusters.yaml ipPools
+ * when the API is empty or unavailable so local config still works during rollout.
+ */
+export async function listIpPools(cluster: ClusterId): Promise<IpPoolConfig[]> {
+  try {
+    const items = await listClusterCustomObjects<IpPoolCr>(
+      cluster,
+      PLURAL_IP_POOLS,
+    );
+    const fromCr = items
+      .map(ipPoolConfigFromCr)
+      .filter((p): p is IpPoolConfig => p != null);
+    if (fromCr.length > 0) return fromCr;
+  } catch (err) {
+    if (!isNotFoundError(err) && !isForbiddenError(err)) {
+      console.error(
+        `listIpPools(${cluster}) CR:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
   return getClusterIdentity(cluster)?.ipPools ?? [];
 }
 
-export function findIpPoolForMultus(
+export async function findIpPoolForMultus(
   cluster: ClusterId,
   multusNetworkName: string,
-): IpPoolConfig | null {
+): Promise<IpPoolConfig | null> {
   const name = multusNetworkName.trim();
   if (!name) return null;
-  const pools = listIpPools(cluster);
+  const pools = await listIpPools(cluster);
   for (const pool of pools) {
     if (multusNetworkMatches(pool.multusNetwork, name)) {
       return pool;
@@ -145,7 +202,7 @@ export async function resolveIpPoolForMultus(
   multusNetworkName: string,
   namespace?: string,
 ): Promise<IpPoolConfig | null> {
-  const staticPool = findIpPoolForMultus(cluster, multusNetworkName);
+  const staticPool = await findIpPoolForMultus(cluster, multusNetworkName);
   if (staticPool) return staticPool;
 
   const name = multusNetworkName.trim();
@@ -157,12 +214,13 @@ export async function resolveIpPoolForMultus(
   return ipPoolFromVpcNad(nad, ref.namespace);
 }
 
-/** Resolve by dynamic pool id `vpc:namespace/name`. */
+/** Resolve by dynamic pool id `vpc:namespace/name` or static IPPool id. */
 export async function resolveIpPoolById(
   cluster: ClusterId,
   poolId: string,
 ): Promise<IpPoolConfig | null> {
-  const staticPool = listIpPools(cluster).find((p) => p.id === poolId);
+  const pools = await listIpPools(cluster);
+  const staticPool = pools.find((p) => p.id === poolId);
   if (staticPool) return staticPool;
 
   if (!poolId.startsWith("vpc:")) return null;
@@ -428,11 +486,38 @@ function collectFloatsFromPolicyCms(
   }
 }
 
+/**
+ * Public addresses held by FloatingIP / PortForward-related claims and
+ * legacy router policy ConfigMaps (read-only merge into the used set).
+ */
 export async function collectFloatingIpv4FromPolicies(
   cluster: ClusterId,
   parsed: ParsedCidr,
 ): Promise<Set<string>> {
   const used = new Set<string>();
+
+  // IPAddress claims in any namespace (covers FloatingIP companion claims).
+  try {
+    const fromCrs = await listIpAddressClaimAddresses({
+      cluster,
+      namespace: "",
+      clusterWide: true,
+    });
+    for (const a of fromCrs) {
+      try {
+        if (containsIpv4(parsed, a)) used.add(a);
+      } catch {
+        /* skip */
+      }
+    }
+  } catch (err) {
+    console.error(
+      "collectFloatingIpv4FromPolicies IPAddress list failed:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
+  // Legacy policy ConfigMaps (pre-cutover routers).
   const { core } = getClusterClients(cluster);
   try {
     const routerRes = await core.listConfigMapForAllNamespaces({
@@ -446,7 +531,7 @@ export async function collectFloatingIpv4FromPolicies(
     );
   } catch (err) {
     console.error(
-      "collectFloatingIpv4FromPolicies failed:",
+      "collectFloatingIpv4FromPolicies policy CMs failed:",
       err instanceof Error ? err.message : String(err),
     );
   }
@@ -532,11 +617,10 @@ export type AllocateIpv4Opts = {
    * Omit to use the pool gateway as usual.
    */
   gatewayOverride?: string | null;
-  /**
-   * Optional claimRef on the IPAddress CR (VM / router name).
-   * Required fields only used when KMC_IPADDRESS_CR=true.
-   */
+  /** claimRef on the IPAddress CR (VM name, etc.). */
   claim?: IpAddressClaimRef;
+  /** Guest NIC binding for Router DHCP lease projection. */
+  interface?: IpAddressInterface;
 };
 
 const IPADDRESS_CLAIM_MAX_ATTEMPTS = 64;
@@ -570,10 +654,8 @@ function buildAllocatedIp(
 /**
  * Allocate the next free IPv4 from the pool bound to this Multus NAD.
  * Returns null when the network has no configured pool.
- * Pass `namespace` so self-service VPC NADs (dynamic pools) can be resolved.
- *
- * When `KMC_IPADDRESS_CR=true`, creates a namespaced IPAddress CR as the lease
- * (409 → try next free). Namespace is required in that mode.
+ * Always creates a namespaced IPAddress CR as the lease (409 → try next free).
+ * Namespace is required.
  */
 export async function allocateIpv4ForMultus(
   cluster: ClusterId,
@@ -584,18 +666,15 @@ export async function allocateIpv4ForMultus(
   const pool = await resolveIpPoolForMultus(cluster, multusNetworkName, namespace);
   if (!pool) return null;
 
-  const crEnabled = isIpAddressCrEnabled();
   const ns = namespace?.trim() ?? "";
-  if (crEnabled && !ns) {
+  if (!ns) {
     throw new Error(
-      "namespace is required when KMC_IPADDRESS_CR=true (IPAddress claims are namespaced)",
+      "namespace is required for IPAddress claims (IPAddress is namespaced)",
     );
   }
 
   const lockKey = `${cluster}::${pool.id}`;
   return withPoolLock(lockKey, async () => {
-    // Re-resolve inside the lock so concurrent creates see fresh used set;
-    // pool config is stable for the NAD.
     const { parsed, range, exclude } = validatePool(pool);
     const { vms, vmis } = await listClusterVmsAndVmis(cluster);
     const used = collectUsedIpv4(pool, parsed, vms, vmis);
@@ -606,19 +685,17 @@ export async function allocateIpv4ForMultus(
       if (addr) used.add(addr);
     }
 
-    if (crEnabled) {
-      const staticPool = !pool.id.startsWith("vpc:");
-      const fromCrs = await listIpAddressClaimAddresses({
-        cluster,
-        namespace: ns,
-        clusterWide: staticPool,
-      });
-      for (const a of fromCrs) {
-        try {
-          if (containsIpv4(parsed, a)) used.add(a);
-        } catch {
-          /* skip */
-        }
+    const staticPool = !pool.id.startsWith("vpc:");
+    const fromCrs = await listIpAddressClaimAddresses({
+      cluster,
+      namespace: ns,
+      clusterWide: staticPool,
+    });
+    for (const a of fromCrs) {
+      try {
+        if (containsIpv4(parsed, a)) used.add(a);
+      } catch {
+        /* skip */
       }
     }
 
@@ -652,41 +729,35 @@ export async function allocateIpv4ForMultus(
         );
       }
 
-      if (crEnabled) {
-        try {
-          await createIpAddressClaim({
-            cluster,
-            namespace: ns,
-            address: preferred,
-            prefixLength: parsed.prefix,
-            pool,
-            claim: opts?.claim,
-          });
-        } catch (err) {
-          if (isIpAddressAlreadyExists(err)) {
-            throw new Error(
-              `Preferred address ${preferred} is already in use in pool "${pool.id}"`,
-              { cause: err },
-            );
-          }
-          throw err;
+      try {
+        await createIpAddressClaim({
+          cluster,
+          namespace: ns,
+          address: preferred,
+          prefixLength: parsed.prefix,
+          pool,
+          claim: opts?.claim,
+          interface: opts?.interface,
+        });
+      } catch (err) {
+        if (isIpAddressAlreadyExists(err)) {
+          throw new Error(
+            `Preferred address ${preferred} is already in use in pool "${pool.id}"`,
+            { cause: err },
+          );
         }
+        throw err;
       }
 
       return buildAllocatedIp(pool, parsed, preferred, opts);
     }
 
-    // Auto-pick: optionally claim via CR with 409 retry.
     for (let attempt = 0; attempt < IPADDRESS_CLAIM_MAX_ATTEMPTS; attempt++) {
       const address = firstFreeIpv4(range, used, claimExclude);
       if (!address) {
         throw new Error(
           `IP pool "${pool.id}" (${parsed.cidr}) on cluster ${cluster} is exhausted`,
         );
-      }
-
-      if (!crEnabled) {
-        return buildAllocatedIp(pool, parsed, address, opts);
       }
 
       try {
@@ -697,6 +768,7 @@ export async function allocateIpv4ForMultus(
           prefixLength: parsed.prefix,
           pool,
           claim: opts?.claim,
+          interface: opts?.interface,
         });
         return buildAllocatedIp(pool, parsed, address, opts);
       } catch (err) {

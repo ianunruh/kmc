@@ -35,8 +35,8 @@ export async function loader() {
     Array<{ id: string; start: number; end: number; bridge: string }>
   > = {};
   for (const id of contexts) {
-    if (!clusterHasVlanPools(id)) continue;
-    vlanByCluster[id] = listVlanPools(id).map((p) => ({
+    if (!(await clusterHasVlanPools(id))) continue;
+    vlanByCluster[id] = (await listVlanPools(id)).map((p) => ({
       id: p.id,
       start: p.start,
       end: p.end,

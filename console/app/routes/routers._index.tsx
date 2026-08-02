@@ -71,15 +71,13 @@ export async function action({ request }: Route.ActionArgs) {
       };
     }
     return runBulkAction(intent, targets, namespacedKey, async (t) => {
-      await deleteRouter(t.cluster, t.namespace, t.name, { force: false });
+      await deleteRouter(t.cluster, t.namespace, t.name);
     });
   }
 
   const cluster = String(form.get("cluster") ?? "");
   const namespace = String(form.get("namespace") ?? "");
   const name = String(form.get("name") ?? "");
-  const force = String(form.get("force") ?? "") === "true";
-
   if (intent !== "delete") {
     return { ok: false, error: `Unknown intent: ${intent}`, intent };
   }
@@ -87,7 +85,7 @@ export async function action({ request }: Route.ActionArgs) {
     return { ok: false, error: "Missing identity", intent };
   }
   try {
-    await deleteRouter(cluster, namespace, name, { force });
+    await deleteRouter(cluster, namespace, name);
     return { ok: true, intent };
   } catch (err) {
     return actionFailure("router.delete", err, {

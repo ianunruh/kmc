@@ -34,25 +34,23 @@ import {
 import { ensureStaticMultusNads } from "~/lib/k8s/static-nads.server";
 import {
   allocateIpv4ForMultus,
+  generateLocalMacAddress,
   parseMultusNetworkRef,
   parseIpv4AnnotationList,
 } from "~/lib/ipam/pools.server";
 import { IPAM_ANNOTATION_IPV4 } from "~/lib/ipam/constants";
 import {
   deleteIpAddressClaimsForVm,
-  isIpAddressCrEnabled,
   releaseIpAddressClaims,
 } from "~/lib/ipam/ipaddress-cr.server";
 import { getPlatformConsolePublicKey } from "~/vms/console-ssh-key.server";
 import {
   KMC_ANN_DISK_SIZE,
   KMC_ANN_RETAINED_AT,
-  KMC_ANN_ROUTER,
   KMC_BACKEND_LABEL_SELECTOR,
   KMC_INGRESS_LABEL_SELECTOR,
   KMC_LABEL_RESOURCE,
   KMC_LABEL_RETAINED_FROM_VM,
-  KMC_LABEL_ROLE,
   KMC_LABEL_TARGET_KIND,
   KMC_LABEL_VM,
   KMC_LABEL_VLAN,
@@ -61,7 +59,6 @@ import {
   KMC_RESERVED_VOLUME_NAMES,
   KMC_RESOURCE_NETWORK,
   KMC_RESOURCE_VPC,
-  KMC_ROLE_ROUTER,
   KMC_TARGET_KIND_VM,
   MANAGED_BY_LABEL,
   REUSABLE_DV_PHASES,
@@ -69,11 +66,11 @@ import {
 import { DNS1123_LABEL } from "~/lib/format";
 import { addressFromIpv4Annotation } from "~/lib/ipam/cidr";
 import {
-  ensureRouterVmIpamAnnotations,
-  listFloatingIpsFromRouterPolicies,
-  removeRouterLeasesForVm,
-  upsertRouterLease,
-} from "~/vpcs/router-policy.server";
+  getNamespacedCustomObject,
+  PLURAL_VPCS,
+  type VpcCr,
+} from "~/lib/k8s/networking-cr.server";
+import { listFloatingIps } from "~/vpcs/vpcs.server";
 import {
   bindAllocationsToNetworks,
   buildVirtualMachineManifest,
@@ -807,24 +804,6 @@ export async function getVm(
     throw err;
   }
 
-  // Router VMs: heal IPAM annotations when post-create VPC attach omitted them.
-  if (vm.metadata?.labels?.[KMC_LABEL_ROLE] === KMC_ROLE_ROUTER) {
-    try {
-      const healed = await ensureRouterVmIpamAnnotations(cluster, namespace, name);
-      if (healed) {
-        vm = (await custom.getNamespacedCustomObject({
-          group: "kubevirt.io",
-          version: "v1",
-          namespace,
-          plural: "virtualmachines",
-          name,
-        })) as KubeVm;
-      }
-    } catch {
-      /* best-effort */
-    }
-  }
-
   let vmi: KubeVmi | null = null;
   try {
     vmi = (await custom.getNamespacedCustomObject({
@@ -970,7 +949,7 @@ export async function listVms(clusterFilter?: ClusterId): Promise<{
               plural: "virtualmachines",
             }) as Promise<{ items?: KubeVm[] }>,
             loadInstanceTypeSizes(id),
-            listFloatingIpsFromRouterPolicies(id).catch(() => []),
+            listFloatingIps(id).then((r) => r.items).catch(() => []),
             loadClusterDataVolumeDiskIndex(id),
             core
               .listServiceForAllNamespaces({
@@ -1875,7 +1854,7 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
   const vmName = input.name.trim();
   const claimedAddresses: string[] = [];
   const releaseClaims = async () => {
-    if (!isIpAddressCrEnabled() || claimedAddresses.length === 0) return;
+    if (claimedAddresses.length === 0) return;
     await releaseIpAddressClaims(
       input.cluster,
       input.namespace,
@@ -1884,13 +1863,16 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
   };
 
   try {
-    // Sequential so multi-attach can reserve prior picks via extraUsed when
-    // two NADs resolve to the same pool (or we add more attachments later).
+    // Sequential so multi-attach can reserve prior picks via extraUsed.
+    // MAC is chosen before claim so IPAddress.spec.interface enables DHCP leases.
+    const dualHome =
+      multusNames.length > 0 && input.includePodNetwork !== false;
     const rawAllocations: Array<
       Awaited<ReturnType<typeof allocateIpv4ForMultus>>
     > = [];
     const extraUsed: string[] = [];
     for (const name of multusNames) {
+      const mac = generateLocalMacAddress();
       const alloc = await allocateIpv4ForMultus(
         input.cluster,
         name,
@@ -1898,22 +1880,21 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
         {
           extraUsed,
           claim: { name: vmName, namespace: input.namespace },
+          interface: { mac, hostname: vmName },
         },
       );
-      rawAllocations.push(alloc);
       if (alloc) {
+        alloc.macAddress = mac;
         extraUsed.push(alloc.address);
-        if (isIpAddressCrEnabled()) claimedAddresses.push(alloc.address);
+        claimedAddresses.push(alloc.address);
       }
+      rawAllocations.push(alloc);
     }
-    // Dual-home Multus VMs by default so browser Terminal (port-forward) works.
-    const dualHome =
-      multusNames.length > 0 && input.includePodNetwork !== false;
     const allocations = bindAllocationsToNetworks(multusNames, rawAllocations, {
       forceMac: dualHome,
     });
 
-    // Shared router: DHCP for VPC NICs + register static leases on the router policy.
+    // Shared router on VPC: use DHCP (controller projects leases from IPAddress).
     for (let i = 0; i < multusNames.length; i++) {
       const multusName = multusNames[i]!;
       const alloc = allocations[i];
@@ -1929,20 +1910,6 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
       alloc.dhcp4 = true;
       alloc.gateway = undefined;
       alloc.dns = [];
-      try {
-        await upsertRouterLease(input.cluster, input.namespace, routerName, {
-          vpc: ref.name,
-          mac: alloc.macAddress,
-          ip: alloc.address,
-          hostname: vmName,
-          vm: vmName,
-        });
-      } catch (leaseErr) {
-        throw new Error(
-          `Failed to register DHCP lease on router ${routerName}: ${formatError(leaseErr)}`,
-          { cause: leaseErr },
-        );
-      }
     }
 
     // Standalone root disk (not dataVolumeTemplates) so DV outlives the VM by default.
@@ -2051,12 +2018,6 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
       if (!summary.disk && rootDiskSizeAnn) summary.disk = rootDiskSizeAnn;
       return summary;
     } catch (err) {
-      // Best-effort: drop leases if VM create failed
-      try {
-        await removeRouterLeasesForVm(input.cluster, input.namespace, vmName);
-      } catch {
-        /* ignore */
-      }
       // Remove DVs we just created so retries are clean
       await rollbackCreatedDisks();
       throw new Error(formatError(err), { cause: err });
@@ -2067,23 +2028,22 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
   }
 }
 
-/** Read kmc.ianunruh.com/router annotation from a VPC NAD, if present. */
+/** Read status.routerRef from a VPC CR (controller-managed). */
 async function readVpcRouterName(
   cluster: ClusterId,
   namespace: string,
   vpcName: string,
 ): Promise<string | undefined> {
   try {
-    const { custom } = getClusterClients(cluster);
-    const nad = (await custom.getNamespacedCustomObject({
-      group: "k8s.cni.cncf.io",
-      version: "v1",
+    const vpc = await getNamespacedCustomObject<VpcCr>(
+      cluster,
       namespace,
-      plural: "network-attachment-definitions",
-      name: vpcName,
-    })) as { metadata?: { annotations?: Record<string, string> } };
-    return nad.metadata?.annotations?.[KMC_ANN_ROUTER]?.trim() || undefined;
-  } catch {
+      PLURAL_VPCS,
+      vpcName,
+    );
+    return vpc.status?.routerRef?.name?.trim() || undefined;
+  } catch (err) {
+    if (isNotFoundError(err)) return undefined;
     return undefined;
   }
 }
@@ -2807,21 +2767,13 @@ export async function deleteVm(
     );
   }
 
+  // Free IPAddress CRs (DHCP leases project from these).
   try {
-    await removeRouterLeasesForVm(cluster, namespace, name);
+    const ann = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
+    const addrs = ann ? parseIpv4AnnotationList(ann) : [];
+    await deleteIpAddressClaimsForVm(cluster, namespace, name, addrs);
   } catch (err) {
-    console.error("removeRouterLeasesForVm:", formatError(err));
-  }
-
-  // Free IPAddress CRs (when KMC_IPADDRESS_CR=true path was used).
-  if (isIpAddressCrEnabled()) {
-    try {
-      const ann = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
-      const addrs = ann ? parseIpv4AnnotationList(ann) : [];
-      await deleteIpAddressClaimsForVm(cluster, namespace, name, addrs);
-    } catch (err) {
-      console.error("deleteIpAddressClaimsForVm:", formatError(err));
-    }
+    console.error("deleteIpAddressClaimsForVm:", formatError(err));
   }
 
   try {

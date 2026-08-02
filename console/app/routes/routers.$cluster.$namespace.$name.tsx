@@ -34,7 +34,7 @@ export async function loader({ params }: Route.LoaderArgs) {
     throw new Response("Missing path params", { status: 400 });
   }
   const router = await getRouter(cluster, namespace, name);
-  const publicNetworks = listPublicEgressNetworks(cluster);
+  const publicNetworks = await listPublicEgressNetworks(cluster);
   const session = getRequestSession();
   const { keys: sshKeys } = await listSshKeysOrEmpty(session?.user ?? null);
 

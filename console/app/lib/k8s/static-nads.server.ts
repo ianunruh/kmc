@@ -95,7 +95,7 @@ export async function ensureStaticMultusNad(
   // Only materialize local NADs; explicit other-ns/name is operator-managed.
   if (ref.namespace !== ns) return;
 
-  const pool = findIpPoolForMultus(cluster, selected);
+  const pool = await findIpPoolForMultus(cluster, selected);
   if (!pool?.cni) return;
 
   const nadName = nadNameFromMultusRef(pool.multusNetwork);

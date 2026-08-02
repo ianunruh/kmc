@@ -935,7 +935,7 @@ export interface UpdateIngressRequest {
   membership?: BackendMembership;
 }
 
-// --- VPCs (Multus NAD + VLAN from cluster vlanPools) ---
+// --- VPCs (kmc.ianunruh.com VPC CR; controller owns Multus NAD + VLAN) ---
 
 export interface VpcSummary {
   cluster: ClusterId;
@@ -967,8 +967,8 @@ export interface VpcAttachedVm {
 }
 
 /**
- * Agent status reported on the router policy ConfigMap.
- * `Stale` is derived server-side when Ready/Pending but heartbeat is too old.
+ * Agent status from Router.status.agent (projected from the policy ConfigMap).
+ * `Stale` may be reported by the controller when heartbeat is too old.
  */
 export type RouterAgentStatus = "Ready" | "Error" | "Unknown" | "Pending" | "Stale";
 
@@ -1323,7 +1323,7 @@ export interface CreateVpcRequest {
   cidr?: string;
   gateway?: string;
   dns?: string[];
-  /** Prefer a specific vlanPools entry; default = first pool */
+  /** Prefer a specific VLANPool CR name; default = first pool */
   vlanPoolId?: string;
 }
 

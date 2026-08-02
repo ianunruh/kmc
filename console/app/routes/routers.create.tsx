@@ -80,7 +80,9 @@ export async function loader({ request }: Route.LoaderArgs) {
     }
   }
 
-  const publicNetworks = defaultCluster ? listPublicEgressNetworks(defaultCluster) : [];
+  const publicNetworks = defaultCluster
+    ? await listPublicEgressNetworks(defaultCluster)
+    : [];
 
   return {
     clusters,

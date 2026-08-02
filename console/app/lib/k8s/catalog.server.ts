@@ -118,7 +118,7 @@ export async function listNetworks(
     // created (createVm ensures the NAD). Without this, new namespaces never
     // list external / bridge-external in the launch picker.
     const existingNames = new Set(networks.map((n) => n.name));
-    for (const pool of listIpPools(cluster)) {
+    for (const pool of await listIpPools(cluster)) {
       if (!pool.cni) continue;
       const nadName = nadNameFromMultusRef(pool.multusNetwork);
       if (!nadName || existingNames.has(nadName)) continue;

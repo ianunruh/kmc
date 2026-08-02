@@ -35,10 +35,7 @@ import type {
   TopologyNetworkNode,
   TopologyVmNode,
 } from "~/lib/types";
-import {
-  listFloatingIpsFromRouterPolicies,
-  listPortForwardsFromRouterPolicies,
-} from "~/vpcs/router-policy.server";
+import { listFloatingIps, listPortForwards } from "~/vpcs/vpcs.server";
 
 import { listClusters } from "~/vms/vms.server";
 
@@ -378,8 +375,8 @@ async function loadClusterTopology(
 
   // Floating IPs: stamp target VMs + edges from the public Multus pool → target.
   try {
-    const floats = await listFloatingIpsFromRouterPolicies(cluster);
-    const pools = listIpPools(cluster);
+    const floats = (await listFloatingIps(cluster)).items;
+    const pools = await listIpPools(cluster);
     for (const f of floats) {
       if (f.state !== "associated") continue;
       const publicAddr =
@@ -452,8 +449,8 @@ async function loadClusterTopology(
 
   // Port forwards: public Multus → target (dashed, distinct from full FIP).
   try {
-    const pfs = await listPortForwardsFromRouterPolicies(cluster);
-    const pools = listIpPools(cluster);
+    const pfs = (await listPortForwards(cluster)).items;
+    const pools = await listIpPools(cluster);
     for (const pf of pfs) {
       const publicAddr =
         addressFromIpv4Annotation(pf.public) ?? pf.public.trim();

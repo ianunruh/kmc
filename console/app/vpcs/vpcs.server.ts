@@ -15,30 +15,18 @@ import type {
   PortForwardSummary,
   ReleaseFloatingIpRequest,
   ReserveFloatingIpRequest,
+  RouterAgentStatus,
+  RouterSummary,
   UpdateVpcRequest,
   VpcAttachedVm,
   VpcDetail,
   VpcSummary,
 } from "~/lib/types";
 import {
-  KMC_ANN_CIDR,
-  KMC_ANN_DESCRIPTION,
-  KMC_ANN_DNS,
-  KMC_ANN_GATEWAY,
-  KMC_ANN_OWNER,
-  KMC_ANN_ROUTER,
-  KMC_LABEL_RESOURCE,
   KMC_LABEL_ROLE,
   KMC_LABEL_ROUTER,
-  KMC_LABEL_VLAN,
-  KMC_LABEL_VLAN_POOL,
   KMC_LABEL_VPC,
-  KMC_RESOURCE_NETWORK,
-  KMC_RESOURCE_VPC,
   KMC_ROLE_ROUTER,
-  KMC_VPC_LABEL_SELECTOR,
-  MANAGED_BY_LABEL,
-  KMC_MANAGED_BY,
 } from "~/lib/k8s/constants";
 import { assertVmNamespaceAllowed } from "~/lib/k8s/catalog.server";
 import { getClusterClients, getConfiguredContexts } from "~/lib/k8s/clients.server";
@@ -53,49 +41,39 @@ import {
 } from "~/lib/ipam/cidr";
 import { IPAM_ANNOTATION_IPV4 } from "~/lib/ipam/constants";
 import {
+  findIpPoolForMultus,
   getIpPoolUsage,
   listIpPools,
   type IpPoolUsage,
 } from "~/lib/ipam/pools.server";
 import {
-  allocateVlan,
   clusterHasVlanPools,
   getVlanPool,
   listVlanPools,
 } from "~/lib/ipam/vlan-pools.server";
-import { DNS1123_LABEL } from "~/lib/format";
+import { DNS1123_LABEL, formatAge } from "~/lib/format";
 import { listClusters } from "~/vms/vms.server";
-import { buildNetworkAttachmentDefinition } from "./template.server";
 import {
-  associateRouterFloatingIp,
-  createRouterPortForward,
-  deleteRouterPortForward,
-  disassociateRouterFloatingIp,
-  externalPrimaryIpv4FromDoc,
-  getRouterPolicyConfigMap,
-  listFloatingIpsForVm as listFloatingIpsForVmCore,
-  listFloatingIpsFromRouterPolicies,
-  listPortForwardsForVm as listPortForwardsForVmCore,
-  listPortForwardsFromRouterPolicies,
-  releaseRouterFloatingIp,
-  reserveRouterFloatingIp,
-  summaryFromRouterPolicy,
-  syncRouterAgentScript,
-} from "./router-policy.server";
-
-type KubeNad = {
-  metadata?: {
-    name?: string;
-    namespace?: string;
-    uid?: string;
-    creationTimestamp?: string;
-    labels?: Record<string, string>;
-    annotations?: Record<string, string>;
-  };
-  spec?: {
-    config?: string;
-  };
-};
+  createNamespacedCustomObject,
+  deleteNamespacedCustomObject,
+  getNamespacedCustomObject,
+  isNotFoundError,
+  KMC_API,
+  kmcManagedLabels,
+  listClusterCustomObjects,
+  listNamespacedCustomObjects,
+  ownerAnnotation,
+  PLURAL_FLOATING_IPS,
+  PLURAL_PORT_FORWARDS,
+  PLURAL_ROUTERS,
+  PLURAL_VPCS,
+  portForwardObjectName,
+  replaceNamespacedCustomObject,
+  type FloatingIpCr,
+  type PortForwardCr,
+  type RouterCr,
+  type VpcCr,
+} from "~/lib/k8s/networking-cr.server";
 
 type KubeVm = {
   metadata?: {
@@ -122,11 +100,6 @@ type KubeVm = {
   };
 };
 
-/**
- * Pick the IPAM address for this VPC from a VM's ipv4 annotation.
- * Multi-attach stores comma-separated cidrHost values — prefer the one inside
- * the VPC CIDR when known; otherwise the sole / first entry.
- */
 function allocatedIpv4ForVpc(
   annotation: string | undefined,
   vpcCidr: string | undefined,
@@ -145,73 +118,12 @@ function allocatedIpv4ForVpc(
         const addr = addressFromIpv4Annotation(part);
         if (addr && containsIpv4(parsed, addr)) return part;
       }
-      // No annotation address falls in this VPC's CIDR (pod-only IPAM, etc.)
       return undefined;
     } catch {
-      /* fall through to first entry */
+      /* fall through */
     }
   }
-
   return parts[0];
-}
-
-function isNotFound(err: unknown): boolean {
-  const message = formatError(err).toLowerCase();
-  return message.includes("404") || message.includes("not found");
-}
-
-function parseDnsAnnotation(raw: string | undefined): string[] {
-  if (!raw?.trim()) return [];
-  return raw
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-function parseBridgeFromConfig(config: string | undefined): string | undefined {
-  if (!config?.trim()) return undefined;
-  try {
-    const parsed = JSON.parse(config) as { bridge?: string };
-    return parsed.bridge?.trim() || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function mapSummary(cluster: ClusterId, nad: KubeNad): VpcSummary {
-  const labels = nad.metadata?.labels ?? {};
-  const ann = nad.metadata?.annotations ?? {};
-  const vlanRaw = labels[KMC_LABEL_VLAN];
-  const vlan = vlanRaw ? Number(vlanRaw) : 0;
-  return {
-    cluster,
-    namespace: nad.metadata?.namespace ?? "default",
-    name: nad.metadata?.name ?? "unknown",
-    vlan: Number.isInteger(vlan) ? vlan : 0,
-    vlanPoolId: labels[KMC_LABEL_VLAN_POOL],
-    bridge: parseBridgeFromConfig(nad.spec?.config),
-    cidr: ann[KMC_ANN_CIDR],
-    gateway: ann[KMC_ANN_GATEWAY],
-    dns: parseDnsAnnotation(ann[KMC_ANN_DNS]),
-    description: ann[KMC_ANN_DESCRIPTION],
-    owner: ann[KMC_ANN_OWNER],
-    age: nad.metadata?.creationTimestamp ?? "",
-  };
-}
-
-/**
- * kmc VPC NADs use resource=vpc. Static Multus (ipPools) use resource=network
- * and may still have a VLAN label — those must not count as VPCs.
- */
-function isVpcNad(nad: KubeNad): boolean {
-  const labels = nad.metadata?.labels ?? {};
-  const resource = labels[KMC_LABEL_RESOURCE];
-  if (resource === KMC_RESOURCE_VPC) return true;
-  if (resource === KMC_RESOURCE_NETWORK) return false;
-  // Legacy: managed VPC NAD before resource label was always set.
-  return (
-    labels[MANAGED_BY_LABEL] === KMC_MANAGED_BY && labels[KMC_LABEL_VLAN] != null
-  );
 }
 
 function multusRefMatches(
@@ -226,7 +138,6 @@ function multusRefMatches(
   return false;
 }
 
-/** Validate optional IPAM fields (create + update). */
 export function validateVpcIpamFields(input: {
   cidr?: string;
   gateway?: string;
@@ -262,50 +173,221 @@ export function validateCreateVpcInput(input: CreateVpcRequest): void {
   validateVpcIpamFields(input);
 }
 
-/**
- * Apply description + optional IPAM annotations onto a NAD annotation map.
- * When IPAM is disabled (no cidr), removes cidr/gateway/dns keys.
- */
-export function applyVpcMutableAnnotations(
-  existing: Record<string, string>,
-  input: {
-    description?: string;
-    cidr?: string;
-    gateway?: string;
-    dns?: string[];
-  },
-): Record<string, string> {
-  const next = { ...existing };
+function mapVpcSummary(cluster: ClusterId, cr: VpcCr): VpcSummary {
+  const vlan = cr.status?.vlan ?? 0;
+  return {
+    cluster,
+    namespace: cr.metadata?.namespace ?? "default",
+    name: cr.metadata?.name ?? "unknown",
+    vlan: Number.isInteger(vlan) ? vlan : 0,
+    vlanPoolId: cr.spec?.vlanPoolRef?.name,
+    bridge: cr.status?.bridge?.trim() || undefined,
+    cidr: cr.spec?.cidr?.trim() || undefined,
+    gateway: cr.spec?.gateway?.trim() || undefined,
+    dns: (cr.spec?.dns ?? []).map((d) => d.trim()).filter(Boolean),
+    description: cr.spec?.description?.trim() || undefined,
+    owner: cr.metadata?.annotations?.["kmc.ianunruh.com/owner"],
+    age: cr.metadata?.creationTimestamp ?? "",
+  };
+}
 
-  const desc = input.description?.trim();
-  if (desc) {
-    next[KMC_ANN_DESCRIPTION] = desc;
-  } else {
-    delete next[KMC_ANN_DESCRIPTION];
+function agentStatusFromRouter(r: RouterCr): RouterAgentStatus | undefined {
+  const raw = r.status?.agent?.status?.trim();
+  if (!raw) return undefined;
+  if (raw === "Ready" || raw === "Error" || raw === "Pending" || raw === "Unknown") {
+    return raw;
+  }
+  return "Unknown";
+}
+
+function routerSummaryFromCr(
+  cluster: ClusterId,
+  cr: RouterCr,
+): RouterSummary {
+  const name = cr.metadata?.name ?? "unknown";
+  const namespace = cr.metadata?.namespace ?? "default";
+  const ifaces = cr.status?.interfaces ?? cr.spec?.vpcs?.map((v) => ({ vpc: v.name })) ?? [];
+  return {
+    cluster,
+    namespace,
+    name,
+    vpcNames: ifaces.map((i) => i.vpc).filter((v): v is string => Boolean(v)),
+    hasExternal: Boolean(
+      cr.status?.external?.multusNetwork?.trim() ||
+        cr.spec?.external?.multusNetwork?.trim(),
+    ),
+    agentStatus: agentStatusFromRouter(cr),
+    agentHeartbeatAt: cr.status?.agent?.heartbeatAt,
+    age: cr.metadata?.creationTimestamp
+      ? formatAge(cr.metadata.creationTimestamp)
+      : "—",
+  };
+}
+
+function floatingIpState(cr: FloatingIpCr): "associated" | "held" {
+  if (cr.spec?.privateAddress?.trim()) return "associated";
+  if (cr.status?.phase === "Associated") return "associated";
+  return "held";
+}
+
+function mapFloatingIpAssociation(cr: FloatingIpCr): FloatingIpAssociation {
+  const publicAddr =
+    cr.status?.address?.trim() || cr.spec?.address?.trim() || "";
+  const prefix = cr.status?.prefixLength ?? 32;
+  const privateAddr = cr.spec?.privateAddress?.trim() || undefined;
+  return {
+    id: cr.metadata?.name ?? publicAddr,
+    public: publicAddr,
+    prefix,
+    private: privateAddr,
+    targetVm: cr.spec?.targetVM?.name,
+    state: floatingIpState(cr),
+  };
+}
+
+function mapFloatingIpSummary(
+  cluster: ClusterId,
+  cr: FloatingIpCr,
+  router?: RouterCr | null,
+): FloatingIpSummary {
+  const assoc = mapFloatingIpAssociation(cr);
+  return {
+    cluster,
+    namespace: cr.metadata?.namespace ?? "",
+    vpcName: cr.spec?.vpcRef?.name ?? "",
+    id: assoc.id,
+    public: assoc.public,
+    prefix: assoc.prefix,
+    private: assoc.private,
+    targetVm: assoc.targetVm,
+    state: assoc.state,
+    routerName:
+      cr.spec?.routerRef?.name ||
+      router?.metadata?.name ||
+      undefined,
+    agentStatus: router ? agentStatusFromRouter(router) : undefined,
+    agentHeartbeatAt: router?.status?.agent?.heartbeatAt,
+    policyConfigMap: router?.status?.policyConfigMap,
+  };
+}
+
+function mapPortForwardAssociation(
+  cr: PortForwardCr,
+  vpcName?: string,
+): PortForwardAssociation {
+  const protocol =
+    (cr.spec?.protocol ?? "TCP").toUpperCase() === "UDP" ? "udp" : "tcp";
+  return {
+    id: cr.metadata?.name ?? "",
+    public: cr.spec?.publicAddress?.trim() ?? "",
+    publicPort: cr.spec?.publicPort ?? 0,
+    private: cr.spec?.privateAddress?.trim() ?? "",
+    privatePort: cr.spec?.privatePort ?? 0,
+    protocol,
+    targetVm: cr.spec?.targetVM?.name,
+    vpc: cr.spec?.vpcRef?.name ?? vpcName,
+  };
+}
+
+function mapPortForwardSummary(
+  cluster: ClusterId,
+  cr: PortForwardCr,
+  router?: RouterCr | null,
+): PortForwardSummary {
+  const assoc = mapPortForwardAssociation(cr);
+  return {
+    cluster,
+    namespace: cr.metadata?.namespace ?? "",
+    vpcName: cr.spec?.vpcRef?.name ?? "",
+    id: assoc.id,
+    public: assoc.public,
+    publicPort: assoc.publicPort,
+    private: assoc.private,
+    privatePort: assoc.privatePort,
+    protocol: assoc.protocol,
+    targetVm: assoc.targetVm,
+    routerName:
+      cr.spec?.routerRef?.name ||
+      router?.metadata?.name ||
+      undefined,
+    agentStatus: router ? agentStatusFromRouter(router) : undefined,
+    agentHeartbeatAt: router?.status?.agent?.heartbeatAt,
+    policyConfigMap: router?.status?.policyConfigMap,
+  };
+}
+
+async function loadRouter(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+): Promise<RouterCr | null> {
+  try {
+    return await getNamespacedCustomObject<RouterCr>(
+      cluster,
+      namespace,
+      PLURAL_ROUTERS,
+      name,
+    );
+  } catch (err) {
+    if (isNotFoundError(err)) return null;
+    throw err;
+  }
+}
+
+async function resolvePublicPoolForRouter(
+  cluster: ClusterId,
+  router: RouterCr,
+): Promise<{ poolId: string; multusNetwork: string }> {
+  const multus =
+    router.status?.external?.multusNetwork?.trim() ||
+    router.spec?.external?.multusNetwork?.trim();
+  if (!multus) {
+    throw new Error(
+      `Router ${router.metadata?.name} has no external Multus network`,
+    );
+  }
+  const pool = await findIpPoolForMultus(cluster, multus);
+  if (!pool) {
+    throw new Error(
+      `No IPPool found for external Multus network "${multus}" — create an IPPool CR`,
+    );
+  }
+  return { poolId: pool.id, multusNetwork: multus };
+}
+
+async function resolvePrivateOnVpc(input: {
+  cluster: ClusterId;
+  namespace: string;
+  vpcName: string;
+  vpcCidr: string;
+  privateIpv4?: string;
+  targetVm?: string;
+}): Promise<{ privateIpv4: string; targetVm?: string }> {
+  let privateIpv4 = input.privateIpv4?.trim();
+  const targetVm = input.targetVm?.trim() || undefined;
+
+  if (!privateIpv4 && targetVm) {
+    const { custom } = getClusterClients(input.cluster);
+    const vm = (await custom.getNamespacedCustomObject({
+      group: "kubevirt.io",
+      version: "v1",
+      namespace: input.namespace,
+      plural: "virtualmachines",
+      name: targetVm,
+    })) as KubeVm;
+    const ann = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
+    const fromAnn = allocatedIpv4ForVpc(ann, input.vpcCidr);
+    privateIpv4 = addressFromIpv4Annotation(fromAnn ?? "") ?? fromAnn;
   }
 
-  const cidr = input.cidr?.trim();
-  if (cidr) {
-    next[KMC_ANN_CIDR] = cidr;
-    const gw = input.gateway?.trim();
-    if (gw) {
-      next[KMC_ANN_GATEWAY] = gw;
-    } else {
-      delete next[KMC_ANN_GATEWAY];
-    }
-    const dns = (input.dns ?? []).map((d) => d.trim()).filter(Boolean);
-    if (dns.length > 0) {
-      next[KMC_ANN_DNS] = dns.join(",");
-    } else {
-      delete next[KMC_ANN_DNS];
-    }
-  } else {
-    delete next[KMC_ANN_CIDR];
-    delete next[KMC_ANN_GATEWAY];
-    delete next[KMC_ANN_DNS];
+  if (!privateIpv4) {
+    throw new Error("privateIpv4 or targetVm with IPAM address is required");
   }
-
-  return next;
+  parseIpv4(privateIpv4);
+  if (!containsIpv4(parseCidr(input.vpcCidr), privateIpv4)) {
+    throw new Error(`private address ${privateIpv4} is outside ${input.vpcCidr}`);
+  }
+  return { privateIpv4, targetVm };
 }
 
 export async function listVpcs(clusterFilter?: ClusterId): Promise<{
@@ -317,34 +399,17 @@ export async function listVpcs(clusterFilter?: ClusterId): Promise<{
   const clusters = await listClusters();
   const byId = new Map(clusters.map((c) => [c.id, c]));
   const items: VpcSummary[] = [];
-  const vlanPoolClusters = contexts.filter((id) => clusterHasVlanPools(id));
+  const vlanPoolClusters: string[] = [];
 
   await Promise.all(
     contexts.map(async (id) => {
       const cluster = byId.get(id);
       if (cluster && !cluster.reachable) return;
       try {
-        const { custom } = getClusterClients(id);
-        let nads: KubeNad[] = [];
-        try {
-          const res = (await custom.listClusterCustomObject({
-            group: "k8s.cni.cncf.io",
-            version: "v1",
-            plural: "network-attachment-definitions",
-            labelSelector: KMC_VPC_LABEL_SELECTOR,
-          })) as { items?: KubeNad[] };
-          nads = res.items ?? [];
-        } catch {
-          const res = (await custom.listClusterCustomObject({
-            group: "k8s.cni.cncf.io",
-            version: "v1",
-            plural: "network-attachment-definitions",
-          })) as { items?: KubeNad[] };
-          nads = (res.items ?? []).filter(isVpcNad);
-        }
-        for (const nad of nads) {
-          if (!isVpcNad(nad)) continue;
-          items.push(mapSummary(id, nad));
+        if (await clusterHasVlanPools(id)) vlanPoolClusters.push(id);
+        const crs = await listClusterCustomObjects<VpcCr>(id, PLURAL_VPCS);
+        for (const cr of crs) {
+          items.push(mapVpcSummary(id, cr));
         }
       } catch (err) {
         if (cluster) {
@@ -387,9 +452,6 @@ export async function listAttachedVms(
     const networks = vm.spec?.template?.spec?.networks ?? [];
     for (const net of networks) {
       if (multusRefMatches(net.multus?.networkName, namespace, name)) {
-        // Prefer same-namespace match for bare names; if bare name and VM is
-        // in another ns, Multus would not resolve local NAD — still count
-        // explicit ns/name refs from anywhere.
         const ref = net.multus?.networkName?.trim() ?? "";
         if (ref === name && vmNs !== namespace) continue;
         const ann = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
@@ -421,110 +483,53 @@ export async function getVpc(
   namespace: string,
   name: string,
 ): Promise<VpcDetail> {
-  const { custom } = getClusterClients(cluster);
-  let nad: KubeNad;
+  let cr: VpcCr;
   try {
-    nad = (await custom.getNamespacedCustomObject({
-      group: "k8s.cni.cncf.io",
-      version: "v1",
+    cr = await getNamespacedCustomObject<VpcCr>(
+      cluster,
       namespace,
-      plural: "network-attachment-definitions",
+      PLURAL_VPCS,
       name,
-    })) as KubeNad;
+    );
   } catch (err) {
-    if (isNotFound(err)) {
+    if (isNotFoundError(err)) {
       throw new Response("VPC not found", { status: 404 });
     }
     throw new Error(formatError(err), { cause: err });
   }
 
-  if (!isVpcNad(nad)) {
-    throw new Response("Not a kmc-managed VPC", { status: 404 });
-  }
-
-  const summary = mapSummary(cluster, nad);
-  const [attachedVms, ipUsage] = await Promise.all([
+  const summary = mapVpcSummary(cluster, cr);
+  const [attachedVms, ipUsage, fipCrs, pfCrs] = await Promise.all([
     listAttachedVms(cluster, namespace, name, { cidr: summary.cidr }),
     summary.cidr
       ? getIpPoolUsage(cluster, `vpc:${namespace}/${name}`).catch(() => null)
       : Promise.resolve(null),
+    listNamespacedCustomObjects<FloatingIpCr>(
+      cluster,
+      namespace,
+      PLURAL_FLOATING_IPS,
+    ).catch(() => [] as FloatingIpCr[]),
+    listNamespacedCustomObjects<PortForwardCr>(
+      cluster,
+      namespace,
+      PLURAL_PORT_FORWARDS,
+    ).catch(() => [] as PortForwardCr[]),
   ]);
 
-  // Shared router pointer + floating IPs / port forwards from router policy
   let router: VpcDetail["router"];
-  let floatingIps: FloatingIpAssociation[] = [];
-  let portForwards: PortForwardAssociation[] = [];
-  const routerNameAnn = nad.metadata?.annotations?.[KMC_ANN_ROUTER]?.trim();
-  if (routerNameAnn) {
+  const routerName =
+    cr.status?.routerRef?.name?.trim() ||
+    undefined;
+  if (routerName) {
     try {
-      await syncRouterAgentScript(cluster, namespace, routerNameAnn).catch(
-        () => false,
-      );
-      const rp = await getRouterPolicyConfigMap(cluster, namespace, routerNameAnn);
-      if (rp) {
-        router = summaryFromRouterPolicy(
-          cluster,
-          namespace,
-          routerNameAnn,
-          rp.doc,
-          rp.annotations,
-          rp.creationTimestamp,
-        );
-        floatingIps = (rp.doc?.floatingIPs ?? [])
-          .filter((f) => {
-            if (f.vpc === name) return true;
-            if (!f.vpc && f.private && summary.cidr) {
-              try {
-                return containsIpv4(parseCidr(summary.cidr), f.private);
-              } catch {
-                return false;
-              }
-            }
-            // held with no vpc: only if single-interface router
-            if (!f.private && !f.vpc) {
-              return (rp.doc?.interfaces?.length ?? 0) === 1;
-            }
-            return false;
-          })
-          .map((f) => ({
-            id: f.id,
-            public: f.public,
-            prefix: f.prefix,
-            private: f.private,
-            targetVm: f.targetVm,
-            state: (f.private?.trim() ? "associated" : "held") as
-              | "associated"
-              | "held",
-          }));
-        portForwards = (rp.doc?.portForwards ?? [])
-          .filter((pf) => {
-            if (pf.vpc === name) return true;
-            if (!pf.vpc && pf.private && summary.cidr) {
-              try {
-                return containsIpv4(parseCidr(summary.cidr), pf.private);
-              } catch {
-                return false;
-              }
-            }
-            return false;
-          })
-          .map((pf) => ({
-            id: pf.id,
-            public: pf.public,
-            publicPort: pf.publicPort,
-            private: pf.private,
-            privatePort: pf.privatePort,
-            protocol: (pf.protocol === "udp" ? "udp" : "tcp") as
-              | "tcp"
-              | "udp",
-            targetVm: pf.targetVm,
-            vpc: pf.vpc ?? name,
-          }));
+      const rtr = await loadRouter(cluster, namespace, routerName);
+      if (rtr) {
+        router = routerSummaryFromCr(cluster, rtr);
       } else {
         router = {
           cluster,
           namespace,
-          name: routerNameAnn,
+          name: routerName,
           vpcNames: [name],
           hasExternal: false,
           age: "—",
@@ -534,7 +539,7 @@ export async function getVpc(
       router = {
         cluster,
         namespace,
-        name: routerNameAnn,
+        name: routerName,
         vpcNames: [name],
         hasExternal: false,
         age: "—",
@@ -542,12 +547,19 @@ export async function getVpc(
     }
   }
 
+  const floatingIps = fipCrs
+    .filter((f) => f.spec?.vpcRef?.name === name)
+    .map(mapFloatingIpAssociation);
+  const portForwards = pfCrs
+    .filter((p) => p.spec?.vpcRef?.name === name)
+    .map((p) => mapPortForwardAssociation(p, name));
+
   return {
     ...summary,
-    uid: nad.metadata?.uid,
-    labels: nad.metadata?.labels ?? {},
+    uid: cr.metadata?.uid,
+    labels: cr.metadata?.labels ?? {},
     annotations: Object.fromEntries(
-      Object.entries(nad.metadata?.annotations ?? {}).filter(
+      Object.entries(cr.metadata?.annotations ?? {}).filter(
         ([k]) => !k.startsWith("kubectl.kubernetes.io/"),
       ),
     ),
@@ -570,19 +582,21 @@ export async function getVpc(
 
 /**
  * Static Multus networks with IP pools — candidates for router external gateway.
- * Excludes the VPC itself when it is also listed as an ipPool multusNetwork.
  */
-export function listPublicEgressNetworks(
+export async function listPublicEgressNetworks(
   cluster: ClusterId,
   opts?: { excludeMultus?: string },
-): Array<{
-  id: string;
-  multusNetwork: string;
-  cidr: string;
-  gateway?: string;
-}> {
+): Promise<
+  Array<{
+    id: string;
+    multusNetwork: string;
+    cidr: string;
+    gateway?: string;
+  }>
+> {
   const exclude = opts?.excludeMultus?.trim();
-  return listIpPools(cluster)
+  const pools = await listIpPools(cluster);
+  return pools
     .filter((p) => {
       if (!exclude) return true;
       return !multusRefMatches(p.multusNetwork, "", exclude);
@@ -595,9 +609,6 @@ export function listPublicEgressNetworks(
     }));
 }
 
-/**
- * First usable host in a CIDR (network+1 for prefix ≤ 30) — default VPC gateway.
- */
 export function defaultGatewayAddress(cidr: string): string {
   const parsed = parseCidr(cidr);
   const range = usableHostRange(parsed);
@@ -609,14 +620,12 @@ export async function getVpcYaml(
   namespace: string,
   name: string,
 ): Promise<string> {
-  const { custom } = getClusterClients(cluster);
-  const obj = await custom.getNamespacedCustomObject({
-    group: "k8s.cni.cncf.io",
-    version: "v1",
+  const obj = await getNamespacedCustomObject(
+    cluster,
     namespace,
-    plural: "network-attachment-definitions",
+    PLURAL_VPCS,
     name,
-  });
+  );
   return toResourceYaml(obj);
 }
 
@@ -624,42 +633,57 @@ export async function createVpc(input: CreateVpcRequest): Promise<VpcSummary> {
   validateCreateVpcInput(input);
   await assertVmNamespaceAllowed(input.cluster, input.namespace);
 
-  if (!clusterHasVlanPools(input.cluster)) {
+  if (!(await clusterHasVlanPools(input.cluster))) {
     throw new Error(
-      `Cluster "${input.cluster}" has no vlanPools configured — add vlanPools to clusters.yaml`,
+      `Cluster "${input.cluster}" has no VLANPool CRs — apply a VLANPool (see deploy/controller/examples)`,
     );
   }
 
-  const poolHint = getVlanPool(input.cluster, input.vlanPoolId);
-  if (input.vlanPoolId?.trim() && !poolHint) {
+  const pool = await getVlanPool(input.cluster, input.vlanPoolId);
+  if (!pool) {
     throw new Error(
-      `VLAN pool "${input.vlanPoolId}" not found on cluster ${input.cluster}`,
+      input.vlanPoolId?.trim()
+        ? `VLAN pool "${input.vlanPoolId}" not found on cluster ${input.cluster}`
+        : `No VLAN pool available on cluster ${input.cluster}`,
     );
   }
 
-  const { pool, vlan } = await allocateVlan(input.cluster, input.vlanPoolId);
   const session = getRequestSession();
   const owner = session?.user?.githubLogin;
+  const dns = (input.dns ?? []).map((d) => d.trim()).filter(Boolean);
 
-  const body = buildNetworkAttachmentDefinition({
-    ...input,
-    vlan,
-    vlanPoolId: pool.id,
-    bridge: pool.bridge,
-    defaultDns: pool.dns,
-    owner,
-  });
+  const body: VpcCr = {
+    apiVersion: KMC_API,
+    kind: "VPC",
+    metadata: {
+      name: input.name.trim(),
+      namespace: input.namespace.trim(),
+      labels: kmcManagedLabels(),
+      annotations: ownerAnnotation(owner),
+    },
+    spec: {
+      vlanPoolRef: { name: pool.id },
+      ...(input.cidr?.trim()
+        ? {
+            cidr: input.cidr.trim(),
+            ...(input.gateway?.trim() ? { gateway: input.gateway.trim() } : {}),
+            ...(dns.length > 0 ? { dns } : {}),
+          }
+        : {}),
+      ...(input.description?.trim()
+        ? { description: input.description.trim() }
+        : {}),
+    },
+  };
 
-  const { custom } = getClusterClients(input.cluster);
   try {
-    const created = (await custom.createNamespacedCustomObject({
-      group: "k8s.cni.cncf.io",
-      version: "v1",
-      namespace: input.namespace,
-      plural: "network-attachment-definitions",
+    const created = await createNamespacedCustomObject<VpcCr>(
+      input.cluster,
+      input.namespace,
+      PLURAL_VPCS,
       body,
-    })) as KubeNad;
-    return mapSummary(input.cluster, created);
+    );
+    return mapVpcSummary(input.cluster, created);
   } catch (err) {
     throw new Error(formatError(err), { cause: err });
   }
@@ -671,52 +695,59 @@ export async function updateVpc(input: UpdateVpcRequest): Promise<VpcSummary> {
   if (!input.name?.trim()) throw new Error("name is required");
   validateVpcIpamFields(input);
 
-  const { custom } = getClusterClients(input.cluster);
-  let existing: KubeNad;
+  let existing: VpcCr;
   try {
-    existing = (await custom.getNamespacedCustomObject({
-      group: "k8s.cni.cncf.io",
-      version: "v1",
-      namespace: input.namespace,
-      plural: "network-attachment-definitions",
-      name: input.name,
-    })) as KubeNad;
+    existing = await getNamespacedCustomObject<VpcCr>(
+      input.cluster,
+      input.namespace,
+      PLURAL_VPCS,
+      input.name,
+    );
   } catch (err) {
-    if (isNotFound(err)) {
+    if (isNotFoundError(err)) {
       throw new Error(`VPC ${input.namespace}/${input.name} not found`);
     }
     throw new Error(formatError(err), { cause: err });
   }
 
-  if (!isVpcNad(existing)) {
-    throw new Error(`${input.namespace}/${input.name} is not a kmc-managed VPC`);
-  }
-
-  const annotations = applyVpcMutableAnnotations(existing.metadata?.annotations ?? {}, {
-    description: input.description,
-    cidr: input.cidr,
-    gateway: input.gateway,
-    dns: input.dns,
-  });
-
-  const body = {
+  const dns = (input.dns ?? []).map((d) => d.trim()).filter(Boolean);
+  const cidr = input.cidr?.trim();
+  const next: VpcCr = {
     ...existing,
-    metadata: {
-      ...existing.metadata,
-      annotations,
+    spec: {
+      ...existing.spec,
+      vlanPoolRef: existing.spec?.vlanPoolRef ?? { name: "" },
+      description: input.description?.trim() || undefined,
+      ...(cidr
+        ? {
+            cidr,
+            gateway: input.gateway?.trim() || undefined,
+            dns: dns.length > 0 ? dns : undefined,
+          }
+        : {
+            cidr: undefined,
+            gateway: undefined,
+            dns: undefined,
+          }),
     },
   };
 
+  // Clear IPAM fields when disabled
+  if (!cidr && next.spec) {
+    delete next.spec.cidr;
+    delete next.spec.gateway;
+    delete next.spec.dns;
+  }
+
   try {
-    const updated = (await custom.replaceNamespacedCustomObject({
-      group: "k8s.cni.cncf.io",
-      version: "v1",
-      namespace: input.namespace,
-      plural: "network-attachment-definitions",
-      name: input.name,
-      body,
-    })) as KubeNad;
-    return mapSummary(input.cluster, updated);
+    const updated = await replaceNamespacedCustomObject<VpcCr>(
+      input.cluster,
+      input.namespace,
+      PLURAL_VPCS,
+      input.name,
+      next,
+    );
+    return mapVpcSummary(input.cluster, updated);
   } catch (err) {
     throw new Error(formatError(err), { cause: err });
   }
@@ -727,7 +758,6 @@ export async function deleteVpc(
   namespace: string,
   name: string,
 ): Promise<void> {
-  // Ensure it is a managed VPC
   await getVpc(cluster, namespace, name);
 
   const attached = await listAttachedVms(cluster, namespace, name);
@@ -742,127 +772,233 @@ export async function deleteVpc(
     );
   }
 
-  const { custom } = getClusterClients(cluster);
-  try {
-    await custom.deleteNamespacedCustomObject({
-      group: "k8s.cni.cncf.io",
-      version: "v1",
-      namespace,
-      plural: "network-attachment-definitions",
-      name,
-    });
-  } catch (err) {
-    if (isNotFound(err)) return;
-    throw new Error(formatError(err), { cause: err });
-  }
-
+  await deleteNamespacedCustomObject(cluster, namespace, PLURAL_VPCS, name);
 }
 
 export { listVlanPools, clusterHasVlanPools };
 export type { IpPoolUsage };
 
-/**
- * Associate a floating public IP via a shared router external gateway.
- */
 export async function associateFloatingIp(
   input: AssociateFloatingIpRequest,
 ): Promise<FloatingIpAssociation> {
   const vpc = await getVpc(input.cluster, input.namespace, input.vpcName);
-  if (!vpc.cidr?.trim()) {
-    throw new Error("VPC has no private CIDR");
-  }
+  if (!vpc.cidr?.trim()) throw new Error("VPC has no private CIDR");
   if (!vpc.router?.hasExternal || !vpc.router.name) {
     throw new Error(
       "VPC has no router external gateway — enable an external gateway on the shared router first",
     );
   }
-  const rp = await getRouterPolicyConfigMap(
+
+  const router = await loadRouter(
     input.cluster,
     input.namespace,
     vpc.router.name,
   );
-  const publicNet = rp?.doc?.external?.multusNetwork?.trim();
-  if (!publicNet) {
-    throw new Error(
-      `Router ${vpc.router.name} has no external Multus network in policy`,
-    );
-  }
-  return associateRouterFloatingIp({
-    ...input,
-    routerName: vpc.router.name,
+  if (!router) throw new Error(`Router ${vpc.router.name} not found`);
+  const { poolId } = await resolvePublicPoolForRouter(input.cluster, router);
+  const { privateIpv4, targetVm } = await resolvePrivateOnVpc({
+    cluster: input.cluster,
+    namespace: input.namespace,
+    vpcName: input.vpcName,
     vpcCidr: vpc.cidr,
-    publicMultusNetwork: publicNet,
+    privateIpv4: input.privateIpv4,
+    targetVm: input.targetVm,
   });
+
+  // Re-associate held FIP if public specified and exists
+  const preferred = input.publicIpv4?.trim();
+  if (preferred) {
+    const existing = await findFloatingIpByPublic(
+      input.cluster,
+      input.namespace,
+      preferred,
+    );
+    if (existing && existing.spec?.vpcRef?.name === input.vpcName) {
+      const patched = await patchFloatingPrivate(
+        input.cluster,
+        input.namespace,
+        existing,
+        privateIpv4,
+        targetVm,
+      );
+      return mapFloatingIpAssociation(patched);
+    }
+  }
+
+  const body: FloatingIpCr = {
+    apiVersion: KMC_API,
+    kind: "FloatingIP",
+    metadata: {
+      name: preferred
+        ? preferred.replaceAll(".", "-")
+        : `fip-${input.vpcName}-${Date.now().toString(36)}`.slice(0, 63),
+      namespace: input.namespace,
+      labels: kmcManagedLabels(),
+      generateName: preferred ? undefined : `fip-${input.vpcName}-`,
+    },
+    spec: {
+      poolRef: { kind: "IPPool", name: poolId },
+      ...(preferred ? { address: preferred } : {}),
+      vpcRef: { name: input.vpcName },
+      routerRef: { name: vpc.router.name },
+      privateAddress: privateIpv4,
+      ...(targetVm ? { targetVM: { name: targetVm } } : {}),
+    },
+  };
+
+  // Prefer generateName when no preferred address
+  if (!preferred) {
+    delete body.metadata!.name;
+    body.metadata!.generateName = `fip-${input.vpcName}-`;
+  } else {
+    delete body.metadata!.generateName;
+  }
+
+  const created = await createNamespacedCustomObject<FloatingIpCr>(
+    input.cluster,
+    input.namespace,
+    PLURAL_FLOATING_IPS,
+    body,
+  );
+  return mapFloatingIpAssociation(created);
 }
 
-/**
- * Reserve a public Multus address for this VPC without associating a private target.
- */
 export async function reserveFloatingIp(
   input: ReserveFloatingIpRequest,
 ): Promise<FloatingIpAssociation> {
   const vpc = await getVpc(input.cluster, input.namespace, input.vpcName);
-  if (!vpc.cidr?.trim()) {
-    throw new Error("VPC has no private CIDR");
-  }
+  if (!vpc.cidr?.trim()) throw new Error("VPC has no private CIDR");
   if (!vpc.router?.hasExternal || !vpc.router.name) {
     throw new Error(
       "VPC has no router external gateway — enable an external gateway on the shared router first",
     );
   }
-  const rp = await getRouterPolicyConfigMap(
+  const router = await loadRouter(
     input.cluster,
     input.namespace,
     vpc.router.name,
   );
-  const publicNet = rp?.doc?.external?.multusNetwork?.trim();
-  if (!publicNet) {
-    throw new Error(
-      `Router ${vpc.router.name} has no external Multus network in policy`,
-    );
+  if (!router) throw new Error(`Router ${vpc.router.name} not found`);
+  const { poolId } = await resolvePublicPoolForRouter(input.cluster, router);
+  const preferred = input.publicIpv4?.trim();
+
+  const body: FloatingIpCr = {
+    apiVersion: KMC_API,
+    kind: "FloatingIP",
+    metadata: {
+      ...(preferred
+        ? { name: preferred.replaceAll(".", "-") }
+        : { generateName: `fip-${input.vpcName}-` }),
+      namespace: input.namespace,
+      labels: kmcManagedLabels(),
+    },
+    spec: {
+      poolRef: { kind: "IPPool", name: poolId },
+      ...(preferred ? { address: preferred } : {}),
+      vpcRef: { name: input.vpcName },
+      routerRef: { name: vpc.router.name },
+    },
+  };
+
+  const created = await createNamespacedCustomObject<FloatingIpCr>(
+    input.cluster,
+    input.namespace,
+    PLURAL_FLOATING_IPS,
+    body,
+  );
+  return mapFloatingIpAssociation(created);
+}
+
+async function findFloatingIpByPublic(
+  cluster: ClusterId,
+  namespace: string,
+  idOrPublic: string,
+): Promise<FloatingIpCr | null> {
+  const key = idOrPublic.trim();
+  if (!key) return null;
+  const items = await listNamespacedCustomObjects<FloatingIpCr>(
+    cluster,
+    namespace,
+    PLURAL_FLOATING_IPS,
+  );
+  const addr = addressFromIpv4Annotation(key) ?? key;
+  for (const f of items) {
+    if (f.metadata?.name === key) return f;
+    const pub = f.status?.address?.trim() || f.spec?.address?.trim() || "";
+    if (pub === addr || pub === key) return f;
   }
-  return reserveRouterFloatingIp({
-    cluster: input.cluster,
-    namespace: input.namespace,
-    vpcName: input.vpcName,
-    routerName: vpc.router.name,
-    publicMultusNetwork: publicNet,
-    publicIpv4: input.publicIpv4,
-  });
+  return null;
+}
+
+async function patchFloatingPrivate(
+  cluster: ClusterId,
+  namespace: string,
+  existing: FloatingIpCr,
+  privateIpv4: string | undefined,
+  targetVm: string | undefined,
+): Promise<FloatingIpCr> {
+  const next: FloatingIpCr = {
+    ...existing,
+    spec: {
+      ...existing.spec,
+      poolRef: existing.spec?.poolRef ?? { kind: "IPPool", name: "" },
+      vpcRef: existing.spec?.vpcRef ?? { name: "" },
+      privateAddress: privateIpv4,
+      targetVM: targetVm ? { name: targetVm } : undefined,
+    },
+  };
+  if (!privateIpv4 && next.spec) {
+    delete next.spec.privateAddress;
+    delete next.spec.targetVM;
+  }
+  return replaceNamespacedCustomObject<FloatingIpCr>(
+    cluster,
+    namespace,
+    PLURAL_FLOATING_IPS,
+    existing.metadata!.name!,
+    next,
+  );
 }
 
 export async function disassociateFloatingIp(
   input: DisassociateFloatingIpRequest,
 ): Promise<void> {
-  const vpc = await getVpc(input.cluster, input.namespace, input.vpcName);
-  if (!vpc.router?.name) {
-    throw new Error(
-      "VPC has no shared router — floating IPs are managed by router policy",
-    );
+  const fip = await findFloatingIpByPublic(
+    input.cluster,
+    input.namespace,
+    input.idOrPublic,
+  );
+  if (!fip) {
+    throw new Error(`Floating IP "${input.idOrPublic}" not found`);
   }
-  await disassociateRouterFloatingIp({
-    ...input,
-    routerName: vpc.router.name,
-  });
+  await patchFloatingPrivate(
+    input.cluster,
+    input.namespace,
+    fip,
+    undefined,
+    undefined,
+  );
 }
 
-/** Drop a floating IP from policy so the public address returns to the pool. */
 export async function releaseFloatingIp(
   input: ReleaseFloatingIpRequest,
 ): Promise<void> {
-  const vpc = await getVpc(input.cluster, input.namespace, input.vpcName);
-  if (!vpc.router?.name) {
-    throw new Error(
-      "VPC has no shared router — floating IPs are managed by router policy",
-    );
+  const fip = await findFloatingIpByPublic(
+    input.cluster,
+    input.namespace,
+    input.idOrPublic,
+  );
+  if (!fip?.metadata?.name) {
+    throw new Error(`Floating IP "${input.idOrPublic}" not found`);
   }
-  await releaseRouterFloatingIp({
-    ...input,
-    routerName: vpc.router.name,
-  });
+  await deleteNamespacedCustomObject(
+    input.cluster,
+    input.namespace,
+    PLURAL_FLOATING_IPS,
+    fip.metadata.name,
+  );
 }
 
-/** Cross-cluster floating IP inventory for the top-level list. */
 export async function listFloatingIps(clusterFilter?: ClusterId): Promise<{
   items: FloatingIpSummary[];
   clusters: Awaited<ReturnType<typeof listClusters>>;
@@ -877,32 +1013,27 @@ export async function listFloatingIps(clusterFilter?: ClusterId): Promise<{
       const cluster = byId.get(id);
       if (cluster && !cluster.reachable) return;
       try {
-        const rows = await listFloatingIpsFromRouterPolicies(id);
-        const gwCache = new Map<string, string | undefined>();
-        const { custom } = getClusterClients(id);
-        for (const row of rows) {
-          if (!row.routerName) {
-            const key = `${row.namespace}/${row.vpcName}`;
-            if (!gwCache.has(key)) {
-              try {
-                const nad = (await custom.getNamespacedCustomObject({
-                  group: "k8s.cni.cncf.io",
-                  version: "v1",
-                  namespace: row.namespace,
-                  plural: "network-attachment-definitions",
-                  name: row.vpcName,
-                })) as KubeNad;
-                gwCache.set(
-                  key,
-                  nad.metadata?.annotations?.[KMC_ANN_ROUTER]?.trim(),
-                );
-              } catch {
-                gwCache.set(key, undefined);
-              }
-            }
-            row.routerName = gwCache.get(key);
-          }
-          items.push(row);
+        const [fips, routers] = await Promise.all([
+          listClusterCustomObjects<FloatingIpCr>(id, PLURAL_FLOATING_IPS),
+          listClusterCustomObjects<RouterCr>(id, PLURAL_ROUTERS).catch(
+            () => [] as RouterCr[],
+          ),
+        ]);
+        const routerByKey = new Map(
+          routers.map((r) => [
+            `${r.metadata?.namespace}/${r.metadata?.name}`,
+            r,
+          ]),
+        );
+        for (const f of fips) {
+          const ns = f.metadata?.namespace ?? "";
+          const rName =
+            f.spec?.routerRef?.name ||
+            undefined;
+          const router = rName
+            ? routerByKey.get(`${ns}/${rName}`)
+            : undefined;
+          items.push(mapFloatingIpSummary(id, f, router));
         }
       } catch (err) {
         if (cluster) {
@@ -924,9 +1055,6 @@ export async function listFloatingIps(clusterFilter?: ClusterId): Promise<{
   return { items, clusters };
 }
 
-/**
- * VPCs that can accept floating associations (router with external gateway).
- */
 export async function listFloatingIpEligibleVpcs(
   clusterFilter?: ClusterId,
 ): Promise<FloatingIpEligibleVpc[]> {
@@ -939,32 +1067,25 @@ export async function listFloatingIpEligibleVpcs(
       try {
         const detail = await getVpc(vpc.cluster, vpc.namespace, vpc.name);
         if (!detail.router?.hasExternal || !detail.router.name) return;
-
-        const rp = await getRouterPolicyConfigMap(
+        const floats = detail.floatingIps ?? [];
+        const router = await loadRouter(
           vpc.cluster,
           vpc.namespace,
           detail.router.name,
         );
-        const floats = rp?.doc
-          ? (rp.doc.floatingIPs ?? []).filter(
-              (f) =>
-                f.vpc === vpc.name ||
-                (!f.vpc &&
-                  f.private &&
-                  containsIpv4(parseCidr(vpc.cidr!), f.private)),
-            )
-          : [];
         out.push({
           cluster: vpc.cluster,
           namespace: vpc.namespace,
           name: vpc.name,
           cidr: vpc.cidr,
           routerName: detail.router.name,
-          publicNetwork: rp?.doc?.external?.multusNetwork,
+          publicNetwork:
+            router?.status?.external?.multusNetwork ||
+            router?.spec?.external?.multusNetwork,
           agentStatus: detail.router.agentStatus,
           floatingCount: floats.length,
           heldPublicIps: floats
-            .filter((f) => !f.private?.trim())
+            .filter((f) => f.state === "held")
             .map((f) => f.public),
           targetVms: detail.attachedVms
             .filter((vm) => !vm.isRouter)
@@ -974,7 +1095,7 @@ export async function listFloatingIpEligibleVpcs(
             })),
         });
       } catch {
-        /* skip unreachable VPC */
+        /* skip */
       }
     }),
   );
@@ -989,64 +1110,146 @@ export async function listFloatingIpEligibleVpcs(
   return out;
 }
 
-/** Floating IPs targeting a VM (by name or private IPAM addresses). */
 export async function listFloatingIpsForVm(
   cluster: ClusterId,
   namespace: string,
   vmName: string,
   privateAddresses: string[] = [],
 ): Promise<FloatingIpSummary[]> {
-  return listFloatingIpsForVmCore(cluster, namespace, vmName, privateAddresses);
+  const privSet = new Set(
+    privateAddresses
+      .map((a) => addressFromIpv4Annotation(a) ?? a.trim())
+      .filter(Boolean),
+  );
+  const items = await listNamespacedCustomObjects<FloatingIpCr>(
+    cluster,
+    namespace,
+    PLURAL_FLOATING_IPS,
+  );
+  const routerCache = new Map<string, RouterCr | null>();
+  const out: FloatingIpSummary[] = [];
+  for (const f of items) {
+    const target = f.spec?.targetVM?.name?.trim();
+    const priv = f.spec?.privateAddress?.trim();
+    const match =
+      (target && target === vmName) ||
+      (priv && privSet.has(addressFromIpv4Annotation(priv) ?? priv));
+    if (!match) continue;
+    const rName = f.spec?.routerRef?.name;
+    let router: RouterCr | null | undefined;
+    if (rName) {
+      if (!routerCache.has(rName)) {
+        routerCache.set(rName, await loadRouter(cluster, namespace, rName));
+      }
+      router = routerCache.get(rName);
+    }
+    out.push(mapFloatingIpSummary(cluster, f, router));
+  }
+  return out;
 }
 
-/**
- * Create a port forward (publicIP:port → privateIP:port) via the VPC's shared router.
- */
 export async function createPortForward(
   input: CreatePortForwardRequest,
 ): Promise<PortForwardAssociation> {
   const vpc = await getVpc(input.cluster, input.namespace, input.vpcName);
-  if (!vpc.cidr?.trim()) {
-    throw new Error("VPC has no private CIDR");
-  }
+  if (!vpc.cidr?.trim()) throw new Error("VPC has no private CIDR");
   if (!vpc.router?.hasExternal || !vpc.router.name) {
     throw new Error(
       "VPC has no router external gateway — enable an external gateway on the shared router first",
     );
   }
-  const rp = await getRouterPolicyConfigMap(
+  const router = await loadRouter(
     input.cluster,
     input.namespace,
     vpc.router.name,
   );
-  const publicNet = rp?.doc?.external?.multusNetwork?.trim();
-  if (!publicNet) {
-    throw new Error(
-      `Router ${vpc.router.name} has no external Multus network in policy`,
-    );
-  }
-  return createRouterPortForward({
-    ...input,
-    routerName: vpc.router.name,
+  if (!router) throw new Error(`Router ${vpc.router.name} not found`);
+
+  const { privateIpv4, targetVm } = await resolvePrivateOnVpc({
+    cluster: input.cluster,
+    namespace: input.namespace,
+    vpcName: input.vpcName,
     vpcCidr: vpc.cidr,
-    publicMultusNetwork: publicNet,
+    privateIpv4: input.privateIpv4,
+    targetVm: input.targetVm,
   });
-}
 
-export async function deletePortForward(input: DeletePortForwardRequest): Promise<void> {
-  const vpc = await getVpc(input.cluster, input.namespace, input.vpcName);
-  if (!vpc.router?.name) {
+  let publicAddress = input.publicIpv4?.trim();
+  if (!publicAddress && input.allocatePublic) {
+    const held = await reserveFloatingIp({
+      cluster: input.cluster,
+      namespace: input.namespace,
+      vpcName: input.vpcName,
+    });
+    publicAddress = held.public;
+  }
+  if (!publicAddress) {
+    const primary = router.status?.external?.primaryCidr?.trim();
+    publicAddress = addressFromIpv4Annotation(primary ?? "") ?? primary?.split("/")[0];
+  }
+  if (!publicAddress) {
     throw new Error(
-      "VPC has no shared router — port forwards are managed by router policy",
+      "publicIpv4 is required (or set allocatePublic / configure router external primary)",
     );
   }
-  await deleteRouterPortForward({
-    ...input,
-    routerName: vpc.router.name,
-  });
+
+  const protocol = input.protocol === "udp" ? "UDP" : "TCP";
+  const publicPort = input.publicPort;
+  const privatePort = input.privatePort;
+  if (
+    !Number.isInteger(publicPort) ||
+    publicPort < 1 ||
+    publicPort > 65535 ||
+    !Number.isInteger(privatePort) ||
+    privatePort < 1 ||
+    privatePort > 65535
+  ) {
+    throw new Error("publicPort and privatePort must be integers 1–65535");
+  }
+
+  const name = portForwardObjectName(publicAddress, protocol, publicPort);
+  const body: PortForwardCr = {
+    apiVersion: KMC_API,
+    kind: "PortForward",
+    metadata: {
+      name,
+      namespace: input.namespace,
+      labels: kmcManagedLabels(),
+    },
+    spec: {
+      vpcRef: { name: input.vpcName },
+      routerRef: { name: vpc.router.name },
+      publicAddress,
+      publicPort,
+      privateAddress: privateIpv4,
+      privatePort,
+      protocol,
+      ...(targetVm ? { targetVM: { name: targetVm } } : {}),
+    },
+  };
+
+  const created = await createNamespacedCustomObject<PortForwardCr>(
+    input.cluster,
+    input.namespace,
+    PLURAL_PORT_FORWARDS,
+    body,
+  );
+  return mapPortForwardAssociation(created, input.vpcName);
 }
 
-/** Cross-cluster port forward inventory. */
+export async function deletePortForward(
+  input: DeletePortForwardRequest,
+): Promise<void> {
+  const id = input.id.trim();
+  if (!id) throw new Error("port forward id is required");
+  await deleteNamespacedCustomObject(
+    input.cluster,
+    input.namespace,
+    PLURAL_PORT_FORWARDS,
+    id,
+  );
+}
+
 export async function listPortForwards(clusterFilter?: ClusterId): Promise<{
   items: PortForwardSummary[];
   clusters: Awaited<ReturnType<typeof listClusters>>;
@@ -1061,8 +1264,26 @@ export async function listPortForwards(clusterFilter?: ClusterId): Promise<{
       const cluster = byId.get(id);
       if (cluster && !cluster.reachable) return;
       try {
-        const rows = await listPortForwardsFromRouterPolicies(id);
-        items.push(...rows);
+        const [pfs, routers] = await Promise.all([
+          listClusterCustomObjects<PortForwardCr>(id, PLURAL_PORT_FORWARDS),
+          listClusterCustomObjects<RouterCr>(id, PLURAL_ROUTERS).catch(
+            () => [] as RouterCr[],
+          ),
+        ]);
+        const routerByKey = new Map(
+          routers.map((r) => [
+            `${r.metadata?.namespace}/${r.metadata?.name}`,
+            r,
+          ]),
+        );
+        for (const pf of pfs) {
+          const ns = pf.metadata?.namespace ?? "";
+          const rName = pf.spec?.routerRef?.name;
+          const router = rName
+            ? routerByKey.get(`${ns}/${rName}`)
+            : undefined;
+          items.push(mapPortForwardSummary(id, pf, router));
+        }
       } catch (err) {
         if (cluster) {
           cluster.reachable = false;
@@ -1085,9 +1306,6 @@ export async function listPortForwards(clusterFilter?: ClusterId): Promise<{
   return { items, clusters };
 }
 
-/**
- * VPCs that can accept port forwards (router with external gateway).
- */
 export async function listPortForwardEligibleVpcs(
   clusterFilter?: ClusterId,
 ): Promise<PortForwardEligibleVpc[]> {
@@ -1100,49 +1318,49 @@ export async function listPortForwardEligibleVpcs(
       try {
         const detail = await getVpc(vpc.cluster, vpc.namespace, vpc.name);
         if (!detail.router?.hasExternal || !detail.router.name) return;
-
-        const rp = await getRouterPolicyConfigMap(
+        const router = await loadRouter(
           vpc.cluster,
           vpc.namespace,
           detail.router.name,
         );
-        if (!rp?.doc) return;
-        const doc = rp.doc;
-        const externalPrimary = externalPrimaryIpv4FromDoc(doc);
+        if (!router) return;
+
+        const externalPrimary =
+          addressFromIpv4Annotation(
+            router.status?.external?.primaryCidr ?? "",
+          ) ??
+          router.status?.external?.primaryCidr?.split("/")[0]?.trim();
+
+        const fips = detail.floatingIps ?? [];
         const associatedPublics = new Set(
-          (doc.floatingIPs ?? [])
-            .filter((f) => f.private?.trim())
+          fips
+            .filter((f) => f.state === "associated")
             .map((f) => addressFromIpv4Annotation(f.public) ?? f.public),
         );
         const publicOpts = new Set<string>();
         if (externalPrimary && !associatedPublics.has(externalPrimary)) {
           publicOpts.add(externalPrimary);
         }
-        for (const f of doc.floatingIPs ?? []) {
-          const pub = addressFromIpv4Annotation(f.public) ?? f.public;
-          if (!f.private?.trim() && pub) publicOpts.add(pub);
+        for (const f of fips) {
+          if (f.state === "held" && f.public) publicOpts.add(f.public);
         }
-        for (const pf of doc.portForwards ?? []) {
+        for (const pf of detail.portForwards ?? []) {
           const pub = addressFromIpv4Annotation(pf.public) ?? pf.public;
           if (pub && !associatedPublics.has(pub)) publicOpts.add(pub);
         }
-        const pfs = (doc.portForwards ?? []).filter(
-          (pf) =>
-            pf.vpc === vpc.name ||
-            (!pf.vpc &&
-              pf.private &&
-              containsIpv4(parseCidr(vpc.cidr!), pf.private)),
-        );
+
         out.push({
           cluster: vpc.cluster,
           namespace: vpc.namespace,
           name: vpc.name,
           cidr: vpc.cidr,
           routerName: detail.router.name,
-          publicNetwork: doc.external?.multusNetwork,
+          publicNetwork:
+            router.status?.external?.multusNetwork ||
+            router.spec?.external?.multusNetwork,
           externalPrimaryIpv4: externalPrimary,
           agentStatus: detail.router.agentStatus,
-          portForwardCount: pfs.length,
+          portForwardCount: (detail.portForwards ?? []).length,
           publicIpv4Options: Array.from(publicOpts).sort(),
           targetVms: detail.attachedVms
             .filter((vm) => !vm.isRouter)
@@ -1152,7 +1370,7 @@ export async function listPortForwardEligibleVpcs(
             })),
         });
       } catch {
-        /* skip unreachable VPC */
+        /* skip */
       }
     }),
   );
@@ -1167,12 +1385,40 @@ export async function listPortForwardEligibleVpcs(
   return out;
 }
 
-/** Port forwards targeting a VM (by name or private IPAM addresses). */
 export async function listPortForwardsForVm(
   cluster: ClusterId,
   namespace: string,
   vmName: string,
   privateAddresses: string[] = [],
 ): Promise<PortForwardSummary[]> {
-  return listPortForwardsForVmCore(cluster, namespace, vmName, privateAddresses);
+  const privSet = new Set(
+    privateAddresses
+      .map((a) => addressFromIpv4Annotation(a) ?? a.trim())
+      .filter(Boolean),
+  );
+  const items = await listNamespacedCustomObjects<PortForwardCr>(
+    cluster,
+    namespace,
+    PLURAL_PORT_FORWARDS,
+  );
+  const routerCache = new Map<string, RouterCr | null>();
+  const out: PortForwardSummary[] = [];
+  for (const pf of items) {
+    const target = pf.spec?.targetVM?.name?.trim();
+    const priv = pf.spec?.privateAddress?.trim();
+    const match =
+      (target && target === vmName) ||
+      (priv && privSet.has(addressFromIpv4Annotation(priv) ?? priv));
+    if (!match) continue;
+    const rName = pf.spec?.routerRef?.name;
+    let router: RouterCr | null | undefined;
+    if (rName) {
+      if (!routerCache.has(rName)) {
+        routerCache.set(rName, await loadRouter(cluster, namespace, rName));
+      }
+      router = routerCache.get(rName);
+    }
+    out.push(mapPortForwardSummary(cluster, pf, router));
+  }
+  return out;
 }

@@ -8,7 +8,7 @@ Polyglot monorepo:
 | **Controller** | `cmd/`, `api/`, `internal/` | In-cluster Go reconcilers (`IPAddress`, `VPC`, pools, FIP/PF, …) |
 | **Deploy** | `deploy/` | Cluster manifests (impersonator SA, controller) |
 
-The console still owns most orchestration today (VM create, VPC/router via Multus NAD + ConfigMap policy, scan-based IPAM). The controller is the migration path for race-safe, multi-replica domain logic. Networking CRDs exist under `kmc.ianunruh.com/v1alpha1`; the console is not fully wired to them yet (optional `KMC_IPADDRESS_CR` for IP claims).
+Networking control plane is the Go controller and CRDs under `kmc.ianunruh.com/v1alpha1`. The console is a multi-cluster client: it creates/patches/deletes `VPC`, `Router`, `FloatingIP`, `PortForward`, and `IPAddress` objects (and still builds guest VMs). Multus NADs, router policy ConfigMaps, appliances, and VLAN/IP allocation are owned by the controller.
 
 ## Stack
 
@@ -114,7 +114,7 @@ Policy projection:
 
 `FloatingIP` / `PortForward` set `status.programmed` when the Router has rendered policy, and Ready when the agent reports Ready.
 
-**Console dual-path:** The console still creates routers via ConfigMap + VM orchestration. Controller-managed Routers coexist until a later cutover — do not attach the same VPC to both paths.
+**Console:** Creates the CR only (no ConfigMap/VM orchestration). List/detail pages read CR status (and project leases from `IPAddress` / FIP / PF lists).
 
 Controller flags for appliance cloud-init (pod NIC routes):
 
@@ -145,15 +145,15 @@ Tenant RBAC example: `deploy/controller/rbac/user-networking-example.yaml` (CRUD
 
 ### Console IPAM via `IPAddress` CRs
 
-By default the console still uses scan-based allocate (VM annotations + in-process lock).
+Guest Multus IPs are always claimed as namespaced `IPAddress` objects (create = lease; 409 → try next free). Object name is the address with dots → dashes. The console stamps `spec.interface.mac` + `claimRef` (VirtualMachine) so the Router controller can project DHCP leases.
 
-To claim leases through CRs (safer across multiple console replicas):
+Requirements:
 
-1. Install the controller CRDs/RBAC: `kubectl apply -k deploy/controller`
-2. Grant tenants create/list/delete on `ipaddresses.kmc.ianunruh.com` (see `deploy/controller/rbac/user-ipaddress-example.yaml`)
-3. Set on the console process: `KMC_IPADDRESS_CR=true`
+1. Controller CRDs/RBAC installed: `kubectl apply -k deploy/controller`
+2. Operator `VLANPool` / `IPPool` CRs (examples under `deploy/controller/examples/`)
+3. Tenant create/list/delete on networking CRs (see `deploy/controller/rbac/user-networking-example.yaml`)
 
-With the flag on, `allocateIpv4ForMultus` creates an `IPAddress` after picking a free address (409 → try next). VM/router delete and floating-IP release delete the claim. Create-VM failure rolls back claims best-effort.
+VM delete releases claims by address and `claimRef`. Create-VM failure rolls back claims best-effort. Annotations `kmc.ianunruh.com/ipv4` remain on the VM for netplan/UI.
 
 **Images**
 
@@ -288,7 +288,6 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 | `KMC_GROUPS_PREFIX`        | `oidc:`                 | Match apiserver groups prefix                                                 |
 | `KMC_CONSOLE_SSH_USER`     | `ubuntu`                | Guest username for browser SSH terminal                                       |
 | `KMC_SNAPSHOT_JOB_IMAGE`   | `ghcr.io/ianunruh/kmc:latest` | Container image for per-VM snapshot CronJobs (`scripts/snapshot-run.ts`) |
-| `KMC_IPADDRESS_CR`         | off                     | Set to `true` to claim Multus IPs via `IPAddress` CRs (needs controller) |
 
 ## Features (MVP)
 
@@ -296,9 +295,9 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
   - Cluster prereqs: CSI external-snapshotter + VolumeSnapshotClass for the VM storage driver; KubeVirt feature gate `Snapshot` enabled; API `snapshot.kubevirt.io/v1beta1`
   - Snapshot schedules: CronJobs pull `ghcr.io/ianunruh/kmc:latest` by default (`KMC_SNAPSHOT_JOB_IMAGE`); kmc creates a ConfigMap + SA/Role + CronJob in the VM namespace that runs `scripts/snapshot-run.ts`
 - **Extra disks + hotplug** — secondary blank or existing DataVolumes (scsi, up to 8) on Launch VM or VM **Storage** tab; attach/detach by updating the VirtualMachine spec (`hotpluggable: true` disks/volumes). Live attach needs KubeVirt **`DeclarativeHotplugVolumes`** (do not also enable deprecated `HotplugVolumes`). Detach can keep or delete the DataVolume. Guests see unformatted block devices — format/mount inside the guest.
-- **IPAM** — optional per-cluster IPv4 pools for Multus NADs; auto-allocate + netplan cloud-init on create
-- **VPCs** — self-service Multus networks from a cluster VLAN pool (`vlanPools`); optional private CIDR for IPAM
-- **Routers** — shared DHCP/DNS appliance per namespace (OpenStack-style); multi-VPC at create and day-2 Multus hotplug attach/detach; agent-owned private L3; external SNAT + floating IPs + port forwards
+- **IPAM** — `IPAddress` claims from `IPPool` / VPC CIDRs; netplan cloud-init on create; leases project into router policy
+- **VPCs** — self-service private networks via `VPC` CR (controller allocates VLAN + Multus NAD from `VLANPool`)
+- **Routers** — `Router` CR (controller owns appliance, policy ConfigMap, gateway claims); multi-VPC attach/detach; external SNAT + floating IPs + port forwards
 - **SSH keys** — signed-in users save named public keys (ConfigMap on the settings cluster); select when creating a VM
 - **Expose VMs** — two planes (see matrix below): VPC L3 (floating IPs / port forwards) and pod L4/L7 (Ingress / LoadBalancer)
 - **Ingresses** — create/list/detail/edit/delete HTTP Ingresses (companion ClusterIP Service, or expose-existing backend)
