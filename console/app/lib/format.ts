@@ -557,6 +557,36 @@ export function floatingIpsListPath(
   return withSearch("/floating-ips", filters);
 }
 
+export function floatingIpPath(
+  fip: Pick<
+    { cluster: string; namespace: string; name: string },
+    "cluster" | "namespace" | "name"
+  >,
+): string {
+  return `/floating-ips/${encodeURIComponent(fip.cluster)}/${encodeURIComponent(fip.namespace)}/${encodeURIComponent(fip.name)}`;
+}
+
+/** Prefer CR name (`id`); fall back to public address for legacy rows. */
+export function floatingIpDetailPath(
+  fip: Pick<
+    {
+      cluster: string;
+      namespace: string;
+      id?: string;
+      name?: string;
+      public?: string;
+    },
+    "cluster" | "namespace" | "id" | "name" | "public"
+  >,
+): string {
+  const name = (fip.name || fip.id || fip.public || "").trim();
+  return floatingIpPath({
+    cluster: fip.cluster,
+    namespace: fip.namespace,
+    name,
+  });
+}
+
 export function floatingIpCreatePath(
   prefill: {
     cluster?: string | null;
@@ -581,6 +611,29 @@ export function portForwardsListPath(
   } = {},
 ): string {
   return withSearch("/port-forwards", filters);
+}
+
+export function portForwardPath(
+  pf: Pick<
+    { cluster: string; namespace: string; name: string },
+    "cluster" | "namespace" | "name"
+  >,
+): string {
+  return `/port-forwards/${encodeURIComponent(pf.cluster)}/${encodeURIComponent(pf.namespace)}/${encodeURIComponent(pf.name)}`;
+}
+
+export function portForwardDetailPath(
+  pf: Pick<
+    { cluster: string; namespace: string; id?: string; name?: string },
+    "cluster" | "namespace" | "id" | "name"
+  >,
+): string {
+  const name = (pf.name || pf.id || "").trim();
+  return portForwardPath({
+    cluster: pf.cluster,
+    namespace: pf.namespace,
+    name,
+  });
 }
 
 export function portForwardCreatePath(

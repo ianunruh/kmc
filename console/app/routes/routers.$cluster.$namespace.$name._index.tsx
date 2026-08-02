@@ -24,6 +24,7 @@ import { useMemo, useState } from "react";
 import { Link, useFetcher, useRouteLoaderData } from "react-router";
 import type { loader as detailLoader } from "./routers.$cluster.$namespace.$name";
 import {
+  ConditionsSection,
   ConfirmActionModal,
   DetailField,
   DetailSection,
@@ -35,8 +36,10 @@ import {
 import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import {
   floatingIpCreatePath,
+  floatingIpDetailPath,
   formatDateTime,
   portForwardCreatePath,
+  portForwardDetailPath,
   routerPath,
   vmPath,
   vpcPath,
@@ -80,6 +83,7 @@ export default function RouterOverviewTab() {
     leaseCount: number;
   } | null>(null);
   const [detachForce, setDetachForce] = useState(false);
+  const [recreateConfirmOpen, setRecreateConfirmOpen] = useState(false);
 
   const imageOptions = useMemo(() => {
     if (!catalog) return [];
@@ -88,26 +92,42 @@ export default function RouterOverviewTab() {
       label: `${img.name}${img.capacity ? ` (${img.capacity})` : ""}`,
     }));
   }, [catalog]);
+  const applianceImage = router.appliance
+    ? `${router.appliance.imageNamespace}/${router.appliance.imageName}`
+    : "";
   const defaultImage =
-    imageOptions.find((o) => o.value.includes("ubuntu"))?.value ??
-    imageOptions[0]?.value ??
+    (applianceImage &&
+      imageOptions.some((o) => o.value === applianceImage) &&
+      applianceImage) ||
+    imageOptions.find((o) => o.value.includes("ubuntu"))?.value ||
+    imageOptions[0]?.value ||
+    applianceImage ||
     "";
   const hasInstanceTypes = Boolean(catalog?.hasInstanceTypes);
   const instanceTypeOptions = useMemo(
     () => instanceTypeSelectData(catalog?.instanceTypes ?? []),
     [catalog],
   );
-  const defaultInstanceType = preferredInstanceTypeName(catalog?.instanceTypes ?? []);
+  const defaultInstanceType =
+    router.appliance?.instanceType ||
+    preferredInstanceTypeName(catalog?.instanceTypes ?? []);
 
   const [image, setImage] = useState(defaultImage);
-  const [diskSize, setDiskSize] = useState("10Gi");
-  const [storageClass, setStorageClass] = useState(catalog?.defaultStorageClass ?? "");
-  const [sizeMode, setSizeMode] = useState<"instancetype" | "manual">(
-    hasInstanceTypes && defaultInstanceType ? "instancetype" : "manual",
+  const [diskSize, setDiskSize] = useState(
+    router.appliance?.diskSize?.trim() || "10Gi",
   );
+  const [storageClass, setStorageClass] = useState(
+    router.appliance?.storageClass ?? catalog?.defaultStorageClass ?? "",
+  );
+  const [sizeMode, setSizeMode] = useState<"instancetype" | "manual">(() => {
+    if (router.appliance) {
+      return router.appliance.instanceType ? "instancetype" : "manual";
+    }
+    return hasInstanceTypes && defaultInstanceType ? "instancetype" : "manual";
+  });
   const [instanceType, setInstanceType] = useState(defaultInstanceType ?? "");
-  const [cpuCores, setCpuCores] = useState(1);
-  const [memory, setMemory] = useState("1Gi");
+  const [cpuCores, setCpuCores] = useState(router.appliance?.cpuCores ?? 1);
+  const [memory, setMemory] = useState(router.appliance?.memory ?? "1Gi");
 
   const busy = fetcher.state !== "idle";
   const recreateDisabled =
@@ -139,7 +159,7 @@ export default function RouterOverviewTab() {
         data.intent === "set-external"
           ? "External gateway enabled (router VM recreated)"
           : data.intent === "recreate-vm"
-            ? "Router appliance VM recreated from policy"
+            ? "Appliance rebuild requested — wait for the new VM to become Ready"
             : data.intent === "attach-vpc"
               ? data.restarted
                 ? "VPC attached — router restarted so the Multus NIC could land"
@@ -152,6 +172,7 @@ export default function RouterOverviewTab() {
       );
       setDetachTarget(null);
       setDetachForce(false);
+      setRecreateConfirmOpen(false);
       setAttachVpc("");
       refreshNow();
     }
@@ -175,6 +196,16 @@ export default function RouterOverviewTab() {
     else fd.set("sshPublicKey", sshPaste.trim());
     // Layout action shares this URL; ".." skips the layout, "." uses ?index (405).
     fetcher.submit(fd, { method: "post", action: routerPath(router) });
+    setRecreateConfirmOpen(false);
+  }
+
+  function requestRecreateVm() {
+    // Existing appliance: confirm destructive delete of VM + root disk.
+    if (!router.vmMissing) {
+      setRecreateConfirmOpen(true);
+      return;
+    }
+    submitRecreateVm();
   }
 
   return (
@@ -212,121 +243,137 @@ export default function RouterOverviewTab() {
         </Alert>
       )}
 
-      {router.vmMissing && (
-        <DetailSection title="Recreate appliance VM">
-          <Stack gap="sm">
-            <Text size="sm" c="dimmed">
-              Rebuilds the KubeVirt VM from this router&apos;s policy ConfigMap (stable
-              MACs, gateway IPs, leases, and floating IPs). Cloud-init is regenerated with
-              a new agent token.
-            </Text>
-            {catalogError && (
-              <Alert color="red" variant="light" title="Catalog unavailable">
-                {catalogError}
-              </Alert>
-            )}
+      <DetailSection
+        title={
+          router.vmMissing ? "Recreate appliance VM" : "Rebuild appliance VM"
+        }
+      >
+        <Stack gap="sm">
+          <Text size="sm" c="dimmed">
+            {router.vmMissing
+              ? "Rebuilds the KubeVirt VM from this router&apos;s policy (stable MACs, gateway IPs, leases, and floating IPs). Cloud-init is regenerated with a new agent token and SSH keys (including the platform console key for browser Terminal)."
+              : "Deletes the appliance VirtualMachine and root disk, then the controller rebuilds them from this Router CR. Gateway IPs, Multus MACs, policy, floating IPs, and guest leases stay. Use this to rotate SSH keys, change image/size, or fix browser Terminal auth. Brief DHCP/SNAT downtime while the new clone boots."}
+          </Text>
+          {!router.vmMissing && (
+            <Alert color="orange" variant="light" title="Destructive rebuild">
+              Root disk state is discarded. Guest VMs on attached VPCs keep their disks;
+              they only lose the router until the new appliance is Ready.
+            </Alert>
+          )}
+          {catalogError && (
+            <Alert color="red" variant="light" title="Catalog unavailable">
+              {catalogError}
+            </Alert>
+          )}
+          <Select
+            label="Image"
+            data={
+              imageOptions.length > 0
+                ? imageOptions
+                : applianceImage
+                  ? [{ value: applianceImage, label: applianceImage }]
+                  : []
+            }
+            value={image || null}
+            onChange={(v) => setImage(v ?? "")}
+            searchable
+            required
+            disabled={Boolean(catalogError) && imageOptions.length === 0}
+          />
+          <SimpleGrid cols={{ base: 1, sm: 2 }}>
+            <TextInput
+              label="Disk size"
+              value={diskSize}
+              onChange={(e) => setDiskSize(e.currentTarget.value)}
+              required
+            />
             <Select
-              label="Image"
-              data={imageOptions}
-              value={image || null}
-              onChange={(v) => setImage(v ?? "")}
+              label="Storage class"
+              data={(catalog?.storageClasses ?? []).map((s) => s.name)}
+              value={storageClass || null}
+              onChange={(v) => setStorageClass(v ?? "")}
+              clearable
+              searchable
+            />
+          </SimpleGrid>
+          {hasInstanceTypes ? (
+            <Select
+              label="Size mode"
+              data={[
+                { value: "instancetype", label: "Instance type" },
+                { value: "manual", label: "CPU / memory" },
+              ]}
+              value={sizeMode}
+              onChange={(v) => setSizeMode(v === "manual" ? "manual" : "instancetype")}
+            />
+          ) : null}
+          {sizeMode === "instancetype" && hasInstanceTypes ? (
+            <Select
+              label="Instance type"
+              data={instanceTypeOptions}
+              value={instanceType || null}
+              onChange={(v) => setInstanceType(v ?? "")}
               searchable
               required
-              disabled={Boolean(catalogError) || imageOptions.length === 0}
             />
-            <SimpleGrid cols={{ base: 1, sm: 2 }}>
-              <TextInput
-                label="Disk size"
-                value={diskSize}
-                onChange={(e) => setDiskSize(e.currentTarget.value)}
-                required
+          ) : (
+            <SimpleGrid cols={2}>
+              <NumberInput
+                label="CPU cores"
+                min={1}
+                value={cpuCores}
+                onChange={(v) => setCpuCores(typeof v === "number" ? v : 1)}
               />
-              <Select
-                label="Storage class"
-                data={(catalog?.storageClasses ?? []).map((s) => s.name)}
-                value={storageClass || null}
-                onChange={(v) => setStorageClass(v ?? "")}
-                clearable
-                searchable
+              <TextInput
+                label="Memory"
+                value={memory}
+                onChange={(e) => setMemory(e.currentTarget.value)}
+                required
               />
             </SimpleGrid>
-            {hasInstanceTypes ? (
-              <Select
-                label="Size mode"
-                data={[
-                  { value: "instancetype", label: "Instance type" },
-                  { value: "manual", label: "CPU / memory" },
-                ]}
-                value={sizeMode}
-                onChange={(v) => setSizeMode(v === "manual" ? "manual" : "instancetype")}
-              />
-            ) : null}
-            {sizeMode === "instancetype" && hasInstanceTypes ? (
-              <Select
-                label="Instance type"
-                data={instanceTypeOptions}
-                value={instanceType || null}
-                onChange={(v) => setInstanceType(v ?? "")}
-                searchable
-                required
-              />
-            ) : (
-              <SimpleGrid cols={2}>
-                <NumberInput
-                  label="CPU cores"
-                  min={1}
-                  value={cpuCores}
-                  onChange={(v) => setCpuCores(typeof v === "number" ? v : 1)}
-                />
-                <TextInput
-                  label="Memory"
-                  value={memory}
-                  onChange={(e) => setMemory(e.currentTarget.value)}
-                  required
-                />
-              </SimpleGrid>
-            )}
-            {signedIn && sshKeys.length > 0 && (
-              <Select
-                label="SSH key"
-                data={[
-                  ...sshKeys.map((k) => ({
-                    value: k.id,
-                    label: `${k.name} (${k.fingerprint})`,
-                  })),
-                  { value: "__paste__", label: "Paste a key…" },
-                ]}
-                value={sshMode === "saved" ? savedKeyId : "__paste__"}
-                onChange={(v) => {
-                  if (v === "__paste__" || !v) {
-                    setSshMode("paste");
-                  } else {
-                    setSshMode("saved");
-                    setSavedKeyId(v);
-                  }
-                }}
-              />
-            )}
-            {(sshMode === "paste" || !signedIn || sshKeys.length === 0) && (
-              <Textarea
-                label="SSH public key"
-                minRows={2}
-                value={sshPaste}
-                onChange={(e) => setSshPaste(e.currentTarget.value)}
-                required
-              />
-            )}
-            <Button
-              leftSection={<IconRefresh size={14} />}
-              loading={busy}
-              disabled={recreateDisabled}
-              onClick={submitRecreateVm}
-            >
-              Recreate appliance VM
-            </Button>
-          </Stack>
-        </DetailSection>
-      )}
+          )}
+          {signedIn && sshKeys.length > 0 && (
+            <Select
+              label="SSH key"
+              data={[
+                ...sshKeys.map((k) => ({
+                  value: k.id,
+                  label: `${k.name} (${k.fingerprint})`,
+                })),
+                { value: "__paste__", label: "Paste a key…" },
+              ]}
+              value={sshMode === "saved" ? savedKeyId : "__paste__"}
+              onChange={(v) => {
+                if (v === "__paste__" || !v) {
+                  setSshMode("paste");
+                } else {
+                  setSshMode("saved");
+                  setSavedKeyId(v);
+                }
+              }}
+            />
+          )}
+          {(sshMode === "paste" || !signedIn || sshKeys.length === 0) && (
+            <Textarea
+              label="SSH public key"
+              description="Your key, plus the platform console key for browser Terminal"
+              minRows={2}
+              value={sshPaste}
+              onChange={(e) => setSshPaste(e.currentTarget.value)}
+              required
+            />
+          )}
+          <Button
+            leftSection={<IconRefresh size={14} />}
+            loading={busy}
+            disabled={recreateDisabled}
+            color={router.vmMissing ? undefined : "orange"}
+            onClick={requestRecreateVm}
+          >
+            {router.vmMissing ? "Recreate appliance VM" : "Rebuild appliance VM"}
+          </Button>
+        </Stack>
+      </DetailSection>
 
       <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
         <DetailSection title="Overview">
@@ -557,6 +604,29 @@ export default function RouterOverviewTab() {
         }}
       />
 
+      <ConfirmActionModal
+        opened={recreateConfirmOpen}
+        onClose={() => setRecreateConfirmOpen(false)}
+        title="Rebuild appliance VM"
+        confirmLabel="Delete disk and rebuild"
+        confirmColor="orange"
+        loading={busy}
+        message={
+          <Stack gap="sm">
+            <Text size="sm">
+              This deletes VirtualMachine <Code>{router.vmName}</Code> and DataVolume{" "}
+              <Code>{router.vmName}-root</Code>, then the controller clones a fresh image
+              and re-runs cloud-init (new SSH keys + agent token).
+            </Text>
+            <Text size="sm">
+              DHCP, DNS, and SNAT on this router will be down until the new appliance is
+              Ready. Policy, gateway IPs, and Multus MACs are preserved.
+            </Text>
+          </Stack>
+        }
+        onConfirm={submitRecreateVm}
+      />
+
       <DetailSection title="External gateway">
         {router.external ? (
           <Stack gap="sm">
@@ -697,9 +767,18 @@ export default function RouterOverviewTab() {
             {router.floatingIps.map((f) => (
               <Table.Tr key={f.id}>
                 <Table.Td>
-                  <Code>
-                    {f.public}/{f.prefix}
-                  </Code>
+                  <ResourceLink
+                    to={floatingIpDetailPath({
+                      cluster: router.cluster,
+                      namespace: router.namespace,
+                      id: f.id,
+                      public: f.public,
+                    })}
+                  >
+                    <Code>
+                      {f.public}/{f.prefix}
+                    </Code>
+                  </ResourceLink>
                 </Table.Td>
                 <Table.Td>{f.private ? <Code>{f.private}</Code> : "—"}</Table.Td>
                 <Table.Td>
@@ -763,9 +842,17 @@ export default function RouterOverviewTab() {
             {router.portForwards.map((pf) => (
               <Table.Tr key={pf.id}>
                 <Table.Td>
-                  <Code>
-                    {pf.public}:{pf.publicPort}
-                  </Code>
+                  <ResourceLink
+                    to={portForwardDetailPath({
+                      cluster: router.cluster,
+                      namespace: router.namespace,
+                      id: pf.id,
+                    })}
+                  >
+                    <Code>
+                      {pf.public}:{pf.publicPort}
+                    </Code>
+                  </ResourceLink>
                 </Table.Td>
                 <Table.Td>
                   <Badge size="sm" variant="light" color="blue">
@@ -797,6 +884,8 @@ export default function RouterOverviewTab() {
           </ResourceTable>
         )}
       </DetailSection>
+
+      <ConditionsSection conditions={router.conditions} />
     </Stack>
   );
 }

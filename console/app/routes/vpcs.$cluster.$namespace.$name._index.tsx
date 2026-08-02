@@ -20,6 +20,7 @@ import { useState } from "react";
 import { Link, useFetcher, useRouteLoaderData } from "react-router";
 import type { loader as detailLoader } from "./vpcs.$cluster.$namespace.$name";
 import {
+  ConditionsSection,
   ConfirmActionModal,
   DetailField,
   DetailSection,
@@ -30,10 +31,12 @@ import {
 } from "~/ui";
 import {
   floatingIpCreatePath,
+  floatingIpDetailPath,
   floatingIpsListPath,
   formatAge,
   formatDateTime,
   portForwardCreatePath,
+  portForwardDetailPath,
   portForwardsListPath,
   routerPath,
   vmPath,
@@ -398,9 +401,18 @@ export default function VpcOverviewTab() {
               {vpc.floatingIps.map((f) => (
                 <Table.Tr key={f.id}>
                   <Table.Td>
-                    <Code>
-                      {f.public}/{f.prefix}
-                    </Code>
+                    <ResourceLink
+                      to={floatingIpDetailPath({
+                        cluster: vpc.cluster,
+                        namespace: vpc.namespace,
+                        id: f.id,
+                        public: f.public,
+                      })}
+                    >
+                      <Code>
+                        {f.public}/{f.prefix}
+                      </Code>
+                    </ResourceLink>
                   </Table.Td>
                   <Table.Td>
                     <Badge
@@ -547,9 +559,17 @@ export default function VpcOverviewTab() {
             {vpc.portForwards.map((pf) => (
               <Table.Tr key={pf.id}>
                 <Table.Td>
-                  <Code>
-                    {pf.public}:{pf.publicPort}
-                  </Code>
+                  <ResourceLink
+                    to={portForwardDetailPath({
+                      cluster: vpc.cluster,
+                      namespace: vpc.namespace,
+                      id: pf.id,
+                    })}
+                  >
+                    <Code>
+                      {pf.public}:{pf.publicPort}
+                    </Code>
+                  </ResourceLink>
                 </Table.Td>
                 <Table.Td>
                   <Badge size="sm" variant="light" color="blue">
@@ -592,6 +612,8 @@ export default function VpcOverviewTab() {
           </ResourceTable>
         )}
       </DetailSection>
+
+      <ConditionsSection conditions={vpc.conditions} />
 
       <ConfirmActionModal
         opened={disassociateTarget != null}

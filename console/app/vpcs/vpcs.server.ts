@@ -8,9 +8,11 @@ import type {
   DeletePortForwardRequest,
   DisassociateFloatingIpRequest,
   FloatingIpAssociation,
+  FloatingIpDetail,
   FloatingIpEligibleVpc,
   FloatingIpSummary,
   PortForwardAssociation,
+  PortForwardDetail,
   PortForwardEligibleVpc,
   PortForwardSummary,
   ReleaseFloatingIpRequest,
@@ -62,6 +64,7 @@ import {
   kmcManagedLabels,
   listClusterCustomObjects,
   listNamespacedCustomObjects,
+  mapCrConditions,
   ownerAnnotation,
   PLURAL_FLOATING_IPS,
   PLURAL_PORT_FORWARDS,
@@ -563,6 +566,7 @@ export async function getVpc(
         ([k]) => !k.startsWith("kubectl.kubernetes.io/"),
       ),
     ),
+    conditions: mapCrConditions(cr.status?.conditions),
     attachedVms,
     attachedCount: attachedVms.length,
     router,
@@ -999,6 +1003,79 @@ export async function releaseFloatingIp(
   );
 }
 
+export async function getFloatingIp(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+): Promise<FloatingIpDetail> {
+  let cr: FloatingIpCr | null = null;
+  try {
+    cr = await getNamespacedCustomObject<FloatingIpCr>(
+      cluster,
+      namespace,
+      PLURAL_FLOATING_IPS,
+      name,
+    );
+  } catch (err) {
+    if (!isNotFoundError(err)) {
+      throw new Error(formatError(err), { cause: err });
+    }
+  }
+  if (!cr) {
+    // Allow lookup by public address when the path used the address form.
+    cr = await findFloatingIpByPublic(cluster, namespace, name);
+  }
+  if (!cr?.metadata?.name) {
+    throw new Response("Floating IP not found", { status: 404 });
+  }
+
+  const summary = mapFloatingIpSummary(cluster, cr);
+  let router: RouterCr | null = null;
+  const routerName =
+    cr.spec?.routerRef?.name?.trim() || summary.routerName || undefined;
+  if (routerName) {
+    router = await loadRouter(cluster, namespace, routerName);
+  }
+  // Re-map with router for agent status when we had to load it after summary.
+  const withRouter = mapFloatingIpSummary(cluster, cr, router);
+
+  return {
+    ...withRouter,
+    name: cr.metadata.name,
+    uid: cr.metadata.uid,
+    labels: cr.metadata.labels ?? {},
+    annotations: Object.fromEntries(
+      Object.entries(cr.metadata.annotations ?? {}).filter(
+        ([k]) => !k.startsWith("kubectl.kubernetes.io/"),
+      ),
+    ),
+    age: cr.metadata.creationTimestamp ?? "",
+    phase: cr.status?.phase,
+    programmed: cr.status?.programmed,
+    observedGeneration: cr.status?.observedGeneration,
+    poolRef: cr.spec?.poolRef
+      ? { kind: cr.spec.poolRef.kind, name: cr.spec.poolRef.name }
+      : undefined,
+    conditions: mapCrConditions(cr.status?.conditions),
+  };
+}
+
+export async function getFloatingIpYaml(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+): Promise<string> {
+  // Resolve via get so public-address path segments still work.
+  const detail = await getFloatingIp(cluster, namespace, name);
+  const obj = await getNamespacedCustomObject(
+    cluster,
+    namespace,
+    PLURAL_FLOATING_IPS,
+    detail.name,
+  );
+  return toResourceYaml(obj);
+}
+
 export async function listFloatingIps(clusterFilter?: ClusterId): Promise<{
   items: FloatingIpSummary[];
   clusters: Awaited<ReturnType<typeof listClusters>>;
@@ -1248,6 +1325,68 @@ export async function deletePortForward(
     PLURAL_PORT_FORWARDS,
     id,
   );
+}
+
+export async function getPortForward(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+): Promise<PortForwardDetail> {
+  let cr: PortForwardCr;
+  try {
+    cr = await getNamespacedCustomObject<PortForwardCr>(
+      cluster,
+      namespace,
+      PLURAL_PORT_FORWARDS,
+      name,
+    );
+  } catch (err) {
+    if (isNotFoundError(err)) {
+      throw new Response("Port forward not found", { status: 404 });
+    }
+    throw new Error(formatError(err), { cause: err });
+  }
+  if (!cr.metadata?.name) {
+    throw new Response("Port forward not found", { status: 404 });
+  }
+
+  let router: RouterCr | null = null;
+  const routerName = cr.spec?.routerRef?.name?.trim();
+  if (routerName) {
+    router = await loadRouter(cluster, namespace, routerName);
+  }
+  const summary = mapPortForwardSummary(cluster, cr, router);
+
+  return {
+    ...summary,
+    name: cr.metadata.name,
+    uid: cr.metadata.uid,
+    labels: cr.metadata.labels ?? {},
+    annotations: Object.fromEntries(
+      Object.entries(cr.metadata.annotations ?? {}).filter(
+        ([k]) => !k.startsWith("kubectl.kubernetes.io/"),
+      ),
+    ),
+    age: cr.metadata.creationTimestamp ?? "",
+    phase: cr.status?.phase,
+    programmed: cr.status?.programmed,
+    observedGeneration: cr.status?.observedGeneration,
+    conditions: mapCrConditions(cr.status?.conditions),
+  };
+}
+
+export async function getPortForwardYaml(
+  cluster: ClusterId,
+  namespace: string,
+  name: string,
+): Promise<string> {
+  const obj = await getNamespacedCustomObject(
+    cluster,
+    namespace,
+    PLURAL_PORT_FORWARDS,
+    name,
+  );
+  return toResourceYaml(obj);
 }
 
 export async function listPortForwards(clusterFilter?: ClusterId): Promise<{

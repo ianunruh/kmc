@@ -29,6 +29,7 @@ import {
   kmcManagedLabels,
   listClusterCustomObjects,
   listNamespacedCustomObjects,
+  mapCrConditions,
   PLURAL_FLOATING_IPS,
   PLURAL_IP_ADDRESSES,
   PLURAL_PORT_FORWARDS,
@@ -351,6 +352,18 @@ export async function getRouter(
     vmStatus: cr.status?.vmStatus,
     vmReady: cr.status?.vmReady,
     vmMissing: cr.status?.vmMissing,
+    conditions: mapCrConditions(cr.status?.conditions),
+    appliance: cr.spec?.appliance?.image?.name
+      ? {
+          imageNamespace: cr.spec.appliance.image.namespace || "vm-images",
+          imageName: cr.spec.appliance.image.name,
+          diskSize: cr.spec.appliance.diskSize || "10Gi",
+          storageClass: cr.spec.appliance.storageClass,
+          instanceType: cr.spec.appliance.instanceType,
+          cpuCores: cr.spec.appliance.cpuCores,
+          memory: cr.spec.appliance.memory,
+        }
+      : undefined,
   };
 }
 

@@ -32,6 +32,7 @@ import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
 import {
   floatingIpCreatePath,
+  floatingIpDetailPath,
   floatingIpsListPath,
   formatAge,
   ingressCreatePath,
@@ -42,6 +43,7 @@ import {
   loadBalancerPath,
   loadBalancersListPath,
   portForwardCreatePath,
+  portForwardDetailPath,
   portForwardsListPath,
   vpcPath,
 } from "~/lib/format";
@@ -438,10 +440,14 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
                 {floatingIps.map((f) => (
                   <Table.Tr key={`${f.vpcName}/${f.id}`}>
                     <Table.Td>
-                      <CopyableValue
-                        value={f.public}
-                        display={`${f.public}/${f.prefix}`}
-                      />
+                      <Group gap={4} wrap="nowrap">
+                        <ResourceLink to={floatingIpDetailPath(f)}>
+                          <Code>
+                            {f.public}/{f.prefix}
+                          </Code>
+                        </ResourceLink>
+                        <CopyButton value={f.public} size="xs" />
+                      </Group>
                     </Table.Td>
                     <Table.Td>
                       {f.private ? (
@@ -551,10 +557,17 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
                 {portForwards.map((pf) => (
                   <Table.Tr key={`${pf.vpcName}/${pf.id}`}>
                     <Table.Td>
-                      <CopyableValue
-                        value={`${pf.public}:${pf.publicPort}`}
-                        display={`${pf.public}:${pf.publicPort}`}
-                      />
+                      <Group gap={4} wrap="nowrap">
+                        <ResourceLink to={portForwardDetailPath(pf)}>
+                          <Code>
+                            {pf.public}:{pf.publicPort}
+                          </Code>
+                        </ResourceLink>
+                        <CopyButton
+                          value={`${pf.public}:${pf.publicPort}`}
+                          size="xs"
+                        />
+                      </Group>
                     </Table.Td>
                     <Table.Td>
                       <Badge size="sm" variant="light" color="blue">

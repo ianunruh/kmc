@@ -141,9 +141,27 @@ export default [
 
   route("floating-ips", "routes/floating-ips._index.tsx"),
   route("floating-ips/create", "routes/floating-ips.create.tsx"),
+  route(
+    "floating-ips/:cluster/:namespace/:name",
+    "routes/floating-ips.$cluster.$namespace.$name.tsx",
+    [
+      index("routes/floating-ips.$cluster.$namespace.$name._index.tsx"),
+      route("events", "routes/floating-ips.$cluster.$namespace.$name.events.tsx"),
+      route("yaml", "routes/floating-ips.$cluster.$namespace.$name.yaml.tsx"),
+    ],
+  ),
 
   route("port-forwards", "routes/port-forwards._index.tsx"),
   route("port-forwards/create", "routes/port-forwards.create.tsx"),
+  route(
+    "port-forwards/:cluster/:namespace/:name",
+    "routes/port-forwards.$cluster.$namespace.$name.tsx",
+    [
+      index("routes/port-forwards.$cluster.$namespace.$name._index.tsx"),
+      route("events", "routes/port-forwards.$cluster.$namespace.$name.events.tsx"),
+      route("yaml", "routes/port-forwards.$cluster.$namespace.$name.yaml.tsx"),
+    ],
+  ),
 
   route("namespaces", "routes/namespaces._index.tsx"),
   route("namespaces/create", "routes/namespaces.create.tsx"),

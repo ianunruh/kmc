@@ -5,6 +5,7 @@ import {
   Button,
   Checkbox,
   Code,
+  Group,
   Menu,
   Select,
   Stack,
@@ -24,7 +25,7 @@ import {
   BulkActionBar,
   ConfirmActionModal,
   ConsolePaper,
-  CopyableValue,
+  CopyButton,
   FilterBar,
   PageHeader,
   ResourceLink,
@@ -45,6 +46,7 @@ import {
 import { actionFailure } from "~/lib/errors";
 import {
   portForwardCreatePath,
+  portForwardDetailPath,
   portForwardsListPath,
   routerPath,
   vmPath,
@@ -400,10 +402,17 @@ export default function PortForwardsPage({ loaderData }: Route.ComponentProps) {
                     />
                   </Table.Td>
                   <Table.Td>
-                    <CopyableValue
-                      value={`${f.public}:${f.publicPort}`}
-                      display={`${f.public}:${f.publicPort}`}
-                    />
+                    <Group gap={4} wrap="nowrap">
+                      <ResourceLink to={portForwardDetailPath(f)}>
+                        <Code>
+                          {f.public}:{f.publicPort}
+                        </Code>
+                      </ResourceLink>
+                      <CopyButton
+                        value={`${f.public}:${f.publicPort}`}
+                        size="xs"
+                      />
+                    </Group>
                   </Table.Td>
                   <Table.Td>
                     <Badge size="sm" variant="light" color="blue">
@@ -411,10 +420,9 @@ export default function PortForwardsPage({ loaderData }: Route.ComponentProps) {
                     </Badge>
                   </Table.Td>
                   <Table.Td>
-                    <CopyableValue
-                      value={`${f.private}:${f.privatePort}`}
-                      display={`${f.private}:${f.privatePort}`}
-                    />
+                    <Code>
+                      {f.private}:{f.privatePort}
+                    </Code>
                   </Table.Td>
                   <Table.Td>
                     {f.targetVm ? (

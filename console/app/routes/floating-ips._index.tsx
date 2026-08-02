@@ -28,7 +28,7 @@ import {
   BulkActionBar,
   ConfirmActionModal,
   ConsolePaper,
-  CopyableValue,
+  CopyButton,
   FilterBar,
   PageHeader,
   ResourceLink,
@@ -48,7 +48,13 @@ import {
   runBulkAction,
 } from "~/lib/bulk-action";
 import { actionFailure } from "~/lib/errors";
-import { floatingIpCreatePath, floatingIpsListPath, vmPath, vpcPath } from "~/lib/format";
+import {
+  floatingIpCreatePath,
+  floatingIpDetailPath,
+  floatingIpsListPath,
+  vmPath,
+  vpcPath,
+} from "~/lib/format";
 import {
   clusterFromRequest,
   getSearchParam,
@@ -460,10 +466,14 @@ export default function FloatingIpsPage({ loaderData }: Route.ComponentProps) {
                     />
                   </Table.Td>
                   <Table.Td>
-                    <CopyableValue
-                      value={f.public}
-                      display={`${f.public}/${f.prefix}`}
-                    />
+                    <Group gap={4} wrap="nowrap">
+                      <ResourceLink to={floatingIpDetailPath(f)}>
+                        <Code>
+                          {f.public}/{f.prefix}
+                        </Code>
+                      </ResourceLink>
+                      <CopyButton value={f.public} size="xs" />
+                    </Group>
                   </Table.Td>
                   <Table.Td>
                     <Badge

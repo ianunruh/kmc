@@ -42,6 +42,25 @@ export type Condition = {
   observedGeneration?: number;
 };
 
+/** Map CR status.conditions into the shared console condition shape. */
+export function mapCrConditions(
+  conditions?: Condition[],
+): Array<{
+  type: string;
+  status: string;
+  reason?: string;
+  message?: string;
+  lastTransitionTime?: string;
+}> {
+  return (conditions ?? []).map((c) => ({
+    type: c.type ?? "Unknown",
+    status: c.status ?? "Unknown",
+    reason: c.reason,
+    message: c.message,
+    lastTransitionTime: c.lastTransitionTime,
+  }));
+}
+
 // --- VPC ---
 
 export type VpcCr = {

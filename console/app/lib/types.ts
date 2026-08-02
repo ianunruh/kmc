@@ -1019,6 +1019,8 @@ export interface VpcDetail extends VpcSummary {
   uid?: string;
   labels: Record<string, string>;
   annotations: Record<string, string>;
+  /** status.conditions from the VPC CR. */
+  conditions: VmCondition[];
   attachedVms: VpcAttachedVm[];
   attachedCount: number;
   ipPool?: NetworkIpPoolInfo;
@@ -1105,6 +1107,18 @@ export interface RouterDetail extends RouterSummary {
   vmRestartRequired?: boolean;
   /** Message from the RestartRequired condition when present. */
   vmRestartRequiredMessage?: string;
+  /** status.conditions from the Router CR. */
+  conditions: VmCondition[];
+  /** Desired appliance image/size from the Router CR (for rebuild form defaults). */
+  appliance?: {
+    imageNamespace: string;
+    imageName: string;
+    diskSize: string;
+    storageClass?: string;
+    instanceType?: string;
+    cpuCores?: number;
+    memory?: string;
+  };
 }
 
 /**
@@ -1235,6 +1249,10 @@ export interface FloatingIpSummary {
   cluster: ClusterId;
   namespace: string;
   vpcName: string;
+  /**
+   * FloatingIP CR object name (DNS-1123; often public address with dots → dashes).
+   * Used for detail routes and release/disassociate.
+   */
   id: string;
   public: string;
   prefix: number;
@@ -1247,6 +1265,24 @@ export interface FloatingIpSummary {
   agentStatus?: RouterAgentStatus;
   agentHeartbeatAt?: string;
   policyConfigMap?: string;
+}
+
+/** FloatingIP CR detail (overview / events / YAML). */
+export interface FloatingIpDetail extends FloatingIpSummary {
+  /** Same as `id` — CR metadata.name. */
+  name: string;
+  uid?: string;
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
+  /** creationTimestamp ISO (for age / created display). */
+  age: string;
+  /** status.phase: Pending, Held, Associated, Error. */
+  phase?: string;
+  /** True when a Router has projected this mapping into policy. */
+  programmed?: boolean;
+  observedGeneration?: number;
+  poolRef?: { kind: string; name: string };
+  conditions: VmCondition[];
 }
 
 /** VPC that can accept floating IP associations (router with external gateway). */
@@ -1273,6 +1309,7 @@ export interface PortForwardSummary {
   cluster: ClusterId;
   namespace: string;
   vpcName: string;
+  /** PortForward CR object name. */
   id: string;
   public: string;
   publicPort: number;
@@ -1284,6 +1321,23 @@ export interface PortForwardSummary {
   agentStatus?: RouterAgentStatus;
   agentHeartbeatAt?: string;
   policyConfigMap?: string;
+}
+
+/** PortForward CR detail (overview / events / YAML). */
+export interface PortForwardDetail extends PortForwardSummary {
+  /** Same as `id` — CR metadata.name. */
+  name: string;
+  uid?: string;
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
+  /** creationTimestamp ISO (for age / created display). */
+  age: string;
+  /** status.phase: Pending, Ready, Error. */
+  phase?: string;
+  /** True when a Router has projected this rule into policy. */
+  programmed?: boolean;
+  observedGeneration?: number;
+  conditions: VmCondition[];
 }
 
 /**
