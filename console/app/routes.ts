@@ -122,6 +122,7 @@ export default [
   route("vpcs/:cluster/:namespace/:name", "routes/vpcs.$cluster.$namespace.$name.tsx", [
     index("routes/vpcs.$cluster.$namespace.$name._index.tsx"),
     route("vms", "routes/vpcs.$cluster.$namespace.$name.vms.tsx"),
+    route("events", "routes/vpcs.$cluster.$namespace.$name.events.tsx"),
     route("yaml", "routes/vpcs.$cluster.$namespace.$name.yaml.tsx"),
   ]),
 
@@ -133,6 +134,7 @@ export default [
     [
       index("routes/routers.$cluster.$namespace.$name._index.tsx"),
       route("leases", "routes/routers.$cluster.$namespace.$name.leases.tsx"),
+      route("events", "routes/routers.$cluster.$namespace.$name.events.tsx"),
       route("yaml", "routes/routers.$cluster.$namespace.$name.yaml.tsx"),
     ],
   ),

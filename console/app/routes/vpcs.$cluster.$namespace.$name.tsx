@@ -313,6 +313,7 @@ export default function VpcDetailLayout({ loaderData }: Route.ComponentProps) {
         items={[
           { label: "Overview", to: detailTabPath(base, "overview"), end: true },
           { label: "Attached VMs", to: detailTabPath(base, "vms") },
+          { label: "Events", to: detailTabPath(base, "events") },
           { label: "YAML", to: detailTabPath(base, "yaml") },
         ]}
       />

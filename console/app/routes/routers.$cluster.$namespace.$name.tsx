@@ -346,6 +346,7 @@ export default function RouterDetailLayout({ loaderData }: Route.ComponentProps)
         items={[
           { label: "Overview", to: detailTabPath(base, "overview"), end: true },
           { label: "DHCP leases", to: detailTabPath(base, "leases") },
+          { label: "Events", to: detailTabPath(base, "events") },
           { label: "YAML", to: detailTabPath(base, "yaml") },
         ]}
       />
