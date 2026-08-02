@@ -280,19 +280,28 @@ func (r *RouterReconciler) buildRouterVM(
 	imageNS := app.Image.Namespace
 	imageName := app.Image.Name
 
+	// Match console ensureRootDataVolumeFromImage: Block volumeMode is required
+	// for CSI clones from golden-image PVCs on ceph-block-* (source is Block).
+	// Omitting volumeMode defaults to Filesystem → IncompatibleVolumeModes and
+	// a stuck CloneInProgress DV.
+	storage := map[string]interface{}{
+		"accessModes": []interface{}{"ReadWriteOnce"},
+		"volumeMode":  "Block",
+		"resources": map[string]interface{}{
+			"requests": map[string]interface{}{
+				"storage": app.DiskSize,
+			},
+		},
+	}
+	if sc := strings.TrimSpace(app.StorageClass); sc != "" {
+		storage["storageClassName"] = sc
+	}
 	dvTemplate := map[string]interface{}{
 		"metadata": map[string]interface{}{
 			"name": dvName,
 		},
 		"spec": map[string]interface{}{
-			"pvc": map[string]interface{}{
-				"accessModes": []interface{}{"ReadWriteOnce"},
-				"resources": map[string]interface{}{
-					"requests": map[string]interface{}{
-						"storage": app.DiskSize,
-					},
-				},
-			},
+			"storage": storage,
 			"source": map[string]interface{}{
 				"pvc": map[string]interface{}{
 					"namespace": imageNS,
@@ -300,10 +309,6 @@ func (r *RouterReconciler) buildRouterVM(
 				},
 			},
 		},
-	}
-	if sc := strings.TrimSpace(app.StorageClass); sc != "" {
-		pvc := dvTemplate["spec"].(map[string]interface{})["pvc"].(map[string]interface{})
-		pvc["storageClassName"] = sc
 	}
 
 	spec := map[string]interface{}{
