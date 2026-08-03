@@ -192,6 +192,13 @@ spec:
                     description: Agent version / script hash prefix.
                     type: string
                 type: object
+              applianceRecreateNonce:
+                description: |-
+                  ApplianceRecreateNonce is the last processed value of
+                  annotation kmc.ianunruh.com/recreate-appliance. When the annotation is
+                  set to a different value, the controller tears down the appliance VM and
+                  cloud-init Secret, then rebuilds them.
+                type: string
               conditions:
                 description: Conditions represent the latest available observations.
                 items:

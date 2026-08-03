@@ -22,14 +22,18 @@ const (
 	VPCFinalizer = "kmc.ianunruh.com/vpc"
 )
 
-// Labels written on Multus NetworkAttachmentDefinitions owned by a VPC.
+// Labels written on Multus NetworkAttachmentDefinitions owned by a VPC or static IPPool.
 const (
 	LabelResource = "kmc.ianunruh.com/resource"
 	LabelVLAN     = "kmc.ianunruh.com/vlan"
 	LabelVLANPool = "kmc.ianunruh.com/vlan-pool"
+	// LabelIPPool is stamped on static/shared Multus NADs from IPPool.spec.cni.
+	LabelIPPool    = "kmc.ianunruh.com/ip-pool"
 	LabelManagedBy = "app.kubernetes.io/managed-by"
-	ManagedByKMC  = "kmc"
-	ResourceVPC   = "vpc"
+	ManagedByKMC   = "kmc"
+	ResourceVPC    = "vpc"
+	// ResourceNetwork marks static Multus NADs materialised from IPPool CNI templates.
+	ResourceNetwork = "network"
 )
 
 // Annotations on Multus NADs / reserved for future Router attachment.

@@ -251,7 +251,7 @@ export async function releaseIpAddressClaims(
 export async function listIpAddressClaimAddresses(opts: {
   cluster: ClusterId;
   namespace: string;
-  /** When true (static cluster ipPools), try cluster-scoped list first. */
+  /** When true (static IPPool CRs), try cluster-scoped list first. */
   clusterWide?: boolean;
 }): Promise<string[]> {
   const { custom } = getClusterClients(opts.cluster);

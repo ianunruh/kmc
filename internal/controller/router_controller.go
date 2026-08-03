@@ -144,6 +144,14 @@ func (r *RouterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	vmReady, vmStatus, vmMissing := false, "", true
 	if !r.SkipAppliance {
+		// Annotation-driven full rebuild (console sets recreate-appliance nonce).
+		if requeue, recErr := r.maybeRecreateAppliance(ctx, &obj); recErr != nil {
+			return r.fail(ctx, &obj, "ApplianceRecreateError", recErr.Error())
+		} else if requeue {
+			// Status nonce recorded; VM/Secret deleted — rebuild on next pass.
+			return ctrl.Result{Requeue: true}, nil
+		}
+
 		vmReady, vmStatus, vmMissing, err = r.ensureRouterAppliance(ctx, &obj, ifaces, ext)
 		if err != nil {
 			// Control plane may still be useful; mark appliance error but keep requeue.

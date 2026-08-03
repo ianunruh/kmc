@@ -81,6 +81,10 @@ function buildStaticNadBody(
  * If `multusNetworkName` matches a static ipPool with a `cni` template, ensure
  * the Multus NAD exists in the VM's namespace. No-op for VPC NADs, pools without
  * cni, or cross-namespace Multus refs.
+ *
+ * Dual-path with the Go controller (`ensureStaticNADForPool`): kept on VM create
+ * so Multus attach is not racy with async IPAddress reconcile. Labels/config
+ * match the controller; prefer controller ownership long-term.
  */
 export async function ensureStaticMultusNad(
   cluster: ClusterId,

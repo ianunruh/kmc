@@ -146,6 +146,7 @@ export type RouterCr = {
     vmStatus?: string;
     vmReady?: boolean;
     vmMissing?: boolean;
+    applianceRecreateNonce?: string;
     agent?: {
       status?: string;
       observedGeneration?: string;

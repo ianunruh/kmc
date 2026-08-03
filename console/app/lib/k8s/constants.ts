@@ -102,11 +102,11 @@ export const OBJECT_BUCKET_PROVISIONER_HINT = "/bucket";
 /** Value of kmc.ianunruh.com/resource for self-service VPC NADs. */
 export const KMC_RESOURCE_VPC = "vpc";
 
-/** Value of kmc.ianunruh.com/resource for static/shared Multus NADs (from ipPools). */
+/** Value of kmc.ianunruh.com/resource for static/shared Multus NADs (from IPPool CRs). */
 export const KMC_RESOURCE_NETWORK = "network";
 export const KMC_LABEL_VLAN = `${KMC_LABEL_NAMESPACE}/vlan`;
 export const KMC_LABEL_VLAN_POOL = `${KMC_LABEL_NAMESPACE}/vlan-pool`;
-/** Static ipPools id stamped on ensured shared Multus NADs. */
+/** Static IPPool id stamped on ensured shared Multus NADs. */
 export const KMC_LABEL_IP_POOL = `${KMC_LABEL_NAMESPACE}/ip-pool`;
 
 /** Annotations on kmc-managed VPC NADs (optional IPAM + metadata). */

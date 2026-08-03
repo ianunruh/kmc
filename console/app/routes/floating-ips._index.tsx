@@ -432,7 +432,7 @@ export default function FloatingIpsPage({ loaderData }: Route.ComponentProps) {
 
           <ResourceTable
             isEmpty={filtered.length === 0}
-            emptyMessage="No floating IPs. Associate a public address from an ipPools Multus network to a private VPC VM."
+            emptyMessage="No floating IPs. Associate a public address from an IPPool Multus network to a private VPC VM."
             headers={[
               <Checkbox
                 key="select-all"

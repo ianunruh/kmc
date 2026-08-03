@@ -1,8 +1,5 @@
 import type { ClusterId } from "~/lib/types";
-import {
-  getClusterIdentity,
-  type VlanPoolConfig,
-} from "~/lib/k8s/cluster-config.server";
+import type { VlanPoolConfig } from "~/lib/k8s/cluster-config.server";
 import {
   isForbiddenError,
   isNotFoundError,
@@ -38,8 +35,9 @@ function vlanPoolConfigFromCr(cr: VlanPoolCr): VlanPoolConfig | null {
 }
 
 /**
- * Cluster-scoped VLANPool CRs (preferred). Falls back to clusters.yaml vlanPools
- * when CRs are empty/unavailable.
+ * Cluster-scoped VLANPool CRs (operator-applied). Empty when none exist or the
+ * API is missing/forbidden. No clusters.yaml fallback — apply examples under
+ * deploy/controller/examples/vlanpool.yaml.
  */
 export async function listVlanPools(cluster: ClusterId): Promise<VlanPoolConfig[]> {
   try {
@@ -47,10 +45,9 @@ export async function listVlanPools(cluster: ClusterId): Promise<VlanPoolConfig[
       cluster,
       PLURAL_VLAN_POOLS,
     );
-    const fromCr = items
+    return items
       .map(vlanPoolConfigFromCr)
       .filter((p): p is VlanPoolConfig => p != null);
-    if (fromCr.length > 0) return fromCr;
   } catch (err) {
     if (!isNotFoundError(err) && !isForbiddenError(err)) {
       console.error(
@@ -58,8 +55,8 @@ export async function listVlanPools(cluster: ClusterId): Promise<VlanPoolConfig[
         err instanceof Error ? err.message : String(err),
       );
     }
+    return [];
   }
-  return getClusterIdentity(cluster)?.vlanPools ?? [];
 }
 
 export async function getVlanPool(
@@ -74,39 +71,4 @@ export async function getVlanPool(
 
 export async function clusterHasVlanPools(cluster: ClusterId): Promise<boolean> {
   return (await listVlanPools(cluster)).length > 0;
-}
-
-/** Pure: used set for a pool given discovered VLAN ids. */
-export function collectUsedVlans(
-  pool: VlanPoolConfig,
-  discovered: Iterable<number>,
-): Set<number> {
-  const used = new Set<number>();
-  for (const v of pool.exclude ?? []) {
-    if (v >= pool.start && v <= pool.end) used.add(v);
-  }
-  for (const v of discovered) {
-    if (Number.isInteger(v) && v >= pool.start && v <= pool.end) {
-      used.add(v);
-    }
-  }
-  return used;
-}
-
-/** Pure: first free VLAN in range, or null if exhausted. */
-export function firstFreeVlan(
-  pool: VlanPoolConfig,
-  used: ReadonlySet<number>,
-): number | null {
-  for (let v = pool.start; v <= pool.end; v++) {
-    if (!used.has(v)) return v;
-  }
-  return null;
-}
-
-export function parseVlanLabel(value: string | undefined): number | null {
-  if (!value?.trim()) return null;
-  const n = Number(value);
-  if (!Number.isInteger(n) || n < 1 || n > 4094) return null;
-  return n;
 }

@@ -4,6 +4,10 @@
 # in kmc-system). Defaults to the first cluster below. Override with env
 # KMC_SETTINGS_CLUSTER.
 # settingsCluster: prod-sjc1
+#
+# Operator IPAM / VLAN pools are cluster-scoped CRs (not this file):
+#   kubectl apply -f deploy/controller/examples/ippool.yaml
+#   kubectl apply -f deploy/controller/examples/vlanpool.yaml
 clusters:
   - id: prod-sjc1
     displayName: prod-sjc1
@@ -12,47 +16,11 @@ clusters:
     tokenFile: config/secrets/prod-sjc1.token
     # Optional: public S3 API base URL for Object Storage (ObjectBucketClaim) UI
     objectStorageEndpoint: https://s3.kcloud.io
-    # Optional: underlay CIDRs for NAT gateway pod NIC + in-guest agent.
-    # Required to launch NAT gateways that watch policy ConfigMaps.
+    # Optional: underlay CIDRs for dual-home Multus guests (pod NIC routes).
     # network:
     #   podCIDR: 10.95.0.0/16
     #   serviceCIDR: 10.96.0.0/12
     #   # dnsIP: 10.96.0.10
-    # Optional: scan-derived IPv4 pools for Multus bridge networks.
-    # On VM create, kmc picks a free address (from kmc.ianunruh.com/ipv4 annotations + live
-    # VMI IPs), stamps annotations, and injects cloud-init networkData (netplan).
-    ipPools:
-      - id: public
-        multusNetwork: bridge-external
-        cidr: 74.82.62.0/27
-        gateway: 74.82.62.1
-        dns:
-          - 1.1.1.1
-          - 1.0.0.1
-        # Optional: never allocate these (beyond network/broadcast/gateway)
-        # exclude:
-        #   - 74.82.62.2
-        # Optional allocation window within the CIDR
-        # start: 74.82.62.10
-        # end: 74.82.62.200
-        # Optional guest interface name for netplan (default: match virtio_net)
-        # interface: enp1s0
-        # Optional: CNI template to create the Multus NAD in the VM namespace
-        # on launch when missing (shared/public networks).
-        # cni:
-        #   type: bridge
-        #   bridge: br-external
-        #   # vlan: 3000
-    # Optional: VLAN pool for self-service VPCs (Multus bridge + vlan on hypervisors).
-    # Create VPC in the UI allocates the next free VLAN and creates a namespace NAD.
-    # vlanPools:
-    #   - id: default
-    #     start: 3000
-    #     end: 3100
-    #     bridge: br0
-    #     dns: [1.1.1.1]
-    #     # Never allocate these (hand-managed segments)
-    #     exclude: [3000]
   - id: homelab
     displayName: homelab
     apiServer: https://kubernetes.den1.kcloud.zone:6443
@@ -65,7 +33,7 @@ clusters:
     prometheusUrl: https://prometheus.k8s.kcloud.zone
     # Optional: public S3 API base URL for Object Storage (ObjectBucketClaim) UI
     objectStorageEndpoint: https://s3.kcloud.zone
-    # Optional: underlay CIDRs for NAT gateway pod NIC + in-guest agent
+    # Optional: underlay CIDRs for dual-home Multus guests (pod NIC routes)
     # network:
     #   podCIDR: 10.19.0.0/16
     #   serviceCIDR: 10.20.0.0/16

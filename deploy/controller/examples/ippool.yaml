@@ -13,6 +13,9 @@ spec:
     - 1.0.0.1
   # exclude:
   #   - 74.82.62.2
+  # Optional: controller materialises a Multus NAD in tenant namespaces
+  # on demand (Router external / IPAddress claims) from this template.
   # cni:
   #   type: bridge
   #   bridge: br-external
+  #   # vlan: 100

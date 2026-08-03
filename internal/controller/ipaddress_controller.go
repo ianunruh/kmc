@@ -147,6 +147,16 @@ func (r *IPAddressReconciler) resolvePoolInfo(ctx context.Context, obj *kmcv1alp
 			}
 			return "", nil, getErr
 		}
+		// Materialise shared Multus NAD when the pool ships a CNI template.
+		// Best-effort: do not block bind if ensure fails (surface via event).
+		if pool.Spec.CNI != nil {
+			if nerr := ensureStaticNADForPool(ctx, r.Client, r.Scheme, obj.Namespace, &pool); nerr != nil {
+				if r.Recorder != nil {
+					r.Recorder.Eventf(obj, corev1.EventTypeWarning, "StaticNADError",
+						"ensure Multus NAD for pool %s: %v", pool.Name, nerr)
+				}
+			}
+		}
 		window, werr := ipam.ParsePoolWindow(pool.Spec.CIDR, pool.Spec.Gateway, pool.Spec.Start, pool.Spec.End, pool.Spec.Exclude)
 		if werr != nil {
 			return "", nil, fmt.Errorf("IPPool %q: %w", name, werr)

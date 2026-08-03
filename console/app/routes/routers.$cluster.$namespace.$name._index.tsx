@@ -659,9 +659,10 @@ export default function RouterOverviewTab() {
           </Stack>
         ) : publicNetworks.length === 0 ? (
           <Text size="sm" c="dimmed">
-            No public Multus networks with ipPools on this cluster. Add one in{" "}
-            <Code>clusters.yaml</Code> to enable external SNAT / floating IPs / port
-            forwards.
+            No public Multus networks with an <Code>IPPool</Code> CR on this
+            cluster. Apply an IPPool (see{" "}
+            <Code>deploy/controller/examples/ippool.yaml</Code>) to enable
+            external SNAT / floating IPs / port forwards.
           </Text>
         ) : router.vmMissing ? (
           <Text size="sm" c="dimmed">

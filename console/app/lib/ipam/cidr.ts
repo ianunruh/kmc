@@ -1,4 +1,4 @@
-/** IPv4 helpers for scan-derived IPAM (no external deps). */
+/** IPv4 helpers for pool windows and IPAddress claims (no external deps). */
 
 export type ParsedCidr = {
   /** Dotted CIDR as configured */

@@ -1373,7 +1373,7 @@ export interface CreateVpcRequest {
   namespace: string;
   name: string;
   description?: string;
-  /** When set, enables scan-derived IPAM for this VPC NAD */
+  /** When set, enables private IPAM (IPAddress claims) for this VPC */
   cidr?: string;
   gateway?: string;
   dns?: string[];

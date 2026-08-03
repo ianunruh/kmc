@@ -234,6 +234,10 @@ func (r *RouterReconciler) resolveAndClaimExternal(ctx context.Context, obj *kmc
 	if pool == nil {
 		return nil, fmt.Errorf("no IPPool found for Multus network %q", multus)
 	}
+	// Ensure shared Multus NAD exists in the router namespace (from IPPool.spec.cni).
+	if err := ensureStaticNADForPool(ctx, r.Client, r.Scheme, obj.Namespace, pool); err != nil {
+		return nil, fmt.Errorf("ensure static Multus NAD: %w", err)
+	}
 	if strings.TrimSpace(pool.Spec.Gateway) == "" {
 		return nil, fmt.Errorf("public pool %q needs a gateway for the external default route", pool.Name)
 	}
@@ -336,62 +340,25 @@ func (r *RouterReconciler) ensurePublicIPAddress(
 	preferred string,
 	window *ipam.PoolWindow,
 ) (string, error) {
-	prefix := window.PrefixLength()
-	used, err := r.listUsedAddressesInPool(ctx, "IPPool", pool.Name)
+	used, err := listUsedAddressesByPool(ctx, r.Client, "IPPool", pool.Name)
 	if err != nil {
 		return "", err
 	}
-
-	tryClaim := func(addr string) error {
-		return r.createRouterIPAddressClaim(ctx, obj, addr, prefix, "IPPool", pool.Name)
-	}
-
-	if preferred != "" {
-		if err := ipam.ValidateIPv4Address(preferred); err != nil {
-			return "", err
-		}
-		if !window.Contains(preferred) {
-			return "", fmt.Errorf("address %s is outside pool %s", preferred, pool.Spec.CIDR)
-		}
-		name := ipam.AddressObjectName(preferred)
-		var existing kmcv1alpha1.IPAddress
-		if err := r.Get(ctx, client.ObjectKey{Namespace: obj.Namespace, Name: name}, &existing); err == nil {
-			if isClaimedByRouter(&existing, obj) {
-				return preferred, nil
-			}
-			return "", fmt.Errorf("address %s is already claimed", preferred)
-		} else if !apierrors.IsNotFound(err) {
-			return "", err
-		}
-		if err := tryClaim(preferred); err != nil {
-			return "", err
-		}
-		return preferred, nil
-	}
-
-	for i := 0; i < 64; i++ {
-		free, ok := window.FirstFree(used)
-		if !ok {
-			return "", fmt.Errorf("IPPool %q exhausted", pool.Name)
-		}
-		if err := tryClaim(free); err != nil {
-			if apierrors.IsAlreadyExists(err) {
-				used[free] = struct{}{}
-				continue
-			}
-			// already claimed by us?
-			name := ipam.AddressObjectName(free)
-			var existing kmcv1alpha1.IPAddress
-			if getErr := r.Get(ctx, client.ObjectKey{Namespace: obj.Namespace, Name: name}, &existing); getErr == nil &&
-				isClaimedByRouter(&existing, obj) {
-				return free, nil
-			}
-			used[free] = struct{}{}
-			continue
-		}
-		return free, nil
-	}
-	return "", fmt.Errorf("IPPool %q: could not allocate after conflicts", pool.Name)
+	address, _, err := allocateIPAddressFromWindow(
+		ctx,
+		r.Client,
+		obj.Namespace,
+		window,
+		"IPPool",
+		pool.Name,
+		preferred,
+		used,
+		func(ip *kmcv1alpha1.IPAddress) bool { return isClaimedByRouter(ip, obj) },
+		func(ctx context.Context, address string, prefix int32) error {
+			return r.createRouterIPAddressClaim(ctx, obj, address, prefix, "IPPool", pool.Name)
+		},
+	)
+	return address, err
 }
 
 func (r *RouterReconciler) createRouterIPAddressClaim(
@@ -430,24 +397,6 @@ func (r *RouterReconciler) createRouterIPAddressClaim(
 		return err
 	}
 	return r.Create(ctx, ip)
-}
-
-func (r *RouterReconciler) listUsedAddressesInPool(ctx context.Context, poolKind, poolName string) (map[string]struct{}, error) {
-	used := make(map[string]struct{})
-	var list kmcv1alpha1.IPAddressList
-	if err := r.List(ctx, &list); err != nil {
-		return nil, err
-	}
-	for i := range list.Items {
-		ip := &list.Items[i]
-		if ip.Spec.PoolRef.Kind != poolKind || ip.Spec.PoolRef.Name != poolName {
-			continue
-		}
-		if addr := strings.TrimSpace(ip.Spec.Address); addr != "" {
-			used[addr] = struct{}{}
-		}
-	}
-	return used, nil
 }
 
 func isClaimedByRouter(ip *kmcv1alpha1.IPAddress, router *kmcv1alpha1.Router) bool {

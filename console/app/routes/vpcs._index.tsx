@@ -198,9 +198,9 @@ export default function VpcsPage({ loaderData }: Route.ComponentProps) {
 
       {!canCreate && (
         <Alert color="yellow" variant="light" title="No VLAN pools configured">
-          Add <code>vlanPools</code> under a cluster in{" "}
-          <code>config/clusters.yaml</code> (e.g. VLANs 3000–3100 on{" "}
-          <code>br0</code>) to enable self-service VPCs.
+          Apply a cluster-scoped <code>VLANPool</code> CR (see{" "}
+          <code>deploy/controller/examples/vlanpool.yaml</code>) so the
+          controller can assign VLANs for self-service VPCs.
         </Alert>
       )}
 

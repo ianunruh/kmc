@@ -5,8 +5,8 @@ import type { ClusterId } from "~/lib/types";
 import { getAuthMode } from "~/lib/auth/mode.server";
 
 /**
- * CNI template used to materialize a per-namespace Multus NAD for a static pool.
- * When set, createVm ensures the NAD exists before launch.
+ * CNI template used to materialize a per-namespace Multus NAD for a static pool
+ * (from IPPool.spec.cni).
  */
 export type IpPoolCniConfig = {
   /** CNI plugin type (typically `bridge`) */
@@ -17,7 +17,10 @@ export type IpPoolCniConfig = {
   vlan?: number;
 };
 
-/** Scan-derived IPv4 pool bound to a Multus NAD (see app/lib/ipam). */
+/**
+ * Console view of a Multus IPv4 pool (mapped from cluster-scoped IPPool CRs or
+ * dynamic VPC NAD annotations — not from clusters.yaml).
+ */
 export type IpPoolConfig = {
   /** Stable id written to VM annotation kmc.ianunruh.com/ipam-pool */
   id: string;
@@ -45,15 +48,15 @@ export type IpPoolConfig = {
    */
   interface?: string;
   /**
-   * When set, kmc can create this Multus NAD in a VM namespace if missing
-   * (ensure-on-create for shared/public networks).
+   * When set, controller/console can create this Multus NAD in a tenant
+   * namespace if missing (ensure-on-demand for shared/public networks).
    */
   cni?: IpPoolCniConfig;
 };
 
 /**
- * Operator-defined VLAN range for self-service VPCs (Multus bridge + vlan).
- * See app/vpcs and app/lib/ipam/vlan-pools.server.ts.
+ * Console view of a VLAN range for self-service VPCs (mapped from cluster-scoped
+ * VLANPool CRs — not from clusters.yaml).
  */
 export type VlanPoolConfig = {
   id: string;
@@ -98,12 +101,8 @@ export type ClusterIdentity = {
    * (e.g. https://s3.kcloud.zone). In-cluster RGW DNS still comes from the OBC ConfigMap.
    */
   objectStorageEndpoint?: string;
-  /** Optional underlay CIDRs for shared router pod NIC + agent. */
+  /** Optional underlay CIDRs for dual-home Multus guests (pod NIC routes). */
   network?: ClusterNetworkConfig;
-  /** Optional IPv4 pools for Multus bridge networks. */
-  ipPools?: IpPoolConfig[];
-  /** Optional VLAN pools for self-service VPCs. */
-  vlanPools?: VlanPoolConfig[];
 };
 
 type ClustersFile = {
@@ -129,30 +128,6 @@ type ClustersFile = {
       serviceCIDR?: string | string[];
       dnsIP?: string;
     };
-    ipPools?: Array<{
-      id?: string;
-      multusNetwork?: string;
-      cidr?: string;
-      gateway?: string;
-      dns?: string[];
-      exclude?: string[];
-      start?: string;
-      end?: string;
-      interface?: string;
-      cni?: {
-        type?: string;
-        bridge?: string;
-        vlan?: number;
-      };
-    }>;
-    vlanPools?: Array<{
-      id?: string;
-      start?: number;
-      end?: number;
-      bridge?: string;
-      dns?: string[];
-      exclude?: number[];
-    }>;
   }>;
 };
 
@@ -198,8 +173,6 @@ function loadFromYaml(path: string): {
         "objectStorageEndpoint",
       ),
       network: parseClusterNetwork(raw.network, raw.id),
-      ipPools: parseIpPools(raw.ipPools, raw.id),
-      vlanPools: parseVlanPools(raw.vlanPools, raw.id),
     });
   }
   const settingsCluster = doc.settingsCluster?.trim() || undefined;
@@ -270,146 +243,6 @@ export function clusterNetworkCidrList(network: ClusterNetworkConfig): {
     ? network.serviceCIDR
     : [network.serviceCIDR];
   return { podCIDRs, serviceCIDRs };
-}
-
-function parseIpPoolCni(
-  raw:
-    | {
-        type?: string;
-        bridge?: string;
-        vlan?: number;
-      }
-    | undefined,
-  clusterId: string,
-  poolId: string,
-): IpPoolCniConfig | undefined {
-  if (raw == null) return undefined;
-  const type = raw.type?.trim() || "bridge";
-  const bridge = raw.bridge?.trim();
-  if (!bridge) {
-    throw new Error(
-      `Cluster "${clusterId}": ipPools "${poolId}" cni.bridge is required when cni is set`,
-    );
-  }
-  let vlan: number | undefined;
-  if (raw.vlan != null) {
-    if (!Number.isInteger(raw.vlan) || raw.vlan < 1 || raw.vlan > 4094) {
-      throw new Error(
-        `Cluster "${clusterId}": ipPools "${poolId}" cni.vlan must be an integer 1–4094`,
-      );
-    }
-    vlan = raw.vlan;
-  }
-  return { type, bridge, vlan };
-}
-
-function parseIpPools(
-  raw:
-    | Array<{
-        id?: string;
-        multusNetwork?: string;
-        cidr?: string;
-        gateway?: string;
-        dns?: string[];
-        exclude?: string[];
-        start?: string;
-        end?: string;
-        interface?: string;
-        cni?: {
-          type?: string;
-          bridge?: string;
-          vlan?: number;
-        };
-      }>
-    | undefined,
-  clusterId: string,
-): IpPoolConfig[] | undefined {
-  if (!raw?.length) return undefined;
-  const pools: IpPoolConfig[] = [];
-  const seenIds = new Set<string>();
-  for (const p of raw) {
-    const id = p.id?.trim();
-    const multusNetwork = p.multusNetwork?.trim();
-    const cidr = p.cidr?.trim();
-    const gateway = p.gateway?.trim();
-    if (!id || !multusNetwork || !cidr || !gateway) {
-      throw new Error(
-        `Cluster "${clusterId}": each ipPools entry needs id, multusNetwork, cidr, and gateway`,
-      );
-    }
-    if (seenIds.has(id)) {
-      throw new Error(`Cluster "${clusterId}": duplicate ipPools id "${id}"`);
-    }
-    seenIds.add(id);
-    pools.push({
-      id,
-      multusNetwork,
-      cidr,
-      gateway,
-      dns: p.dns?.map((d) => d.trim()).filter(Boolean),
-      exclude: p.exclude?.map((e) => e.trim()).filter(Boolean),
-      start: p.start?.trim() || undefined,
-      end: p.end?.trim() || undefined,
-      interface: p.interface?.trim() || undefined,
-      cni: parseIpPoolCni(p.cni, clusterId, id),
-    });
-  }
-  return pools;
-}
-
-function parseVlanPools(
-  raw:
-    | Array<{
-        id?: string;
-        start?: number;
-        end?: number;
-        bridge?: string;
-        dns?: string[];
-        exclude?: number[];
-      }>
-    | undefined,
-  clusterId: string,
-): VlanPoolConfig[] | undefined {
-  if (!raw?.length) return undefined;
-  const pools: VlanPoolConfig[] = [];
-  const seenIds = new Set<string>();
-  for (const p of raw) {
-    const id = p.id?.trim();
-    const bridge = p.bridge?.trim();
-    const start = p.start;
-    const end = p.end;
-    if (!id || !bridge || start == null || end == null) {
-      throw new Error(
-        `Cluster "${clusterId}": each vlanPools entry needs id, bridge, start, and end`,
-      );
-    }
-    if (!Number.isInteger(start) || !Number.isInteger(end)) {
-      throw new Error(
-        `Cluster "${clusterId}": vlanPools "${id}" start/end must be integers`,
-      );
-    }
-    if (start < 1 || end > 4094 || start > end) {
-      throw new Error(
-        `Cluster "${clusterId}": vlanPools "${id}" range invalid (got ${start}-${end}; need 1–4094 and start ≤ end)`,
-      );
-    }
-    if (seenIds.has(id)) {
-      throw new Error(`Cluster "${clusterId}": duplicate vlanPools id "${id}"`);
-    }
-    seenIds.add(id);
-    const exclude = (p.exclude ?? [])
-      .map((v) => Number(v))
-      .filter((v) => Number.isInteger(v) && v >= start && v <= end);
-    pools.push({
-      id,
-      start,
-      end,
-      bridge,
-      dns: p.dns?.map((d) => d.trim()).filter(Boolean),
-      exclude: exclude.length > 0 ? exclude : undefined,
-    });
-  }
-  return pools;
 }
 
 /** Prometheus base URL for a cluster, if configured. */

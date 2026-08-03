@@ -8,7 +8,7 @@ Polyglot monorepo:
 | **Controller** | `cmd/`, `api/`, `internal/` | In-cluster Go reconcilers (`IPAddress`, `VPC`, pools, FIP/PF, …) |
 | **Deploy** | `deploy/` | Cluster manifests (impersonator SA, controller) |
 
-Networking control plane is the Go controller and CRDs under `kmc.ianunruh.com/v1alpha1`. The console is a multi-cluster client: it creates/patches/deletes `VPC`, `Router`, `FloatingIP`, `PortForward`, and `IPAddress` objects (and still builds guest VMs). Multus NADs, router policy ConfigMaps, appliances, and VLAN/IP allocation are owned by the controller.
+Networking control plane is the Go controller and CRDs under `kmc.ianunruh.com/v1alpha1`. The console is a multi-cluster client: it creates/patches/deletes `VPC`, `Router`, `FloatingIP`, `PortForward`, and `IPAddress` objects (and still builds guest VMs + cloud-init). Multus NADs (VPC), router policy ConfigMaps, appliances, VLAN assignment, and FIP/router IP claims are owned by the controller. Guest Multus free-address selection still runs in the console before VM create (create-with-address `IPAddress` lease); inventory is `IPAddress` CRs only.
 
 ## Stack
 
@@ -86,8 +86,8 @@ make controller-run   # --leader-elect=false
 
 | Kind | Scope | Short | Role |
 |------|--------|-------|------|
-| **VLANPool** | Cluster | `vlanpool` | Operator VLAN range for self-service VPCs (from `vlanPools` in clusters.yaml) |
-| **IPPool** | Cluster | `ippool` | Operator Multus IPv4 pool (from `ipPools`) |
+| **VLANPool** | Cluster | `vlanpool` | Operator VLAN range for self-service VPCs (apply CRs; see examples) |
+| **IPPool** | Cluster | `ippool` | Operator Multus IPv4 pool (apply CRs; see examples) |
 | **VPC** | Namespaced | `vpc` | Self-service private network; controller assigns VLAN + owns Multus NAD |
 | **IPAddress** | Namespaced | `ipaddr` | Single IPv4 claim (create = allocate race via name); status.gateway/dns filled from IPPool/VPC when present |
 | **FloatingIP** | Namespaced | `fip` | Public float hold/associate; owns companion `IPAddress` claim; Router projects SNAT/DNAT |
@@ -145,7 +145,10 @@ Tenant RBAC example: `deploy/controller/rbac/user-networking-example.yaml` (CRUD
 
 ### Console IPAM via `IPAddress` CRs
 
-Guest Multus IPs are always claimed as namespaced `IPAddress` objects (create = lease; 409 → try next free). Object name is the address with dots → dashes. The console stamps `spec.interface.mac` + `claimRef` (VirtualMachine) so the Router controller can project DHCP leases.
+Guest Multus IPs are claimed as namespaced `IPAddress` objects (create = lease; 409 → try next free). Object name is the address with dots → dashes. Claims carry `spec.interface.mac` + `claimRef` (VirtualMachine) so the Router controller can project DHCP leases.
+
+- **Console create:** still pre-claims (needed for static netplan cloud-init before first boot) and stamps annotations.
+- **Controller (`VirtualMachineIPAMReconciler`):** adopts existing claims (sets ownerRef for GC), backfills missing Multus claims, enriches MAC/hostname, and stamps `kmc.ianunruh.com/ipv4` when empty. Skips router appliances (`role=router`).
 
 Requirements:
 
@@ -153,7 +156,7 @@ Requirements:
 2. Operator `VLANPool` / `IPPool` CRs (examples under `deploy/controller/examples/`)
 3. Tenant create/list/delete on networking CRs (see `deploy/controller/rbac/user-networking-example.yaml`)
 
-VM delete releases claims by address and `claimRef`. Create-VM failure rolls back claims best-effort. Annotations `kmc.ianunruh.com/ipv4` remain on the VM for netplan/UI.
+VM delete GC-releases ownerRef claims; console also deletes by address/`claimRef` as belt-and-suspenders. Create-VM failure rolls back claims best-effort.
 
 **Images**
 
@@ -219,36 +222,31 @@ clusters:
     # Optional — public S3 API for Object Storage (ObjectBucketClaim) UI
     # e.g. https://s3.kcloud.zone (homelab), https://s3.kcloud.io (prod)
     objectStorageEndpoint: https://s3.example.com
-    # Optional — scan-derived IPv4 pools for Multus bridge networks
-    ipPools:
-      - id: public
-        multusNetwork: bridge-external
-        cidr: 74.82.62.0/24
-        gateway: 74.82.62.1
-        dns: [8.8.8.8, 1.1.1.1]
-    # Optional — VLAN pool for self-service VPCs (Multus NAD on bridge + vlan)
-    vlanPools:
-      - id: default
-        start: 3000
-        end: 3100
-        bridge: br0
-        dns: [1.1.1.1]
-        exclude: [3000] # hand-managed VLANs
+    # Optional — dual-home Multus guests (pod NIC routes to cluster)
+    # network:
+    #   podCIDR: 10.19.0.0/16
+    #   serviceCIDR: 10.20.0.0/16
+    #
+    # Operator IPAM / VLAN pools are cluster-scoped CRs (not this YAML):
+    #   kubectl apply -f deploy/controller/examples/ippool.yaml
+    #   kubectl apply -f deploy/controller/examples/vlanpool.yaml
 ```
 
-### IPAM (scan-derived)
+### IPAM (`IPAddress` claims)
 
-When a Multus network on create matches a cluster `ipPools` entry **or** a self-service VPC NAD with a `cidr` annotation, kmc:
+When a Multus network on create matches an **IPPool** CR (or a self-service **VPC** with a private CIDR), the console:
 
-1. Scans cluster VMs for `kmc.ianunruh.com/ipv4` annotations (comma-separated when multi-attach) and live VMI interface IPs in the pool CIDR
-2. Picks the first free address (excluding network, broadcast, gateway, and `exclude`)
-3. Annotates the VM (`kmc.ianunruh.com/ipv4`, `kmc.ianunruh.com/ipam-pool`) and injects cloud-init `networkData` (netplan static config; omits default route if the pool has no gateway)
-4. Frees the address automatically when the VM is deleted (next create re-scans)
+1. Lists existing namespaced/cluster `IPAddress` claims for that pool (create = lease; no VM/VMI scan)
+2. Picks the first free address in the pool window (excluding network, broadcast, gateway, and `exclude`)
+3. Creates an `IPAddress` (object name = address with dots → dashes; 409 → try next free)
+4. Annotates the VM (`kmc.ianunruh.com/ipv4`, `kmc.ianunruh.com/ipam-pool`) and injects cloud-init `networkData` (static netplan when no shared router; DHCP when a Router is attached)
+5. Releases claims on VM delete (and rolls back on create failure)
 
-**Multi-attach:** Launch VM can attach multiple Multus NADs (up to 8). Each attachment that has a pool gets its own address; netplan matches NICs by MAC. Only one default route is installed (first Multus with a gateway, else the first pooled NIC). Empty network list keeps the historical **pod network only** behavior.
+**Multi-attach:** Launch VM can attach multiple Multus NADs (up to 8). Each attachment that has a pool gets its own claim; netplan matches NICs by MAC. Only one default route is installed (first Multus with a gateway, else the first pooled NIC). Empty network list keeps the historical **pod network only** behavior.
 
 **Dual-home (default):** When any Multus network is selected, kmc also attaches the **pod network** (masquerade) as the **first** interface so KubeVirt port-forward / browser Terminal can reach guest `:22`. Multus remains L3 primary (default route). Both NICs get stamped MACs; cloud-init netplan matches them by MAC (no interface rename). Cluster routes (`network.podCIDR` / `serviceCIDR` from `clusters.yaml`) go via the masquerade gateway (`10.0.2.1`) so guest → pod/service traffic uses the pod NIC. Opt out on Launch VM → “Include pod network (management)” for Multus-only guests.
-No separate IPAM database — the cluster is the source of truth. Concurrent creates in a single kmc process are serialized per pool; multi-replica kmc can still race (use one replica or graduate to explicit leases later).
+
+The lease source of truth is the `IPAddress` API (same as FloatingIP / Router claims). Concurrent creates race on object name (HTTP 409); a single-process lock serializes allocate within one console replica.
 
 ### GitHub OAuth App (impersonate mode)
 
@@ -350,20 +348,21 @@ For **pod-network** VMs, kmc can create a Kubernetes Ingress that routes to the 
 
 ### VPCs (self-service Multus + VLAN)
 
-When a cluster has `vlanPools` in `clusters.yaml` (and hypervisors expose those VLANs on the configured bridge, e.g. `br0` with VLAN filtering), users can create **VPCs** from the console:
+When the cluster has a **VLANPool** CR (and hypervisors expose those VLANs on the configured bridge, e.g. `br0` with VLAN filtering), users can create **VPCs** from the console:
 
-1. **Create VPC** — pick cluster, vm-allowed namespace, name; optionally enable private IPAM (CIDR + optional gateway/DNS)
-2. kmc allocates the lowest free VLAN in the pool (scan of existing VPC NAD labels + `exclude`), then creates a Multus `NetworkAttachmentDefinition` with bridge CNI + `vlan`
-3. **Launch VM** — choose the new NAD (alone or with other Multus networks); if the VPC has a CIDR, IPAM works like static `ipPools`
-4. **Delete VPC** — blocked while any VM still attaches to the NAD; then the NAD is removed and the VLAN returns to the free pool
+1. **Create VPC** — pick cluster, vm-allowed namespace, name; optionally enable private IPAM (CIDR + optional gateway/DNS). Console creates a `VPC` CR only.
+2. **Controller** allocates the lowest free VLAN from the `VLANPool`, creates the Multus `NetworkAttachmentDefinition` (bridge CNI + `vlan`), and sets `status.vlan` / Ready
+3. **Launch VM** — choose the new NAD (alone or with other Multus networks); if the VPC has a CIDR, guest Multus IPs are claimed as `IPAddress` objects (see IPAM above)
+4. **Delete VPC** — blocked while any VM still attaches to the NAD; controller removes the NAD and frees the VLAN
 
 **Requirements**
 
 - TOR / underlay already carries the VLAN range; nodes have the bridge with VLAN filtering
-- Caller needs RBAC to create/list/delete `network-attachment-definitions.k8s.cni.cncf.io` in the target namespace
+- Controller installed with NAD RBAC (`kubectl apply -k deploy/controller`)
+- Tenant RBAC on `vpcs` (and related networking CRs); tenants do **not** need Multus NAD create rights
 - Pure L2 by default (VM-to-VM on the VLAN); gateway is only for guest default routes if you provide one
 
-Static Multus networks and `ipPools` entries continue to work unchanged.
+Static Multus networks and cluster-scoped **IPPool** CRs continue to work for public / shared bridges.
 
 ### Shared routers (DHCP + DNS)
 
@@ -400,30 +399,34 @@ network:
   # dnsIP: 10.20.0.10   # optional
 ```
 
-On create (or when enabling external), kmc provisions:
+On create (or when enabling external), the console creates a **Router** CR only.
+The **controller** provisions:
 
 - ConfigMap `kmc-router-<name>` with `policy.json` + `agent.py` (self-update target)
 - ServiceAccount + Role/RoleBinding (get/list/watch/patch that ConfigMap)
-- Long-lived SA token embedded in cloud-init for the agent
+- Gateway (and optional public) `IPAddress` claims
+- KubeVirt appliance VirtualMachine + cloud-init Secret (agent token on the pod NIC)
 
-The policy ConfigMap is **not** owned by the router VM: floating IP associations
-and leases survive deleting and recreating the appliance. IPAM keeps public
-addresses reserved via the policy document. Recreating a router reuses the
-existing policy, updates NIC metadata, and re-stamps floating IPs onto the new
-VM. The control plane is removed when the router is deleted.
+The policy ConfigMap is owned by the Router control plane, not the appliance VM:
+floating IP associations and DHCP leases survive deleting and recreating the
+appliance. Public addresses are reserved via companion `IPAddress` claims
+(FloatingIP / Router). The control plane is removed when the Router CR is deleted.
 
 If the appliance **VirtualMachine** is deleted out-of-band (e.g. from the VMs
-list) while the router policy remains, open **Routers → detail** — the page
-shows **VM missing** and a **Recreate appliance VM** form (image, size, SSH
-key). Do not use **Routers → Create** with the same name; that fails because the
-policy ConfigMap already exists.
+list), open **Routers → detail** — the page shows **VM missing** and a
+**Recreate appliance VM** form (image, size, SSH key). That updates
+`spec.appliance` and sets annotation `kmc.ianunruh.com/recreate-appliance` to a
+new nonce; the controller deletes the VM + cloud-init Secret (reminting the
+agent token) and rebuilds. Do not use **Routers → Create** with the same name
+while the Router CR still exists.
 
 **Disassociate vs release:** Disassociating a floating IP unmaps it from the
 private target but **keeps** the public address held (secondary IP stays on the
-router; IPAM still reserves it). **Release** removes the policy entry so the
-address returns to the public pool. Held addresses can be re-associated later
-without re-allocating. Deleting a guest VM also disassociates its floating IPs
-into the held state (leases are removed; public addresses are not released).
+router; the companion `IPAddress` claim remains). **Release** deletes the
+FloatingIP (and claim) so the address returns to the public pool. Held addresses
+can be re-associated later without re-allocating. Deleting a guest VM also
+disassociates its floating IPs into the held state (leases are removed; public
+addresses are not released).
 
 **In-guest agent** (`internal/router/agent/kmc-router-agent.py`, Python 3 stdlib only):
 

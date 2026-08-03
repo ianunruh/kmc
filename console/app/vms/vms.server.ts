@@ -1846,7 +1846,7 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
     throw new Error("At most 8 Multus network attachments are supported");
   }
 
-  // Materialize shared Multus NADs (e.g. external) from ipPools.cni when missing.
+  // Materialize shared Multus NADs (e.g. external) from IPPool.spec.cni when missing.
   await ensureStaticMultusNads(input.cluster, input.namespace, multusNames);
 
   const { custom } = getClusterClients(input.cluster);

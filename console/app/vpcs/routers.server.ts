@@ -13,10 +13,7 @@ import type {
   RouterSummary,
 } from "~/lib/types";
 import { assertVmNamespaceAllowed } from "~/lib/k8s/catalog.server";
-import {
-  getClusterClients,
-  getConfiguredContexts,
-} from "~/lib/k8s/clients.server";
+import { getConfiguredContexts } from "~/lib/k8s/clients.server";
 import { toResourceYaml } from "~/lib/k8s/yaml.server";
 import { DNS1123_LABEL, formatAge } from "~/lib/format";
 import { KMC_MAX_MULTUS_ATTACHMENTS } from "~/lib/k8s/constants";
@@ -557,9 +554,10 @@ export async function setRouterExternalGateway(
 }
 
 /**
- * Patch appliance sizing/image/SSH keys on the Router CR, then delete the
- * KubeVirt VM + root DataVolume so the controller rebuilds cloud-init
- * (including the platform console key for browser Terminal).
+ * Patch appliance sizing/image/SSH keys on the Router CR and set
+ * kmc.ianunruh.com/recreate-appliance so the controller tears down the
+ * VirtualMachine + cloud-init Secret and rebuilds (fresh agent token).
+ * Console does not delete KubeVirt/CDI objects.
  */
 export type RecreateRouterVmRequest = {
   cluster: ClusterId;
@@ -573,6 +571,10 @@ export type RecreateRouterVmRequest = {
   cpuCores?: number;
   memory?: string;
 };
+
+/** Annotation the Router controller watches for full appliance rebuild. */
+export const ROUTER_ANNOTATION_RECREATE_APPLIANCE =
+  "kmc.ianunruh.com/recreate-appliance";
 
 export async function recreateRouterVm(
   input: RecreateRouterVmRequest,
@@ -623,8 +625,16 @@ export async function recreateRouterVm(
         }),
   };
 
+  const recreateNonce = new Date().toISOString();
   const next: RouterCr = {
     ...existing,
+    metadata: {
+      ...existing.metadata,
+      annotations: {
+        ...(existing.metadata?.annotations ?? {}),
+        [ROUTER_ANNOTATION_RECREATE_APPLIANCE]: recreateNonce,
+      },
+    },
     spec: {
       ...existing.spec,
       vpcs: existing.spec?.vpcs ?? [],
@@ -639,44 +649,6 @@ export async function recreateRouterVm(
     name,
     next,
   );
-
-  // Drop the appliance so the controller recreates it with fresh cloud-init.
-  // Root DV is named <router>-root (see controller dataVolumeTemplates).
-  const { custom } = getClusterClients(input.cluster);
-  try {
-    await custom.deleteNamespacedCustomObject({
-      group: "kubevirt.io",
-      version: "v1",
-      namespace,
-      plural: "virtualmachines",
-      name,
-    });
-  } catch (err) {
-    if (!isNotFoundError(err)) {
-      throw new Error(
-        `Failed to delete router VM ${namespace}/${name}: ${formatError(err)}`,
-        { cause: err },
-      );
-    }
-  }
-
-  const rootDv = `${name}-root`;
-  try {
-    await custom.deleteNamespacedCustomObject({
-      group: "cdi.kubevirt.io",
-      version: "v1beta1",
-      namespace,
-      plural: "datavolumes",
-      name: rootDv,
-    });
-  } catch (err) {
-    if (!isNotFoundError(err)) {
-      throw new Error(
-        `Failed to delete router root disk ${namespace}/${rootDv}: ${formatError(err)}`,
-        { cause: err },
-      );
-    }
-  }
 }
 
 export async function attachRouterVpc(

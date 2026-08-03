@@ -38,6 +38,53 @@ func newVMUnstructured(namespace, name string) *unstructured.Unstructured {
 	return u
 }
 
+// maybeRecreateAppliance tears down the appliance VM + cloud-init Secret when
+// annotation kmc.ianunruh.com/recreate-appliance differs from the last processed
+// nonce in status. Returns (requeued, err): requeued means status was updated
+// and the caller should requeue so ensure can rebuild with a fresh secret.
+func (r *RouterReconciler) maybeRecreateAppliance(ctx context.Context, obj *kmcv1alpha1.Router) (requeue bool, err error) {
+	nonce := ""
+	if obj.Annotations != nil {
+		nonce = strings.TrimSpace(obj.Annotations[kmcv1alpha1.AnnotationRecreateAppliance])
+	}
+	if nonce == "" || nonce == obj.Status.ApplianceRecreateNonce {
+		return false, nil
+	}
+
+	// Delete KubeVirt VM (dataVolumeTemplates root DV is GC'd with the VM).
+	vm := newVMUnstructured(obj.Namespace, obj.Name)
+	if delErr := r.Get(ctx, client.ObjectKey{Namespace: obj.Namespace, Name: obj.Name}, vm); delErr == nil {
+		if err := r.Delete(ctx, vm); err != nil && !apierrors.IsNotFound(err) {
+			return false, fmt.Errorf("delete VirtualMachine for recreate: %w", err)
+		}
+	} else if !apierrors.IsNotFound(delErr) {
+		return false, delErr
+	}
+
+	// Delete cloud-init Secret so ensureCloudInitSecretOnce remints agent token.
+	secretName := rt.CloudInitSecretName(obj.Name)
+	sec := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: obj.Namespace},
+	}
+	if err := r.Delete(ctx, sec); err != nil && !apierrors.IsNotFound(err) {
+		return false, fmt.Errorf("delete cloud-init Secret for recreate: %w", err)
+	}
+
+	if err := r.patchStatus(ctx, obj, func(o *kmcv1alpha1.Router) {
+		o.Status.ApplianceRecreateNonce = nonce
+		o.Status.VMReady = false
+		o.Status.VMMissing = true
+		o.Status.VMStatus = "Recreating"
+	}); err != nil {
+		return false, err
+	}
+	if r.Recorder != nil {
+		r.Recorder.Eventf(obj, corev1.EventTypeNormal, "ApplianceRecreate",
+			"tearing down appliance for recreate nonce %s", nonce)
+	}
+	return true, nil
+}
+
 // ensureRouterAppliance creates/updates the KubeVirt VM + cloud-init secret.
 // Requires ClusterPodCIDRs / ClusterServiceCIDRs on the reconciler.
 func (r *RouterReconciler) ensureRouterAppliance(
@@ -52,6 +99,7 @@ func (r *RouterReconciler) ensureRouterAppliance(
 
 	// Cloud-init is first-boot only. Reminting a TokenRequest + rewriting the
 	// Secret every reconcile owns the Secret and requeues the Router forever.
+	// Recreate (annotation) deletes the Secret so this path mints a new one.
 	secretName := rt.CloudInitSecretName(obj.Name)
 	if err := r.ensureCloudInitSecretOnce(ctx, obj, secretName, ifaces, ext); err != nil {
 		return false, "", false, err

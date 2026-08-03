@@ -1,16 +1,12 @@
 import type { ClusterId } from "~/lib/types";
-import { getClusterIdentity } from "~/lib/k8s/cluster-config.server";
 import type { IpPoolConfig } from "~/lib/k8s/cluster-config.server";
 import { getClusterClients } from "~/lib/k8s/clients.server";
 import {
   KMC_ANN_CIDR,
   KMC_ANN_DNS,
-  KMC_ANN_FLOATING_IPV4,
   KMC_ANN_GATEWAY,
   KMC_LABEL_RESOURCE,
   KMC_RESOURCE_VPC,
-  KMC_ROUTER_POLICY_DATA_KEY,
-  KMC_ROUTER_POLICY_LABEL_SELECTOR,
 } from "~/lib/k8s/constants";
 import {
   addressFromIpv4Annotation,
@@ -76,33 +72,6 @@ export type IpPoolUsage = {
   usedAddresses: string[];
 };
 
-type VmListItem = {
-  metadata?: {
-    name?: string;
-    namespace?: string;
-    annotations?: Record<string, string>;
-  };
-  spec?: {
-    template?: {
-      spec?: {
-        networks?: Array<{
-          name?: string;
-          multus?: { networkName?: string };
-        }>;
-      };
-    };
-  };
-};
-
-type VmiListItem = {
-  status?: {
-    interfaces?: Array<{
-      ipAddress?: string;
-      ipAddresses?: string[];
-    }>;
-  };
-};
-
 /** Serialize allocate calls per cluster+pool within one process. */
 const poolLocks = new Map<string, Promise<unknown>>();
 
@@ -155,8 +124,9 @@ export function ipPoolConfigFromCr(cr: IpPoolCr): IpPoolConfig | null {
 }
 
 /**
- * Cluster-scoped IPPool CRs (preferred). Falls back to clusters.yaml ipPools
- * when the API is empty or unavailable so local config still works during rollout.
+ * Cluster-scoped IPPool CRs (operator-applied). Empty when none exist or the
+ * API is missing/forbidden. No clusters.yaml fallback — apply examples under
+ * deploy/controller/examples/ippool.yaml.
  */
 export async function listIpPools(cluster: ClusterId): Promise<IpPoolConfig[]> {
   try {
@@ -164,10 +134,9 @@ export async function listIpPools(cluster: ClusterId): Promise<IpPoolConfig[]> {
       cluster,
       PLURAL_IP_POOLS,
     );
-    const fromCr = items
+    return items
       .map(ipPoolConfigFromCr)
       .filter((p): p is IpPoolConfig => p != null);
-    if (fromCr.length > 0) return fromCr;
   } catch (err) {
     if (!isNotFoundError(err) && !isForbiddenError(err)) {
       console.error(
@@ -175,8 +144,8 @@ export async function listIpPools(cluster: ClusterId): Promise<IpPoolConfig[]> {
         err instanceof Error ? err.message : String(err),
       );
     }
+    return [];
   }
-  return getClusterIdentity(cluster)?.ipPools ?? [];
 }
 
 export async function findIpPoolForMultus(
@@ -359,33 +328,6 @@ export function parseMultusNetworkRef(
   return { namespace: defaultNamespace, name: raw };
 }
 
-async function listClusterVmsAndVmis(cluster: ClusterId): Promise<{
-  vms: VmListItem[];
-  vmis: VmiListItem[];
-}> {
-  const { custom } = getClusterClients(cluster);
-  const [vmRes, vmiRes] = await Promise.all([
-    custom.listClusterCustomObject({
-      group: "kubevirt.io",
-      version: "v1",
-      plural: "virtualmachines",
-    }) as Promise<{ items?: VmListItem[] }>,
-    custom
-      .listClusterCustomObject({
-        group: "kubevirt.io",
-        version: "v1",
-        plural: "virtualmachineinstances",
-      })
-      .catch(() => ({ items: [] as VmiListItem[] })) as Promise<{
-      items?: VmiListItem[];
-    }>,
-  ]);
-  return {
-    vms: vmRes.items ?? [],
-    vmis: vmiRes.items ?? [],
-  };
-}
-
 /**
  * Parse kmc.ianunruh.com/ipv4 — one address or comma-separated multi-attach list.
  */
@@ -399,141 +341,38 @@ export function parseIpv4AnnotationList(value: string): string[] {
 }
 
 /**
- * Collect IPs considered in-use for a pool:
- * - kmc.ianunruh.com/ipv4 annotations on any VM (stopped VMs still hold the address;
- *   multi-attach stores comma-separated addresses)
- * - kmc.ianunruh.com/floating-ipv4 on router VMs (secondary public floats)
- * - live VMI interface IPs that fall inside the pool CIDR
+ * Used addresses for a pool from IPAddress CRs only (create = lease).
+ * Static pools list cluster-wide; VPC pools list the tenant namespace.
+ * Matches FloatingIP / Router controller inventory.
  */
-export function collectUsedIpv4(
+export async function listUsedIpv4FromClaims(
+  cluster: ClusterId,
   pool: IpPoolConfig,
   parsed: ParsedCidr,
-  vms: VmListItem[],
-  vmis: VmiListItem[],
-): Set<string> {
+  namespace?: string,
+): Promise<Set<string>> {
   const used = new Set<string>();
+  const staticPool = !pool.id.startsWith("vpc:");
+  const ns = namespace?.trim() ?? "";
+  // VPC pool id is vpc:ns/name — prefer that namespace when caller omits it.
+  let claimNs = ns;
+  if (!claimNs && pool.id.startsWith("vpc:")) {
+    const rest = pool.id.slice("vpc:".length);
+    const slash = rest.indexOf("/");
+    if (slash > 0) claimNs = rest.slice(0, slash);
+  }
 
-  const addIfInPool = (raw: string) => {
-    const addr = addressFromIpv4Annotation(raw) ?? raw.trim();
-    if (!addr) return;
+  const fromCrs = await listIpAddressClaimAddresses({
+    cluster,
+    namespace: claimNs,
+    clusterWide: staticPool,
+  });
+  for (const a of fromCrs) {
     try {
-      if (containsIpv4(parsed, addr)) used.add(addr);
+      if (containsIpv4(parsed, a)) used.add(a);
     } catch {
       /* skip */
     }
-  };
-
-  for (const vm of vms) {
-    const ann = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
-    if (ann) {
-      for (const addr of parseIpv4AnnotationList(ann)) {
-        addIfInPool(addr);
-      }
-    }
-    const floats = vm.metadata?.annotations?.[KMC_ANN_FLOATING_IPV4];
-    if (floats) {
-      for (const addr of parseIpv4AnnotationList(floats)) {
-        addIfInPool(addr);
-      }
-    }
-  }
-
-  for (const vmi of vmis) {
-    for (const iface of vmi.status?.interfaces ?? []) {
-      const ips = iface.ipAddresses ?? (iface.ipAddress ? [iface.ipAddress] : []);
-      for (const raw of ips) {
-        addIfInPool(raw);
-      }
-    }
-  }
-
-  // Gateway and configured exclusions count as used for free-count display
-  void pool;
-  return used;
-}
-
-/**
- * Floating public IPs from NAT policy ConfigMaps (desired state).
- * Complements VM annotations when the agent has not stamped secondaries yet.
- */
-function collectFloatsFromPolicyCms(
-  items: Array<{ data?: Record<string, string> }>,
-  dataKey: string,
-  parsed: ParsedCidr,
-  used: Set<string>,
-): void {
-  for (const cm of items) {
-    const raw = cm.data?.[dataKey];
-    if (!raw?.trim()) continue;
-    try {
-      const doc = JSON.parse(raw) as {
-        floatingIPs?: Array<{ public?: string }>;
-        portForwards?: Array<{ public?: string }>;
-      };
-      for (const f of doc.floatingIPs ?? []) {
-        const addr = addressFromIpv4Annotation(f.public ?? "") ?? f.public?.trim();
-        if (!addr) continue;
-        if (containsIpv4(parsed, addr)) used.add(addr);
-      }
-      for (const pf of doc.portForwards ?? []) {
-        const addr = addressFromIpv4Annotation(pf.public ?? "") ?? pf.public?.trim();
-        if (!addr) continue;
-        if (containsIpv4(parsed, addr)) used.add(addr);
-      }
-    } catch {
-      /* skip bad policy */
-    }
-  }
-}
-
-/**
- * Public addresses held by FloatingIP / PortForward-related claims and
- * legacy router policy ConfigMaps (read-only merge into the used set).
- */
-export async function collectFloatingIpv4FromPolicies(
-  cluster: ClusterId,
-  parsed: ParsedCidr,
-): Promise<Set<string>> {
-  const used = new Set<string>();
-
-  // IPAddress claims in any namespace (covers FloatingIP companion claims).
-  try {
-    const fromCrs = await listIpAddressClaimAddresses({
-      cluster,
-      namespace: "",
-      clusterWide: true,
-    });
-    for (const a of fromCrs) {
-      try {
-        if (containsIpv4(parsed, a)) used.add(a);
-      } catch {
-        /* skip */
-      }
-    }
-  } catch (err) {
-    console.error(
-      "collectFloatingIpv4FromPolicies IPAddress list failed:",
-      err instanceof Error ? err.message : String(err),
-    );
-  }
-
-  // Legacy policy ConfigMaps (pre-cutover routers).
-  const { core } = getClusterClients(cluster);
-  try {
-    const routerRes = await core.listConfigMapForAllNamespaces({
-      labelSelector: KMC_ROUTER_POLICY_LABEL_SELECTOR,
-    });
-    collectFloatsFromPolicyCms(
-      routerRes.items ?? [],
-      KMC_ROUTER_POLICY_DATA_KEY,
-      parsed,
-      used,
-    );
-  } catch (err) {
-    console.error(
-      "collectFloatingIpv4FromPolicies policy CMs failed:",
-      err instanceof Error ? err.message : String(err),
-    );
   }
   return used;
 }
@@ -541,12 +380,10 @@ export async function collectFloatingIpv4FromPolicies(
 export async function getIpPoolUsageForConfig(
   cluster: ClusterId,
   pool: IpPoolConfig,
+  namespace?: string,
 ): Promise<IpPoolUsage> {
   const { parsed, range, exclude } = validatePool(pool);
-  const { vms, vmis } = await listClusterVmsAndVmis(cluster);
-  const usedSet = collectUsedIpv4(pool, parsed, vms, vmis);
-  const fromPolicies = await collectFloatingIpv4FromPolicies(cluster, parsed);
-  for (const a of fromPolicies) usedSet.add(a);
+  const usedSet = await listUsedIpv4FromClaims(cluster, pool, parsed, namespace);
   for (const e of exclude) {
     if (containsIpv4(parsed, e)) usedSet.add(e);
   }
@@ -579,10 +416,11 @@ export async function getIpPoolUsageForConfig(
 export async function getIpPoolUsage(
   cluster: ClusterId,
   poolId: string,
+  namespace?: string,
 ): Promise<IpPoolUsage | null> {
   const pool = await resolveIpPoolById(cluster, poolId);
   if (!pool) return null;
-  return getIpPoolUsageForConfig(cluster, pool);
+  return getIpPoolUsageForConfig(cluster, pool, namespace);
 }
 
 export async function getIpPoolUsageForMultus(
@@ -592,13 +430,13 @@ export async function getIpPoolUsageForMultus(
 ): Promise<IpPoolUsage | null> {
   const pool = await resolveIpPoolForMultus(cluster, multusNetworkName, namespace);
   if (!pool) return null;
-  return getIpPoolUsageForConfig(cluster, pool);
+  return getIpPoolUsageForConfig(cluster, pool, namespace);
 }
 
 export type AllocateIpv4Opts = {
   /**
-   * Addresses already chosen in the same multi-attach create (before the VM
-   * annotation exists for the cluster scan).
+   * Addresses already chosen in the same multi-attach create (before the
+   * IPAddress claim exists for earlier NICs).
    */
   extraUsed?: string[];
   /**
@@ -676,27 +514,11 @@ export async function allocateIpv4ForMultus(
   const lockKey = `${cluster}::${pool.id}`;
   return withPoolLock(lockKey, async () => {
     const { parsed, range, exclude } = validatePool(pool);
-    const { vms, vmis } = await listClusterVmsAndVmis(cluster);
-    const used = collectUsedIpv4(pool, parsed, vms, vmis);
-    const fromPolicies = await collectFloatingIpv4FromPolicies(cluster, parsed);
-    for (const a of fromPolicies) used.add(a);
+    // Inventory = IPAddress CRs only (same as FIP/Router controllers).
+    const used = await listUsedIpv4FromClaims(cluster, pool, parsed, ns);
     for (const a of opts?.extraUsed ?? []) {
       const addr = addressFromIpv4Annotation(a) ?? a.trim();
       if (addr) used.add(addr);
-    }
-
-    const staticPool = !pool.id.startsWith("vpc:");
-    const fromCrs = await listIpAddressClaimAddresses({
-      cluster,
-      namespace: ns,
-      clusterWide: staticPool,
-    });
-    for (const a of fromCrs) {
-      try {
-        if (containsIpv4(parsed, a)) used.add(a);
-      } catch {
-        /* skip */
-      }
     }
 
     const preferred = opts?.preferredAddress?.trim();

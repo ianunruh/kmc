@@ -6,12 +6,13 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -336,4 +337,86 @@ func metaFind(conds []metav1.Condition, t string) *metav1.Condition {
 		}
 	}
 	return nil
+}
+
+func TestMaybeRecreateAppliance(t *testing.T) {
+	scheme := routerTestScheme(t)
+	cores := int32(2)
+	router := &kmcv1alpha1.Router{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "shared",
+			Namespace: "default",
+			UID:       "router-uid-1",
+			Annotations: map[string]string{
+				kmcv1alpha1.AnnotationRecreateAppliance: "nonce-1",
+			},
+		},
+		Spec: kmcv1alpha1.RouterSpec{
+			VPCs: []kmcv1alpha1.RouterVPCAttachment{{Name: "app-net"}},
+			Appliance: kmcv1alpha1.RouterApplianceSpec{
+				Image:         kmcv1alpha1.RouterImageRef{Namespace: "vm-images", Name: "ubuntu"},
+				CPUCores:      &cores,
+				Memory:        "2Gi",
+				DiskSize:      "20Gi",
+				SSHPublicKeys: []string{"ssh-ed25519 AAAA test"},
+			},
+		},
+		Status: kmcv1alpha1.RouterStatus{
+			// Different from annotation → should tear down
+			ApplianceRecreateNonce: "",
+		},
+	}
+	controllerutil.AddFinalizer(router, kmcv1alpha1.RouterFinalizer)
+
+	// Existing cloud-init Secret that should be deleted
+	sec := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rt.CloudInitSecretName("shared"),
+			Namespace: "default",
+		},
+		Data: map[string][]byte{"userdata": []byte("#cloud-config\n")},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&kmcv1alpha1.Router{}).
+		WithObjects(router, sec).
+		Build()
+
+	r := &RouterReconciler{Client: c, Scheme: scheme, Recorder: record.NewFakeRecorder(10)}
+
+	requeue, err := r.maybeRecreateAppliance(context.Background(), router)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !requeue {
+		t.Fatal("expected requeue after recreate")
+	}
+
+	var got kmcv1alpha1.Router
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(router), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.ApplianceRecreateNonce != "nonce-1" {
+		t.Fatalf("nonce = %q", got.Status.ApplianceRecreateNonce)
+	}
+	if !got.Status.VMMissing {
+		t.Fatal("expected VMMissing after tear-down")
+	}
+
+	// Secret should be gone
+	var gone corev1.Secret
+	if err := c.Get(context.Background(), client.ObjectKey{
+		Namespace: "default", Name: rt.CloudInitSecretName("shared"),
+	}, &gone); !apierrors.IsNotFound(err) {
+		t.Fatalf("expected secret deleted, got %v", err)
+	}
+
+	// Second call with same nonce should no-op
+	requeue2, err := r.maybeRecreateAppliance(context.Background(), &got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requeue2 {
+		t.Fatal("expected no requeue when nonce already processed")
+	}
 }

@@ -282,35 +282,15 @@ func (r *FloatingIPReconciler) ensureIPAddressClaim(ctx context.Context, obj *km
 	if err != nil {
 		return "", 0, fmt.Errorf("IPPool %q: %w", poolName, err)
 	}
-	prefix := window.PrefixLength()
 
-	used, err := r.listUsedAddresses(ctx, obj.Namespace, poolKind, poolName)
+	used, err := listUsedAddressesByPool(ctx, r.Client, poolKind, poolName)
 	if err != nil {
 		return "", 0, err
 	}
 
 	preferred := strings.TrimSpace(obj.Spec.Address)
-	var address string
-	if preferred != "" {
-		if err := ipam.ValidateIPv4Address(preferred); err != nil {
-			return "", 0, err
-		}
-		if !window.Contains(preferred) {
-			return "", 0, fmt.Errorf("address %s is outside pool %s", preferred, pool.Spec.CIDR)
-		}
-		if _, taken := used[preferred]; taken {
-			// Allow if the claim is already ours
-			name := ipam.AddressObjectName(preferred)
-			var existing kmcv1alpha1.IPAddress
-			if err := r.Get(ctx, client.ObjectKey{Namespace: obj.Namespace, Name: name}, &existing); err == nil &&
-				isClaimedByFloatingIP(&existing, obj) {
-				return preferred, existing.Spec.PrefixLength, nil
-			}
-			return "", 0, fmt.Errorf("address %s is already claimed", preferred)
-		}
-		address = preferred
-	} else {
-		// Prefer reusing status if set
+	// Prefer reusing status if set and no explicit preferred
+	if preferred == "" {
 		if statusAddr := strings.TrimSpace(obj.Status.Address); statusAddr != "" {
 			name := ipam.AddressObjectName(statusAddr)
 			var existing kmcv1alpha1.IPAddress
@@ -319,73 +299,22 @@ func (r *FloatingIPReconciler) ensureIPAddressClaim(ctx context.Context, obj *km
 				return statusAddr, existing.Spec.PrefixLength, nil
 			}
 		}
-		// Try allocate with 409 retry
-		for i := 0; i < 64; i++ {
-			free, ok := window.FirstFree(used)
-			if !ok {
-				return "", 0, fmt.Errorf("IPPool %q exhausted", poolName)
-			}
-			if err := r.createIPAddressClaim(ctx, obj, free, prefix, poolKind, poolName); err != nil {
-				if apierrors.IsAlreadyExists(err) {
-					used[free] = struct{}{}
-					continue
-				}
-				return "", 0, err
-			}
-			return free, prefix, nil
-		}
-		return "", 0, fmt.Errorf("IPPool %q: could not allocate after conflicts", poolName)
 	}
 
-	if err := r.createIPAddressClaim(ctx, obj, address, prefix, poolKind, poolName); err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			name := ipam.AddressObjectName(address)
-			var existing kmcv1alpha1.IPAddress
-			if getErr := r.Get(ctx, client.ObjectKey{Namespace: obj.Namespace, Name: name}, &existing); getErr == nil &&
-				isClaimedByFloatingIP(&existing, obj) {
-				return address, existing.Spec.PrefixLength, nil
-			}
-			return "", 0, fmt.Errorf("address %s is already claimed", address)
-		}
-		return "", 0, err
-	}
-	return address, prefix, nil
-}
-
-func (r *FloatingIPReconciler) listUsedAddresses(ctx context.Context, namespace, poolKind, poolName string) (map[string]struct{}, error) {
-	used := make(map[string]struct{})
-	// Namespace-local claims (FIP lives in tenant ns)
-	var list kmcv1alpha1.IPAddressList
-	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
-		return nil, err
-	}
-	for i := range list.Items {
-		ip := &list.Items[i]
-		if ip.Spec.PoolRef.Kind != poolKind || ip.Spec.PoolRef.Name != poolName {
-			continue
-		}
-		addr := strings.TrimSpace(ip.Spec.Address)
-		if addr != "" {
-			used[addr] = struct{}{}
-		}
-	}
-	// Also cluster-wide for same IPPool (other namespaces may hold public floats)
-	var all kmcv1alpha1.IPAddressList
-	if err := r.List(ctx, &all); err != nil {
-		// Fall back to namespace-only if cluster list fails
-		return used, nil
-	}
-	for i := range all.Items {
-		ip := &all.Items[i]
-		if ip.Spec.PoolRef.Kind != poolKind || ip.Spec.PoolRef.Name != poolName {
-			continue
-		}
-		addr := strings.TrimSpace(ip.Spec.Address)
-		if addr != "" {
-			used[addr] = struct{}{}
-		}
-	}
-	return used, nil
+	return allocateIPAddressFromWindow(
+		ctx,
+		r.Client,
+		obj.Namespace,
+		window,
+		poolKind,
+		poolName,
+		preferred,
+		used,
+		func(ip *kmcv1alpha1.IPAddress) bool { return isClaimedByFloatingIP(ip, obj) },
+		func(ctx context.Context, address string, prefix int32) error {
+			return r.createIPAddressClaim(ctx, obj, address, prefix, poolKind, poolName)
+		},
+	)
 }
 
 func (r *FloatingIPReconciler) createIPAddressClaim(

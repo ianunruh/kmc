@@ -114,7 +114,7 @@ export async function listNetworks(
       })
       .filter((n) => n.name);
 
-    // Static ipPools with a cni template are selectable even before the NAD is
+    // Static IPPool CRs with a cni template are selectable even before the NAD is
     // created (createVm ensures the NAD). Without this, new namespaces never
     // list external / bridge-external in the launch picker.
     const existingNames = new Set(networks.map((n) => n.name));
@@ -133,7 +133,7 @@ export async function listNetworks(
 
     networks.sort((a, b) => a.name.localeCompare(b.name));
 
-    // Attach IP pool usage from static ipPools and/or VPC NAD annotations.
+    // Attach IP pool usage from static IPPool CRs and/or VPC NAD annotations.
     const usageByPoolId = new Map<
       string,
       Awaited<ReturnType<typeof getIpPoolUsageForConfig>> | null

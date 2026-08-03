@@ -202,8 +202,9 @@ export default function CreateVpcPage({
           description="Allocate a VLAN and Multus network from a cluster pool"
         />
         <Alert color="yellow" variant="light" title="No VLAN pools">
-          No reachable cluster has <code>vlanPools</code> configured. Add a pool
-          in <code>config/clusters.yaml</code> and reload kmc.
+          No reachable cluster has a <code>VLANPool</code> CR. Apply{" "}
+          <code>deploy/controller/examples/vlanpool.yaml</code> (or your own
+          range) so the controller can assign VLANs.
         </Alert>
         <FormActions>
           <Button component={Link} to="/vpcs" variant="default">
@@ -218,7 +219,7 @@ export default function CreateVpcPage({
     <Stack gap="md" pb={80}>
       <PageHeader
         title="Create VPC"
-        description="Allocate a free VLAN, create a Multus NAD on the hypervisor bridge, and optionally enable private IPAM"
+        description="Create a VPC CR — the controller assigns a free VLAN and Multus NAD; optionally enable private IPAM"
       />
 
       {actionData && "error" in actionData && actionData.error && (

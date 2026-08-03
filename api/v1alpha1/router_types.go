@@ -42,6 +42,13 @@ const (
 	AnnotationAgentHeartbeatAt        = "kmc.ianunruh.com/agent-heartbeat-at"
 	AnnotationAgentVersion            = "kmc.ianunruh.com/agent-version"
 
+	// AnnotationRecreateAppliance requests a full appliance rebuild: delete the
+	// KubeVirt VirtualMachine and cloud-init Secret so the next reconcile remints
+	// cloud-init (new agent token) and recreates the VM. Set to a unique nonce
+	// (UUID or RFC3339). The controller processes when the value differs from
+	// status.applianceRecreateNonce, then records the nonce.
+	AnnotationRecreateAppliance = "kmc.ianunruh.com/recreate-appliance"
+
 	// Max Multus NICs (VPCs + optional external) on a single router appliance.
 	MaxMultusAttachments = 8
 
@@ -260,6 +267,13 @@ type RouterStatus struct {
 	// VMMissing is true when the policy exists but the appliance VM does not.
 	// +optional
 	VMMissing bool `json:"vmMissing,omitempty"`
+
+	// ApplianceRecreateNonce is the last processed value of
+	// annotation kmc.ianunruh.com/recreate-appliance. When the annotation is
+	// set to a different value, the controller tears down the appliance VM and
+	// cloud-init Secret, then rebuilds them.
+	// +optional
+	ApplianceRecreateNonce string `json:"applianceRecreateNonce,omitempty"`
 
 	// Agent status projected from policy ConfigMap annotations.
 	// +optional
