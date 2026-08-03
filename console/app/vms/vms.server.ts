@@ -34,9 +34,11 @@ import {
 import { ensureStaticMultusNads } from "~/lib/k8s/static-nads.server";
 import {
   allocateIpv4ForMultus,
+  dhcpDeferredMultusAllocation,
   generateLocalMacAddress,
   parseMultusNetworkRef,
   parseIpv4AnnotationList,
+  type AllocatedIp,
 } from "~/lib/ipam/pools.server";
 import { IPAM_ANNOTATION_IPV4 } from "~/lib/ipam/constants";
 import {
@@ -1865,14 +1867,30 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
   try {
     // Sequential so multi-attach can reserve prior picks via extraUsed.
     // MAC is chosen before claim so IPAddress.spec.interface enables DHCP leases.
+    // Router-backed VPCs: skip console claim — guest uses DHCP; VirtualMachineIPAM
+    // controller allocates IPAddress after create (MAC already stamped on the iface).
+    // Static Multus (IPPool / VPC without router): still pre-claim for cloud-init netplan.
     const dualHome =
       multusNames.length > 0 && input.includePodNetwork !== false;
     const rawAllocations: Array<
-      Awaited<ReturnType<typeof allocateIpv4ForMultus>>
+      Awaited<ReturnType<typeof allocateIpv4ForMultus>> | AllocatedIp
     > = [];
     const extraUsed: string[] = [];
     for (const name of multusNames) {
       const mac = generateLocalMacAddress();
+      const ref = parseMultusNetworkRef(name, input.namespace);
+      if (ref.namespace === input.namespace) {
+        const routerName = await readVpcRouterName(
+          input.cluster,
+          ref.namespace,
+          ref.name,
+        );
+        if (routerName) {
+          rawAllocations.push(dhcpDeferredMultusAllocation(mac));
+          continue;
+        }
+      }
+
       const alloc = await allocateIpv4ForMultus(
         input.cluster,
         name,
@@ -1891,26 +1909,10 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
       rawAllocations.push(alloc);
     }
     const allocations = bindAllocationsToNetworks(multusNames, rawAllocations, {
-      forceMac: dualHome,
+      // Always MAC-match Multus when dual-home or any DHCP NIC (router path).
+      forceMac:
+        dualHome || rawAllocations.some((a) => a != null && a.dhcp4 === true),
     });
-
-    // Shared router on VPC: use DHCP (controller projects leases from IPAddress).
-    for (let i = 0; i < multusNames.length; i++) {
-      const multusName = multusNames[i]!;
-      const alloc = allocations[i];
-      if (!alloc?.macAddress) continue;
-      const ref = parseMultusNetworkRef(multusName, input.namespace);
-      if (ref.namespace !== input.namespace) continue;
-      const routerName = await readVpcRouterName(
-        input.cluster,
-        ref.namespace,
-        ref.name,
-      );
-      if (!routerName) continue;
-      alloc.dhcp4 = true;
-      alloc.gateway = undefined;
-      alloc.dns = [];
-    }
 
     // Standalone root disk (not dataVolumeTemplates) so DV outlives the VM by default.
     let createdRootDv: string | null = null;

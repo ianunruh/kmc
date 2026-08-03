@@ -147,8 +147,10 @@ Tenant RBAC example: `deploy/controller/rbac/user-networking-example.yaml` (CRUD
 
 Guest Multus IPs are claimed as namespaced `IPAddress` objects (create = lease; 409 → try next free). Object name is the address with dots → dashes. Claims carry `spec.interface.mac` + `claimRef` (VirtualMachine) so the Router controller can project DHCP leases.
 
-- **Console create:** still pre-claims (needed for static netplan cloud-init before first boot) and stamps annotations.
-- **Controller (`VirtualMachineIPAMReconciler`):** adopts existing claims (sets ownerRef for GC), backfills missing Multus claims, enriches MAC/hostname, and stamps `kmc.ianunruh.com/ipv4` when empty. Skips router appliances (`role=router`).
+- **Console create:**
+  - **Router-backed VPC Multus:** stamps MAC + `dhcp4` netplan only (no pre-claim). Controller allocates the `IPAddress` after the VM exists; Router projects the DHCP lease from MAC.
+  - **Static Multus (IPPool / VPC without router):** still pre-claims before create (static netplan needs the address in cloud-init) and stamps annotations.
+- **Controller (`VirtualMachineIPAMReconciler`):** adopts existing claims (sets ownerRef for GC), backfills missing Multus claims (including router-backed DHCP NICs), enriches MAC/hostname, and stamps `kmc.ianunruh.com/ipv4` when empty. Skips router appliances (`role=router`).
 
 Requirements:
 

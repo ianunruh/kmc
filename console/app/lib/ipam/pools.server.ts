@@ -63,6 +63,22 @@ export type AllocatedIp = {
   dhcp4?: boolean;
 };
 
+/**
+ * Placeholder Multus allocation for router-backed VPCs: console stamps MAC +
+ * dhcp4 netplan only; VirtualMachineIPAM controller creates the IPAddress claim.
+ */
+export function dhcpDeferredMultusAllocation(mac: string): AllocatedIp {
+  return {
+    poolId: "",
+    address: "",
+    prefix: 0,
+    cidrHost: "",
+    dns: [],
+    macAddress: mac.trim().toLowerCase(),
+    dhcp4: true,
+  };
+}
+
 export type IpPoolUsage = {
   pool: IpPoolConfig;
   cidr: string;
@@ -843,7 +859,9 @@ export function buildNetworkData(
 export function ipamAnnotations(
   allocations: AllocatedIp | AllocatedIp[],
 ): Record<string, string> {
-  const list = Array.isArray(allocations) ? allocations : [allocations];
+  const list = (Array.isArray(allocations) ? allocations : [allocations]).filter(
+    (a) => a.address?.trim() && a.cidrHost?.trim(),
+  );
   if (list.length === 0) return {};
   return {
     [IPAM_ANNOTATION_IPV4]: list.map((a) => a.cidrHost).join(","),

@@ -124,7 +124,7 @@ export type BindAllocationsOpts = {
  */
 export function bindAllocationsToNetworks(
   multusNames: string[],
-  rawAllocations: Array<AllocatedIp | null>,
+  rawAllocations: Array<AllocatedIp | null | undefined>,
   opts?: BindAllocationsOpts,
 ): AllocatedIp[] {
   const bound: AllocatedIp[] = [];
@@ -133,9 +133,10 @@ export function bindAllocationsToNetworks(
     if (!raw) return;
     const networkName = interfaceNameForAttachment(index, multusNames.length);
     const multiNic = multusNames.length > 1;
-    // Multi-NIC / dual-home always need MAC match; single Multus-only with
+    // Multi-NIC / dual-home / DHCP always need MAC match; single Multus-only with
     // pool.interface may keep guest name match.
-    const needsMac = opts?.forceMac || multiNic || !raw.interfaceName;
+    const needsMac =
+      opts?.forceMac || multiNic || raw.dhcp4 === true || !raw.interfaceName;
     bound.push({
       ...raw,
       // Dual-home: prefer MAC match over guest interface name (two virtio NICs).
