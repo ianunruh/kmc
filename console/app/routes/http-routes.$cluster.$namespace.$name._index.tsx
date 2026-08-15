@@ -13,8 +13,8 @@ import {
 import {
   formatAge,
   formatDateTime,
-  ingressHostUrl,
-  ingressesListPath,
+  httpRouteHostUrl,
+  httpRoutesListPath,
   loadBalancerPath,
   vmPath,
 } from "~/lib/format";
@@ -22,34 +22,38 @@ import {
   formatLabelSelector,
   membershipModeLabel,
 } from "~/backends/membership";
-import type { loader as detailLoader } from "./ingresses.$cluster.$namespace.$name";
+import type { loader as detailLoader } from "./http-routes.$cluster.$namespace.$name";
 
-const LAYOUT_ID = "routes/ingresses.$cluster.$namespace.$name";
+const LAYOUT_ID = "routes/http-routes.$cluster.$namespace.$name";
 
-export default function IngressOverviewTab() {
+export default function HttpRouteOverviewTab() {
   const data = useRouteLoaderData(LAYOUT_ID) as Awaited<
     ReturnType<typeof detailLoader>
   >;
-  const { ing } = data;
-  const backend = ing.backend;
+  const { route } = data;
+  const backend = route.backend;
   const selectorText = backend
     ? formatLabelSelector(backend.selector)
     : "";
   const matchedVms = backend?.matchedVms ?? [];
   const membership = backend?.membership;
+  const parent = route.parentRefs[0];
+  const parentLabel = parent
+    ? `${parent.namespace && parent.namespace !== route.namespace ? `${parent.namespace}/` : ""}${parent.name}`
+    : undefined;
 
   return (
     <Stack gap="md">
       <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
         <DetailSection title="Overview">
           <SimpleGrid cols={2} spacing="sm">
-            <DetailField label="Age" value={formatAge(ing.age)} />
-            <DetailField label="Created" value={formatDateTime(ing.age)} />
+            <DetailField label="Age" value={formatAge(route.age)} />
+            <DetailField label="Created" value={formatDateTime(route.age)} />
             <DetailField
               label="Cluster"
               value={
-                <ResourceLink to={ingressesListPath({ cluster: ing.cluster })} dimmed>
-                  {ing.cluster}
+                <ResourceLink to={httpRoutesListPath({ cluster: route.cluster })} dimmed>
+                  {route.cluster}
                 </ResourceLink>
               }
             />
@@ -57,30 +61,44 @@ export default function IngressOverviewTab() {
               label="Namespace"
               value={
                 <ResourceLink
-                  to={ingressesListPath({
-                    cluster: ing.cluster,
-                    namespace: ing.namespace,
+                  to={httpRoutesListPath({
+                    cluster: route.cluster,
+                    namespace: route.namespace,
                   })}
                   dimmed
                 >
-                  {ing.namespace}
+                  {route.namespace}
                 </ResourceLink>
               }
             />
-            <DetailField label="Ingress class" value={ing.className} />
+            <DetailField label="Gateway" value={parentLabel} />
+            <DetailField
+              label="Listener"
+              value={parent?.sectionName}
+            />
+            <DetailField
+              label="Accepted"
+              value={
+                route.accepted == null
+                  ? undefined
+                  : route.accepted
+                    ? "True"
+                    : "False"
+              }
+            />
             <DetailField
               label="Address"
               value={
-                ing.address ? <CopyableValue value={ing.address} /> : undefined
+                route.address ? <CopyableValue value={route.address} /> : undefined
               }
             />
             <DetailField
               label="Hosts"
               value={
-                ing.hosts.length > 0 ? (
+                route.hosts.length > 0 ? (
                   <Stack gap={4}>
-                    {ing.hosts.map((host) => {
-                      const url = ingressHostUrl(host, ing.tlsHosts);
+                    {route.hosts.map((host) => {
+                      const url = httpRouteHostUrl(host, route.httpsHosts);
                       return (
                         <Group key={host} gap={4} wrap="nowrap">
                           <Anchor
@@ -102,19 +120,19 @@ export default function IngressOverviewTab() {
             <DetailField
               label="Service"
               value={
-                ing.serviceName ? (
+                route.serviceName ? (
                   backend?.serviceType === "LoadBalancer" ? (
                     <ResourceLink
                       to={loadBalancerPath({
-                        cluster: ing.cluster,
-                        namespace: ing.namespace,
-                        name: ing.serviceName,
+                        cluster: route.cluster,
+                        namespace: route.namespace,
+                        name: route.serviceName,
                       })}
                     >
-                      {ing.serviceName}
+                      {route.serviceName}
                     </ResourceLink>
                   ) : (
-                    <Code>{ing.serviceName}</Code>
+                    <Code>{route.serviceName}</Code>
                   )
                 ) : undefined
               }
@@ -122,8 +140,8 @@ export default function IngressOverviewTab() {
             <DetailField
               label="Endpoints"
               value={
-                ing.endpointsTotal != null
-                  ? `${ing.endpointsReady ?? 0}/${ing.endpointsTotal} ready`
+                route.endpointsTotal != null
+                  ? `${route.endpointsReady ?? 0}/${route.endpointsTotal} ready`
                   : undefined
               }
             />
@@ -133,9 +151,9 @@ export default function IngressOverviewTab() {
         <DetailSection title="Backend">
           {!backend || !backend.exists ? (
             <Text size="sm" c="dimmed">
-              Backend Service not found (name: {ing.serviceName ?? ing.name}).
-              If this Ingress was created with expose-existing, restore the Service
-              or recreate the Ingress.
+              Backend Service not found (name: {route.serviceName ?? route.name}).
+              If this HTTPRoute was created with expose-existing, restore the Service
+              or recreate the HTTPRoute.
             </Text>
           ) : (
             <SimpleGrid cols={2} spacing="sm">
@@ -153,23 +171,23 @@ export default function IngressOverviewTab() {
                 <DetailField
                   label="Target VM"
                   value={
-                    ing.vmName ? (
-                      ing.vm?.exists === false ? (
+                    route.vmName ? (
+                      route.vm?.exists === false ? (
                         <Text size="sm" c="dimmed">
-                          {ing.vmName} (missing)
+                          {route.vmName} (missing)
                         </Text>
                       ) : (
                         <Group gap="xs" wrap="wrap">
                           <ResourceLink
                             to={vmPath({
-                              cluster: ing.cluster,
-                              namespace: ing.namespace,
-                              name: ing.vmName,
+                              cluster: route.cluster,
+                              namespace: route.namespace,
+                              name: route.vmName,
                             })}
                           >
-                            {ing.vmName}
+                            {route.vmName}
                           </ResourceLink>
-                          {ing.vm && !ing.vm.podNetwork && (
+                          {route.vm && !route.vm.podNetwork && (
                             <Badge size="sm" variant="light" color="orange">
                               Multus only
                             </Badge>
@@ -239,8 +257,8 @@ export default function IngressOverviewTab() {
                   <Table.Td>
                     <ResourceLink
                       to={vmPath({
-                        cluster: ing.cluster,
-                        namespace: ing.namespace,
+                        cluster: route.cluster,
+                        namespace: route.namespace,
                         name: vm.name,
                       })}
                     >
@@ -269,12 +287,12 @@ export default function IngressOverviewTab() {
       )}
 
       <DetailSection title="Service ports">
-        {ing.servicePorts && ing.servicePorts.length > 0 ? (
+        {route.servicePorts && route.servicePorts.length > 0 ? (
           <ResourceTable
             headers={["Name", "Port", "Target", "Protocol"]}
             isEmpty={false}
           >
-            {ing.servicePorts.map((p, i) => (
+            {route.servicePorts.map((p, i) => (
               <Table.Tr key={`${p.name ?? "port"}-${p.port}-${i}`}>
                 <Table.Td>
                   <Text size="sm">{p.name ?? "—"}</Text>
@@ -295,13 +313,13 @@ export default function IngressOverviewTab() {
           </ResourceTable>
         ) : (
           <Text size="sm" c="dimmed">
-            Companion Service not found (name: {ing.serviceName ?? ing.name})
+            Companion Service not found (name: {route.serviceName ?? route.name})
           </Text>
         )}
       </DetailSection>
 
       <DetailSection title="Rules">
-        {ing.rules.length === 0 ? (
+        {route.rules.length === 0 ? (
           <Text size="sm" c="dimmed">
             No rules configured
           </Text>
@@ -310,25 +328,25 @@ export default function IngressOverviewTab() {
             headers={["Host", "Path", "Path type", "Service", "Port"]}
             isEmpty={false}
           >
-            {ing.rules.flatMap((rule, ri) =>
-              rule.paths.map((path, pi) => (
-                <Table.Tr key={`${ri}-${pi}-${path.path}`}>
+            {route.rules.flatMap((rule, ri) =>
+              rule.matches.map((match, mi) => (
+                <Table.Tr key={`${ri}-${mi}-${match.path}`}>
                   <Table.Td>
-                    <Text size="sm">{rule.host || "*"}</Text>
+                    <Text size="sm">{route.hosts[0] || "*"}</Text>
                   </Table.Td>
                   <Table.Td>
-                    <Code>{path.path}</Code>
+                    <Code>{match.path}</Code>
                   </Table.Td>
                   <Table.Td>
                     <Text size="sm" c="dimmed">
-                      {path.pathType}
+                      {match.pathType}
                     </Text>
                   </Table.Td>
                   <Table.Td>
-                    <Text size="sm">{path.serviceName || "—"}</Text>
+                    <Text size="sm">{match.serviceName || "—"}</Text>
                   </Table.Td>
                   <Table.Td>
-                    <Text size="sm">{String(path.servicePort)}</Text>
+                    <Text size="sm">{String(match.servicePort)}</Text>
                   </Table.Td>
                 </Table.Tr>
               )),
@@ -336,25 +354,6 @@ export default function IngressOverviewTab() {
           </ResourceTable>
         )}
       </DetailSection>
-
-      {ing.tls && ing.tls.length > 0 && (
-        <DetailSection title="TLS">
-          <ResourceTable headers={["Hosts", "Secret"]} isEmpty={false}>
-            {ing.tls.map((t, i) => (
-              <Table.Tr key={`tls-${i}`}>
-                <Table.Td>
-                  <Text size="sm">
-                    {t.hosts.length > 0 ? t.hosts.join(", ") : "—"}
-                  </Text>
-                </Table.Td>
-                <Table.Td>
-                  <Text size="sm">{t.secretName ?? "—"}</Text>
-                </Table.Td>
-              </Table.Tr>
-            ))}
-          </ResourceTable>
-        </DetailSection>
-      )}
     </Stack>
   );
 }

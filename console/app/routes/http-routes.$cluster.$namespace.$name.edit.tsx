@@ -15,12 +15,16 @@ import {
   useNavigation,
   useSubmit,
 } from "react-router";
-import type { Route } from "./+types/ingresses.$cluster.$namespace.$name.edit";
+import type { Route } from "./+types/http-routes.$cluster.$namespace.$name.edit";
 import { notifyActionError } from "~/lib/action-feedback";
 import { FormActions, FormSection, PageHeader } from "~/ui";
 import { logServerError } from "~/lib/errors";
-import { ingressPath } from "~/lib/format";
-import { getIngress, updateIngress } from "~/ingresses/ingresses.server";
+import { httpRoutePath } from "~/lib/format";
+import {
+  getHttpRoute,
+  listGateways,
+  updateHttpRoute,
+} from "~/httproutes/httproutes.server";
 import {
   BackendMembershipFields,
   multusWarningVms,
@@ -34,7 +38,8 @@ import {
 } from "~/backends/membership";
 import type {
   BackendMembershipMode,
-  IngressPathType,
+  GatewayOption,
+  HttpRoutePathType,
 } from "~/lib/types";
 
 type VmOption = {
@@ -46,8 +51,14 @@ type VmOption = {
 
 type VmsFetcherData = { vms: VmOption[] };
 
+const PATH_TYPES: HttpRoutePathType[] = [
+  "PathPrefix",
+  "Exact",
+  "RegularExpression",
+];
+
 export function meta({ params }: Route.MetaArgs) {
-  return [{ title: `Edit ${params.name ?? "Ingress"} · kmc` }];
+  return [{ title: `Edit ${params.name ?? "HTTP Route"} · kmc` }];
 }
 
 export async function loader({ params }: Route.LoaderArgs) {
@@ -55,8 +66,11 @@ export async function loader({ params }: Route.LoaderArgs) {
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
-  const ing = await getIngress(cluster, namespace, name);
-  return { ing };
+  const [route, gateways] = await Promise.all([
+    getHttpRoute(cluster, namespace, name),
+    listGateways(cluster).catch(() => [] as GatewayOption[]),
+  ]);
+  return { route, gateways };
 }
 
 export async function action({ request, params }: Route.ActionArgs) {
@@ -68,13 +82,12 @@ export async function action({ request, params }: Route.ActionArgs) {
   const form = await request.formData();
   const host = String(form.get("host") ?? "").trim();
   const path = String(form.get("path") ?? "").trim() || "/";
-  const pathType = (String(form.get("pathType") ?? "Prefix").trim() ||
-    "Prefix") as IngressPathType;
+  const pathType = (String(form.get("pathType") ?? "PathPrefix").trim() ||
+    "PathPrefix") as HttpRoutePathType;
   const servicePort = Number(form.get("servicePort") ?? "80");
   const targetPort = Number(form.get("targetPort") ?? "80");
-  const ingressClassName = String(form.get("ingressClassName") ?? "").trim();
-  const tlsSecretName = String(form.get("tlsSecretName") ?? "").trim();
-  const clearTls = form.get("clearTls") === "true";
+  const gatewayRef = String(form.get("gatewayRef") ?? "").trim();
+  const sectionName = String(form.get("sectionName") ?? "").trim();
   const membershipMode = String(
     form.get("membershipMode") ?? "",
   ).trim() as BackendMembershipMode | "";
@@ -82,6 +95,10 @@ export async function action({ request, params }: Route.ActionArgs) {
   const vmNamesRaw = String(form.get("vmNames") ?? "").trim();
   const matchLabelsText = String(form.get("matchLabelsText") ?? "").trim();
   const editMembership = form.get("editMembership") === "true";
+
+  const slash = gatewayRef.indexOf("/");
+  const gatewayNamespace = slash >= 0 ? gatewayRef.slice(0, slash) : undefined;
+  const gatewayName = slash >= 0 ? gatewayRef.slice(slash + 1) : gatewayRef;
 
   try {
     let membership;
@@ -101,7 +118,7 @@ export async function action({ request, params }: Route.ActionArgs) {
       }
     }
 
-    await updateIngress({
+    await updateHttpRoute({
       cluster,
       namespace,
       name,
@@ -110,14 +127,15 @@ export async function action({ request, params }: Route.ActionArgs) {
       pathType,
       servicePort: Number.isFinite(servicePort) ? servicePort : undefined,
       targetPort: Number.isFinite(targetPort) ? targetPort : undefined,
-      ingressClassName: ingressClassName || null,
-      tlsSecretName: clearTls ? null : tlsSecretName || undefined,
+      gatewayName,
+      gatewayNamespace: gatewayNamespace ?? null,
+      sectionName: sectionName || null,
       membership,
     });
-    return redirect(ingressPath({ cluster, namespace, name }));
+    return redirect(httpRoutePath({ cluster, namespace, name }));
   } catch (err) {
     return {
-      error: logServerError("ingress.update", err, {
+      error: logServerError("httproute.update", err, {
         cluster,
         namespace,
         name,
@@ -126,17 +144,17 @@ export async function action({ request, params }: Route.ActionArgs) {
   }
 }
 
-export default function EditIngressPage({
+export default function EditHttpRoutePage({
   loaderData,
   actionData,
 }: Route.ComponentProps) {
-  const { ing } = loaderData;
+  const { route, gateways } = loaderData;
   const navigation = useNavigation();
   const submit = useSubmit();
   const vmsFetcher = useFetcher<VmsFetcherData>();
   const submitting = navigation.state === "submitting";
 
-  const membership = ing.backend?.membership;
+  const membership = route.backend?.membership;
   const initialMode: BackendMembershipMode =
     membership?.mode === "group" ||
     membership?.mode === "labels" ||
@@ -144,30 +162,32 @@ export default function EditIngressPage({
       ? membership.mode
       : "single-vm";
 
-  const firstRule = ing.rules[0];
-  const firstPath = firstRule?.paths[0];
-  const currentTls = ing.tls?.[0]?.secretName ?? "";
+  const firstRule = route.rules[0];
+  const firstMatch = firstRule?.matches[0];
+  const parent = route.parentRefs[0];
+  const initialGatewayRef = parent
+    ? `${parent.namespace || route.namespace}/${parent.name}`
+    : "";
 
   const form = useForm({
     initialValues: {
-      host: firstRule?.host ?? ing.hosts[0] ?? "",
-      path: firstPath?.path ?? "/",
-      pathType: (firstPath?.pathType as IngressPathType) || "Prefix",
+      host: route.hosts[0] ?? "",
+      path: firstMatch?.path ?? "/",
+      pathType: (firstMatch?.pathType as HttpRoutePathType) || "PathPrefix",
       servicePort:
-        typeof firstPath?.servicePort === "number"
-          ? firstPath.servicePort
-          : ing.servicePorts?.[0]?.port ?? 80,
+        typeof firstMatch?.servicePort === "number"
+          ? firstMatch.servicePort
+          : route.servicePorts?.[0]?.port ?? 80,
       targetPort:
-        typeof ing.servicePorts?.[0]?.targetPort === "number"
-          ? ing.servicePorts[0].targetPort
+        typeof route.servicePorts?.[0]?.targetPort === "number"
+          ? route.servicePorts[0].targetPort
           : 80,
-      ingressClassName: ing.className ?? "",
-      tlsSecretName: currentTls,
-      clearTls: false,
-      editMembership: Boolean(ing.backend?.exists),
+      gatewayRef: initialGatewayRef,
+      sectionName: parent?.sectionName ?? "",
+      editMembership: Boolean(route.backend?.exists),
       membershipMode: initialMode,
       vmName:
-        membership?.mode === "single-vm" ? membership.vmName : ing.vmName ?? "",
+        membership?.mode === "single-vm" ? membership.vmName : route.vmName ?? "",
       vmNames:
         membership?.mode === "group" ? membership.vmNames : ([] as string[]),
       matchLabelsText:
@@ -182,15 +202,16 @@ export default function EditIngressPage({
         return null;
       },
       path: (v) => (!v?.trim() ? "Required" : null),
+      gatewayRef: (v) => (!v?.trim() ? "Required" : null),
     },
   });
 
   useEffect(() => {
     vmsFetcher.load(
-      `/api/vms/${ing.cluster}?namespace=${encodeURIComponent(ing.namespace)}`,
+      `/api/vms/${route.cluster}?namespace=${encodeURIComponent(route.namespace)}`,
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ing.cluster, ing.namespace]);
+  }, [route.cluster, route.namespace]);
 
   useEffect(() => {
     if (actionData && "error" in actionData && actionData.error) {
@@ -201,6 +222,20 @@ export default function EditIngressPage({
   const vms = useMemo(
     () => vmsFetcher.data?.vms ?? [],
     [vmsFetcher.data?.vms],
+  );
+
+  const selectedGateway = useMemo(
+    () => gateways.find((g) => `${g.namespace}/${g.name}` === form.values.gatewayRef),
+    [gateways, form.values.gatewayRef],
+  );
+
+  const listenerOptions = useMemo(
+    () =>
+      (selectedGateway?.listeners ?? []).map((l) => ({
+        value: l.name,
+        label: `${l.name} · ${l.protocol}:${l.port}`,
+      })),
+    [selectedGateway],
   );
 
   const multusBlocked = useMemo(
@@ -223,8 +258,6 @@ export default function EditIngressPage({
 
   const onSubmitFixed = form.onSubmit((values) => {
     if (multusBlocked) return;
-    const hadTls = Boolean(currentTls);
-    const nextTls = values.tlsSecretName.trim();
     submit(
       {
         host: values.host,
@@ -232,9 +265,8 @@ export default function EditIngressPage({
         pathType: values.pathType,
         servicePort: String(values.servicePort),
         targetPort: String(values.targetPort),
-        ingressClassName: values.ingressClassName,
-        tlsSecretName: nextTls,
-        clearTls: hadTls && !nextTls ? "true" : "false",
+        gatewayRef: values.gatewayRef,
+        sectionName: values.sectionName,
         editMembership: values.editMembership ? "true" : "false",
         membershipMode: values.membershipMode,
         vmName: values.vmName,
@@ -248,8 +280,8 @@ export default function EditIngressPage({
   return (
     <Stack gap="md" pb={80}>
       <PageHeader
-        title={`Edit ${ing.name}`}
-        description="Update host, path, TLS, and optional companion backend"
+        title={`Edit ${route.name}`}
+        description="Update host, path, Gateway parent, and optional companion backend"
       />
 
       {actionData && "error" in actionData && actionData.error && (
@@ -261,6 +293,32 @@ export default function EditIngressPage({
       <form onSubmit={onSubmitFixed}>
         <Stack gap="md">
           <FormSection title="Routing">
+            <Select
+              label="Gateway"
+              data={gateways.map((g) => ({
+                value: `${g.namespace}/${g.name}`,
+                label: `${g.namespace}/${g.name}${g.gatewayClassName ? ` · ${g.gatewayClassName}` : ""}`,
+              }))}
+              searchable
+              required
+              value={form.values.gatewayRef || null}
+              error={form.errors.gatewayRef}
+              onChange={(v) => {
+                form.setFieldValue("gatewayRef", v ?? "");
+                form.setFieldValue("sectionName", "");
+              }}
+              nothingFoundMessage="No Gateways in this cluster"
+            />
+            {listenerOptions.length > 0 && (
+              <Select
+                label="Listener"
+                placeholder="Any listener"
+                clearable
+                data={listenerOptions}
+                value={form.values.sectionName || null}
+                onChange={(v) => form.setFieldValue("sectionName", v ?? "")}
+              />
+            )}
             <TextInput
               label="Host"
               required
@@ -273,12 +331,12 @@ export default function EditIngressPage({
             />
             <Select
               label="Path type"
-              data={["Prefix", "Exact", "ImplementationSpecific"]}
+              data={PATH_TYPES}
               value={form.values.pathType}
               onChange={(v) =>
                 form.setFieldValue(
                   "pathType",
-                  (v as IngressPathType) ?? "Prefix",
+                  (v as HttpRoutePathType) ?? "PathPrefix",
                 )
               }
             />
@@ -288,7 +346,7 @@ export default function EditIngressPage({
               max={65535}
               {...form.getInputProps("servicePort")}
             />
-            {ing.backend?.exists && (
+            {route.backend?.exists && (
               <NumberInput
                 label="Target port"
                 description="Companion Service target port"
@@ -297,27 +355,16 @@ export default function EditIngressPage({
                 {...form.getInputProps("targetPort")}
               />
             )}
-            <TextInput
-              label="Ingress class"
-              placeholder="nginx"
-              {...form.getInputProps("ingressClassName")}
-            />
-            <TextInput
-              label="TLS secret"
-              description="Leave empty to disable TLS"
-              placeholder="my-app-tls"
-              {...form.getInputProps("tlsSecretName")}
-            />
           </FormSection>
 
-          {ing.backend?.exists && (
+          {route.backend?.exists && (
             <FormSection title="Backend membership">
               <BackendMembershipFields
                 membershipMode={form.values.membershipMode}
                 onMembershipModeChange={(mode) =>
                   form.setFieldValue("membershipMode", mode)
                 }
-                namespace={ing.namespace}
+                namespace={route.namespace}
                 vmName={form.values.vmName}
                 onVmNameChange={(name) => form.setFieldValue("vmName", name)}
                 vmNames={form.values.vmNames}
@@ -333,7 +380,7 @@ export default function EditIngressPage({
           )}
 
           <FormActions>
-            <Button component={Link} to={ingressPath(ing)} variant="default">
+            <Button component={Link} to={httpRoutePath(route)} variant="default">
               Cancel
             </Button>
             <Button type="submit" loading={submitting} disabled={multusBlocked}>

@@ -11,16 +11,16 @@ import {
 import { useForm } from "@mantine/form";
 import { useEffect, useMemo } from "react";
 import { Link, redirect, useFetcher, useNavigation, useSubmit } from "react-router";
-import type { Route } from "./+types/ingresses.create";
+import type { Route } from "./+types/http-routes.create";
 import { notifyActionError } from "~/lib/action-feedback";
 import { FormActions, FormSection, PageHeader } from "~/ui";
 import { logServerError } from "~/lib/errors";
 import {
-  ingressPath,
+  httpRoutePath,
   loadBalancerCreatePath,
   validateDns1123Label,
 } from "~/lib/format";
-import { createIngress } from "~/ingresses/ingresses.server";
+import { createHttpRoute } from "~/httproutes/httproutes.server";
 import { listBackends } from "~/backends/backends.server";
 import {
   BackendMembershipFields,
@@ -38,8 +38,9 @@ import type {
   BackendMembershipMode,
   BackendSummary,
   ClusterCatalog,
-  CreateIngressRequest,
-  IngressPathType,
+  CreateHttpRouteRequest,
+  GatewayOption,
+  HttpRoutePathType,
 } from "~/lib/types";
 
 type VmOption = {
@@ -50,9 +51,16 @@ type VmOption = {
 };
 
 type VmsFetcherData = { vms: VmOption[] };
+type GatewaysFetcherData = { gateways: GatewayOption[] };
+
+const PATH_TYPES: HttpRoutePathType[] = [
+  "PathPrefix",
+  "Exact",
+  "RegularExpression",
+];
 
 export function meta(_args: Route.MetaArgs) {
-  return [{ title: "Create Ingress · kmc" }];
+  return [{ title: "Create HTTP Route · kmc" }];
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
@@ -93,20 +101,21 @@ export async function action({ request }: Route.ActionArgs) {
   const matchLabelsText = String(form.get("matchLabelsText") ?? "").trim();
   const host = String(form.get("host") ?? "").trim();
   const path = String(form.get("path") ?? "").trim() || "/";
-  const pathType = (String(form.get("pathType") ?? "Prefix").trim() ||
-    "Prefix") as IngressPathType;
+  const pathType = (String(form.get("pathType") ?? "PathPrefix").trim() ||
+    "PathPrefix") as HttpRoutePathType;
   const servicePortRaw = String(form.get("servicePort") ?? "80").trim();
   const targetPortRaw = String(form.get("targetPort") ?? "80").trim();
-  const ingressClassName =
-    String(form.get("ingressClassName") ?? "").trim() || undefined;
+  const gatewayRef = String(form.get("gatewayRef") ?? "").trim();
+  const sectionName = String(form.get("sectionName") ?? "").trim() || undefined;
   const existingServiceName =
     String(form.get("existingServiceName") ?? "").trim() || undefined;
-  const tlsSecretName =
-    String(form.get("tlsSecretName") ?? "").trim() || undefined;
   const useExisting = form.get("useExistingService") === "true";
 
   const servicePort = Number(servicePortRaw);
   const targetPort = Number(targetPortRaw);
+  const slash = gatewayRef.indexOf("/");
+  const gatewayNamespace = slash >= 0 ? gatewayRef.slice(0, slash) : undefined;
+  const gatewayName = slash >= 0 ? gatewayRef.slice(slash + 1) : gatewayRef;
 
   try {
     let membership;
@@ -128,7 +137,7 @@ export async function action({ request }: Route.ActionArgs) {
       }
     }
 
-    const payload: CreateIngressRequest = {
+    const payload: CreateHttpRouteRequest = {
       cluster,
       namespace,
       name,
@@ -138,16 +147,17 @@ export async function action({ request }: Route.ActionArgs) {
       pathType,
       servicePort: Number.isFinite(servicePort) ? servicePort : 80,
       targetPort: Number.isFinite(targetPort) ? targetPort : 80,
-      ingressClassName,
+      gatewayName,
+      gatewayNamespace,
+      sectionName,
       existingServiceName: useExisting ? existingServiceName : undefined,
-      tlsSecretName,
     };
 
-    await createIngress(payload);
-    return redirect(ingressPath(payload));
+    await createHttpRoute(payload);
+    return redirect(httpRoutePath(payload));
   } catch (err) {
     return {
-      error: logServerError("ingress.create", err, {
+      error: logServerError("httproute.create", err, {
         cluster,
         namespace,
         name,
@@ -158,7 +168,7 @@ export async function action({ request }: Route.ActionArgs) {
   }
 }
 
-export default function CreateIngressPage({
+export default function CreateHttpRoutePage({
   loaderData,
   actionData,
 }: Route.ComponentProps) {
@@ -167,6 +177,7 @@ export default function CreateIngressPage({
   const submit = useSubmit();
   const catalogFetcher = useFetcher<ClusterCatalog>();
   const vmsFetcher = useFetcher<VmsFetcherData>();
+  const gatewaysFetcher = useFetcher<GatewaysFetcherData>();
   const submitting = navigation.state === "submitting";
 
   const form = useForm({
@@ -180,13 +191,13 @@ export default function CreateIngressPage({
       matchLabelsText: "",
       host: prefill.host,
       path: "/",
-      pathType: "Prefix" as IngressPathType,
+      pathType: "PathPrefix" as HttpRoutePathType,
       servicePort: 80,
       targetPort: 80,
-      ingressClassName: "",
+      gatewayRef: "",
+      sectionName: "",
       useExistingService: Boolean(prefill.existingService),
       existingServiceName: prefill.existingService,
-      tlsSecretName: "",
     },
     validate: {
       cluster: (v) => (!v ? "Required" : null),
@@ -223,6 +234,7 @@ export default function CreateIngressPage({
         return null;
       },
       path: (v) => (!v?.trim() ? "Required" : null),
+      gatewayRef: (v) => (!v?.trim() ? "Required" : null),
       servicePort: (v) =>
         !Number.isFinite(v) || v < 1 || v > 65535 ? "1–65535" : null,
       targetPort: (v) =>
@@ -233,6 +245,7 @@ export default function CreateIngressPage({
   useEffect(() => {
     if (!form.values.cluster) return;
     catalogFetcher.load(`/api/catalog/${form.values.cluster}`);
+    gatewaysFetcher.load(`/api/gateways/${form.values.cluster}`);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.values.cluster]);
 
@@ -261,6 +274,25 @@ export default function CreateIngressPage({
     [vmsFetcher.data?.vms],
   );
 
+  const gateways = useMemo(
+    () => gatewaysFetcher.data?.gateways ?? [],
+    [gatewaysFetcher.data?.gateways],
+  );
+
+  const selectedGateway = useMemo(
+    () => gateways.find((g) => `${g.namespace}/${g.name}` === form.values.gatewayRef),
+    [gateways, form.values.gatewayRef],
+  );
+
+  const listenerOptions = useMemo(
+    () =>
+      (selectedGateway?.listeners ?? []).map((l) => ({
+        value: l.name,
+        label: `${l.name} · ${l.protocol}:${l.port}`,
+      })),
+    [selectedGateway],
+  );
+
   const onSubmit = form.onSubmit((values) => {
     if (multusBlocked) return;
     submit(
@@ -277,10 +309,10 @@ export default function CreateIngressPage({
         pathType: values.pathType,
         servicePort: String(values.servicePort),
         targetPort: String(values.targetPort),
-        ingressClassName: values.ingressClassName,
+        gatewayRef: values.gatewayRef,
+        sectionName: values.sectionName,
         useExistingService: values.useExistingService ? "true" : "false",
         existingServiceName: values.existingServiceName,
-        tlsSecretName: values.tlsSecretName,
       },
       { method: "post" },
     );
@@ -327,8 +359,8 @@ export default function CreateIngressPage({
   return (
     <Stack gap="md" pb={80}>
       <PageHeader
-        title="Create Ingress"
-        description="HTTP(S) route to pod-network VM(s) via ClusterIP Service + Ingress"
+        title="Create HTTP Route"
+        description="HTTPRoute on a Gateway, backed by a ClusterIP Service to pod-network VM(s)"
       />
 
       {actionData && "error" in actionData && actionData.error && (
@@ -339,9 +371,10 @@ export default function CreateIngressPage({
 
       <Alert color="gray" variant="light" title="How binding works">
         kmc creates a ClusterIP Service that selects virt-launcher pods and an
-        Ingress that points at that Service. Membership chooses the selector:
-        single VM, stamped group, or existing pod-template labels. Need raw
-        TCP/UDP instead?{" "}
+        HTTPRoute that points at that Service. Attach the route to an existing
+        Gateway (Envoy Gateway). Membership chooses the selector: single VM,
+        stamped group, or existing pod-template labels. Need raw TCP/UDP
+        instead?{" "}
         <Text component={Link} to={lbPrefill} size="sm" c="blue.4" span>
           Create a Load Balancer
         </Text>
@@ -363,6 +396,8 @@ export default function CreateIngressPage({
                 form.setFieldValue("namespace", "");
                 form.setFieldValue("vmName", "");
                 form.setFieldValue("vmNames", []);
+                form.setFieldValue("gatewayRef", "");
+                form.setFieldValue("sectionName", "");
               }}
             />
             <Select
@@ -385,7 +420,7 @@ export default function CreateIngressPage({
           <FormSection title="Identity">
             <TextInput
               label="Name"
-              description="DNS-1123 name shared by the Ingress and companion Service"
+              description="DNS-1123 name shared by the HTTPRoute and companion Service"
               placeholder="my-app"
               required
               {...form.getInputProps("name")}
@@ -395,7 +430,7 @@ export default function CreateIngressPage({
           <FormSection title="Backend">
             <Checkbox
               label="Use existing Service (expose-existing)"
-              description="Point this Ingress at a kmc Load Balancer or backend Service instead of creating a companion ClusterIP"
+              description="Point this HTTPRoute at a kmc Load Balancer or backend Service instead of creating a companion ClusterIP"
               checked={form.values.useExistingService}
               onChange={(e) =>
                 form.setFieldValue("useExistingService", e.currentTarget.checked)
@@ -454,6 +489,42 @@ export default function CreateIngressPage({
           </FormSection>
 
           <FormSection title="Routing">
+            <Select
+              label="Gateway"
+              description="Parent Gateway this HTTPRoute attaches to (Envoy Gateway)"
+              placeholder={
+                form.values.cluster ? "Select Gateway" : "Select cluster first"
+              }
+              data={gateways.map((g) => ({
+                value: `${g.namespace}/${g.name}`,
+                label: `${g.namespace}/${g.name}${g.gatewayClassName ? ` · ${g.gatewayClassName}` : ""}`,
+              }))}
+              searchable
+              required
+              disabled={!form.values.cluster}
+              value={form.values.gatewayRef || null}
+              error={form.errors.gatewayRef}
+              onChange={(v) => {
+                form.setFieldValue("gatewayRef", v ?? "");
+                form.setFieldValue("sectionName", "");
+              }}
+              nothingFoundMessage={
+                gatewaysFetcher.state !== "idle"
+                  ? "Loading…"
+                  : "No Gateways in this cluster"
+              }
+            />
+            {listenerOptions.length > 0 && (
+              <Select
+                label="Listener"
+                description="Optional Gateway listener (parentRef.sectionName)"
+                placeholder="Any listener"
+                clearable
+                data={listenerOptions}
+                value={form.values.sectionName || null}
+                onChange={(v) => form.setFieldValue("sectionName", v ?? "")}
+              />
+            )}
             <TextInput
               label="Host"
               placeholder="app.example.com"
@@ -468,12 +539,12 @@ export default function CreateIngressPage({
             />
             <Select
               label="Path type"
-              data={["Prefix", "Exact", "ImplementationSpecific"]}
+              data={PATH_TYPES}
               value={form.values.pathType}
               onChange={(v) =>
                 form.setFieldValue(
                   "pathType",
-                  (v as IngressPathType) ?? "Prefix",
+                  (v as HttpRoutePathType) ?? "PathPrefix",
                 )
               }
             />
@@ -499,26 +570,14 @@ export default function CreateIngressPage({
                 {...form.getInputProps("targetPort")}
               />
             )}
-            <TextInput
-              label="Ingress class"
-              description="Optional ingressClassName (cluster default if empty)"
-              placeholder="nginx"
-              {...form.getInputProps("ingressClassName")}
-            />
-            <TextInput
-              label="TLS secret"
-              description="Optional Kubernetes TLS secret name in this namespace (enables https for the host)"
-              placeholder="my-app-tls"
-              {...form.getInputProps("tlsSecretName")}
-            />
           </FormSection>
 
           <FormActions>
-            <Button component={Link} to="/ingresses" variant="default">
+            <Button component={Link} to="/http-routes" variant="default">
               Cancel
             </Button>
             <Button type="submit" loading={submitting} disabled={multusBlocked}>
-              Create Ingress
+              Create HTTP Route
             </Button>
           </FormActions>
         </Stack>

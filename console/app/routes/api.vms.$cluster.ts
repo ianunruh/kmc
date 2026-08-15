@@ -1,5 +1,5 @@
 import type { Route } from "./+types/api.vms.$cluster";
-import { listVmOptionsForNamespace } from "~/ingresses/ingresses.server";
+import { listVmOptionsForNamespace } from "~/httproutes/httproutes.server";
 
 export async function loader({ params, request }: Route.LoaderArgs) {
   const cluster = params.cluster;

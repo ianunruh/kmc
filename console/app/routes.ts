@@ -81,19 +81,19 @@ export default [
     route("yaml", "routes/images.$cluster.$name.yaml.tsx"),
   ]),
 
-  route("ingresses", "routes/ingresses._index.tsx"),
-  route("ingresses/create", "routes/ingresses.create.tsx"),
+  route("http-routes", "routes/http-routes._index.tsx"),
+  route("http-routes/create", "routes/http-routes.create.tsx"),
   route(
-    "ingresses/:cluster/:namespace/:name/edit",
-    "routes/ingresses.$cluster.$namespace.$name.edit.tsx",
+    "http-routes/:cluster/:namespace/:name/edit",
+    "routes/http-routes.$cluster.$namespace.$name.edit.tsx",
   ),
   route(
-    "ingresses/:cluster/:namespace/:name",
-    "routes/ingresses.$cluster.$namespace.$name.tsx",
+    "http-routes/:cluster/:namespace/:name",
+    "routes/http-routes.$cluster.$namespace.$name.tsx",
     [
-      index("routes/ingresses.$cluster.$namespace.$name._index.tsx"),
-      route("events", "routes/ingresses.$cluster.$namespace.$name.events.tsx"),
-      route("yaml", "routes/ingresses.$cluster.$namespace.$name.yaml.tsx"),
+      index("routes/http-routes.$cluster.$namespace.$name._index.tsx"),
+      route("events", "routes/http-routes.$cluster.$namespace.$name.events.tsx"),
+      route("yaml", "routes/http-routes.$cluster.$namespace.$name.yaml.tsx"),
     ],
   ),
 
@@ -189,6 +189,7 @@ export default [
   route("api/datavolumes/:cluster", "routes/api.datavolumes.$cluster.ts"),
   route("api/router-attachable/:cluster", "routes/api.router-attachable.$cluster.ts"),
   route("api/vms/:cluster", "routes/api.vms.$cluster.ts"),
+  route("api/gateways/:cluster", "routes/api.gateways.$cluster.ts"),
   route(
     "api/vms/:cluster/:namespace/:name/metrics",
     "routes/api.vms.$cluster.$namespace.$name.metrics.ts",

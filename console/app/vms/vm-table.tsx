@@ -440,12 +440,12 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                             </Text>
                           </Tooltip>
                         ) : null}
-                        {vm.ingressHosts && vm.ingressHosts.length > 0 ? (
+                        {vm.httpRouteHosts && vm.httpRouteHosts.length > 0 ? (
                           <Tooltip
-                            label={`Ingress host${vm.ingressHosts.length > 1 ? "s" : ""}`}
+                            label={`HTTP route host${vm.httpRouteHosts.length > 1 ? "s" : ""}`}
                           >
                             <Text size="xs" ff="monospace" c="grape.4">
-                              {vm.ingressHosts.join(", ")}
+                              {vm.httpRouteHosts.join(", ")}
                             </Text>
                           </Tooltip>
                         ) : null}

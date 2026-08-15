@@ -378,35 +378,35 @@ export function instanceTypesListPath(
   return withSearch("/instancetypes", filters);
 }
 
-export function ingressPath(
-  ing: Pick<
+export function httpRoutePath(
+  route: Pick<
     { cluster: string; namespace: string; name: string },
     "cluster" | "namespace" | "name"
   >,
 ): string {
-  return `/ingresses/${encodeURIComponent(ing.cluster)}/${encodeURIComponent(ing.namespace)}/${encodeURIComponent(ing.name)}`;
+  return `/http-routes/${encodeURIComponent(route.cluster)}/${encodeURIComponent(route.namespace)}/${encodeURIComponent(route.name)}`;
 }
 
-export function ingressEditPath(
-  ing: Pick<
+export function httpRouteEditPath(
+  route: Pick<
     { cluster: string; namespace: string; name: string },
     "cluster" | "namespace" | "name"
   >,
 ): string {
-  return `${ingressPath(ing)}/edit`;
+  return `${httpRoutePath(route)}/edit`;
 }
 
-/** Absolute http(s) URL for an Ingress host based on TLS coverage. */
-export function ingressHostUrl(
+/** Absolute http(s) URL for an HTTPRoute host based on parent Gateway listeners. */
+export function httpRouteHostUrl(
   host: string,
-  tlsHosts: readonly string[] | undefined,
+  httpsHosts: readonly string[] | undefined,
 ): string {
   const h = host.trim();
-  const scheme = tlsHosts?.includes(h) ? "https" : "http";
+  const scheme = httpsHosts?.includes(h) ? "https" : "http";
   return `${scheme}://${h}`;
 }
 
-export function ingressesListPath(
+export function httpRoutesListPath(
   filters: {
     q?: string | null;
     cluster?: string | null;
@@ -414,10 +414,10 @@ export function ingressesListPath(
     host?: string | null;
   } = {},
 ): string {
-  return withSearch("/ingresses", filters);
+  return withSearch("/http-routes", filters);
 }
 
-export function ingressCreatePath(
+export function httpRouteCreatePath(
   prefill: {
     cluster?: string | null;
     namespace?: string | null;
@@ -428,7 +428,7 @@ export function ingressCreatePath(
     existingService?: string | null;
   } = {},
 ): string {
-  return withSearch("/ingresses/create", prefill);
+  return withSearch("/http-routes/create", prefill);
 }
 
 export function loadBalancerPath(

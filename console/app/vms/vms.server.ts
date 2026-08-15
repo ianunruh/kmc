@@ -50,7 +50,10 @@ import {
   KMC_ANN_DISK_SIZE,
   KMC_ANN_RETAINED_AT,
   KMC_BACKEND_LABEL_SELECTOR,
-  KMC_INGRESS_LABEL_SELECTOR,
+  GATEWAY_API_GROUP,
+  GATEWAY_API_VERSION,
+  HTTP_ROUTE_PLURAL,
+  KMC_HTTP_ROUTE_LABEL_SELECTOR,
   KMC_LABEL_RESOURCE,
   KMC_LABEL_RETAINED_FROM_VM,
   KMC_LABEL_TARGET_KIND,
@@ -942,8 +945,8 @@ export async function listVms(clusterFilter?: ClusterId): Promise<{
       const cluster = byId.get(id);
       if (!cluster?.reachable) return;
       try {
-        const { custom, core, networking } = getClusterClients(id);
-        const [res, instanceTypes, floats, dvIndex, backendSvcs, ings] =
+        const { custom, core } = getClusterClients(id);
+        const [res, instanceTypes, floats, dvIndex, backendSvcs, routes] =
           await Promise.all([
             custom.listClusterCustomObject({
               group: "kubevirt.io",
@@ -958,9 +961,12 @@ export async function listVms(clusterFilter?: ClusterId): Promise<{
                 labelSelector: KMC_BACKEND_LABEL_SELECTOR,
               })
               .catch(() => ({ items: [] as unknown[] })),
-            networking
-              .listIngressForAllNamespaces({
-                labelSelector: KMC_INGRESS_LABEL_SELECTOR,
+            custom
+              .listClusterCustomObject({
+                group: GATEWAY_API_GROUP,
+                version: GATEWAY_API_VERSION,
+                plural: HTTP_ROUTE_PLURAL,
+                labelSelector: KMC_HTTP_ROUTE_LABEL_SELECTOR,
               })
               .catch(() => ({ items: [] as unknown[] })),
           ]);
@@ -998,33 +1004,33 @@ export async function listVms(clusterFilter?: ClusterId): Promise<{
           floatsByVmKey.set(key, list);
         }
 
-        // Exposure chips: single-vm Ingress hosts + LoadBalancer VIPs (cheap path).
-        const ingressHostsByVm = new Map<string, string[]>();
-        for (const raw of (ings as { items?: unknown[] }).items ?? []) {
-          const ing = raw as {
+        // Exposure chips: single-vm HTTPRoute hosts + LoadBalancer VIPs (cheap path).
+        const httpRouteHostsByVm = new Map<string, string[]>();
+        for (const raw of (routes as { items?: unknown[] }).items ?? []) {
+          const route = raw as {
             metadata?: {
               namespace?: string;
               labels?: Record<string, string>;
             };
-            spec?: { rules?: Array<{ host?: string }> };
+            spec?: { hostnames?: string[] };
           };
-          const labels = ing.metadata?.labels ?? {};
+          const labels = route.metadata?.labels ?? {};
           if (labels[KMC_LABEL_TARGET_KIND] && labels[KMC_LABEL_TARGET_KIND] !== KMC_TARGET_KIND_VM) {
             continue;
           }
           const vmName = labels[KMC_LABEL_VM];
-          const ns = ing.metadata?.namespace;
+          const ns = route.metadata?.namespace;
           if (!vmName || !ns) continue;
-          const hosts = (ing.spec?.rules ?? [])
-            .map((r) => r.host?.trim())
+          const hosts = (route.spec?.hostnames ?? [])
+            .map((h) => h?.trim())
             .filter((h): h is string => Boolean(h));
           if (!hosts.length) continue;
           const key = `${ns}/${vmName}`;
-          const list = ingressHostsByVm.get(key) ?? [];
+          const list = httpRouteHostsByVm.get(key) ?? [];
           for (const h of hosts) {
             if (!list.includes(h)) list.push(h);
           }
-          ingressHostsByVm.set(key, list);
+          httpRouteHostsByVm.set(key, list);
         }
 
         const lbAddrsByVm = new Map<string, string[]>();
@@ -1064,8 +1070,8 @@ export async function listVms(clusterFilter?: ClusterId): Promise<{
           if (floatingIpv4?.length) {
             summary.floatingIpv4 = floatingIpv4;
           }
-          const hosts = ingressHostsByVm.get(key);
-          if (hosts?.length) summary.ingressHosts = hosts;
+          const hosts = httpRouteHostsByVm.get(key);
+          if (hosts?.length) summary.httpRouteHosts = hosts;
           const lbAddrs = lbAddrsByVm.get(key);
           if (lbAddrs?.length) summary.loadBalancerAddresses = lbAddrs;
           items.push(summary);

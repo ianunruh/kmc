@@ -47,7 +47,7 @@ export function multusWarningVms(
 }
 
 /**
- * Shared membership picker for Ingress / Load Balancer create forms.
+ * Shared membership picker for HTTP Route / Load Balancer create forms.
  */
 export function BackendMembershipFields({
   membershipMode,
@@ -155,7 +155,7 @@ export function BackendMembershipFields({
           {multus.length === 1
             ? `${multus[0].name} has no pod/masquerade NIC.`
             : `${multus.length} selected VMs have no pod/masquerade NIC.`}{" "}
-          Ingress and Load Balancer select virt-launcher pod IPs only — traffic
+          HTTP Route and Load Balancer select virt-launcher pod IPs only — traffic
           will not reach Multus guest addresses. Dual-home the VM (include pod
           network) before creating, or use Floating IP / Port Forward on the VPC
           plane.

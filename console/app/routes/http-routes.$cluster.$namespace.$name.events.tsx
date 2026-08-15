@@ -1,4 +1,4 @@
-import type { Route } from "./+types/ingresses.$cluster.$namespace.$name.events";
+import type { Route } from "./+types/http-routes.$cluster.$namespace.$name.events";
 import { EventsPanel } from "~/ui";
 import { listResourceEvents } from "~/lib/k8s/events.server";
 
@@ -12,12 +12,12 @@ export async function loader({ params }: Route.LoaderArgs) {
     cluster,
     namespace,
     name,
-    kinds: ["Ingress", "Service"],
+    kinds: ["HTTPRoute", "Service"],
   });
 
   return { events };
 }
 
-export default function IngressEventsTab({ loaderData }: Route.ComponentProps) {
+export default function HttpRouteEventsTab({ loaderData }: Route.ComponentProps) {
   return <EventsPanel events={loaderData.events} />;
 }

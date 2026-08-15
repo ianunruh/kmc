@@ -299,8 +299,8 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 - **VPCs** — self-service private networks via `VPC` CR (controller allocates VLAN + Multus NAD from `VLANPool`)
 - **Routers** — `Router` CR (controller owns appliance, policy ConfigMap, gateway claims); multi-VPC attach/detach; external SNAT + floating IPs + port forwards
 - **SSH keys** — signed-in users save named public keys (ConfigMap on the settings cluster); select when creating a VM
-- **Expose VMs** — two planes (see matrix below): VPC L3 (floating IPs / port forwards) and pod L4/L7 (Ingress / LoadBalancer)
-- **Ingresses** — create/list/detail/edit/delete HTTP Ingresses (companion ClusterIP Service, or expose-existing backend)
+- **Expose VMs** — two planes (see matrix below): VPC L3 (floating IPs / port forwards) and pod L4/L7 (HTTPRoute / LoadBalancer)
+- **HTTP routes** — create/list/detail/edit/delete Gateway API HTTPRoutes (companion ClusterIP Service, or expose-existing backend)
 - **Load balancers** — Service type LoadBalancer with membership (single VM / group / labels) and multi-port edit
 
 ### Exposing a VM
@@ -309,11 +309,11 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 | --------- | ----- | ----------------- | ----- |
 | **Floating IP** | VPC / Multus | Full public address → private guest IP (any protocol) | VPC + router external gateway |
 | **Port forward** | VPC / Multus | Public `IP:port` → private `IP:port` (no dedicated FIP) | Same as FIP |
-| **Ingress** | Pod / masquerade | HTTP(S) host/path via ClusterIP + Ingress | Guest pod NIC; listen on target port |
+| **HTTPRoute** | Pod / masquerade | HTTP(S) host/path via ClusterIP + HTTPRoute on a Gateway | Guest pod NIC; listen on target port; existing Gateway (Envoy Gateway) |
 | **Load balancer** | Pod / masquerade | L4 VIP (TCP/UDP), `externalTrafficPolicy: Local` | Guest pod NIC; MetalLB (or cloud LB) |
 
 - **Reserve** a floating IP to hold a public address without mapping; **associate** to bind private; **disassociate** keeps the public held; **release** returns it to the pool.
-- Ingress / LB select **virt-launcher pod IPs**, not Multus guest addresses. Dual-home Multus VMs (include pod network) for pod-plane exposure.
+- HTTPRoute / LB select **virt-launcher pod IPs**, not Multus guest addresses. Dual-home Multus VMs (include pod network) for pod-plane exposure.
 - From a VM: **Expose** menu on the detail header, or the **Networking** tab.
 
 - **Data volumes** — list, create (blank / PVC clone / HTTP), detail, delete
@@ -326,27 +326,29 @@ Visit `/me` after login to verify `Impersonate-User` / groups match `kubectl aut
 - Global auto-refresh + top loading bar
 - Multi-cluster via kubeconfig **or** platform SA + impersonation
 
-### Exposing VMs (Ingress)
+### Exposing VMs (HTTPRoute)
 
-For **pod-network** VMs, kmc can create a Kubernetes Ingress that routes to the virt-launcher pod through a ClusterIP Service (same CNI path as any backend pod — e.g. Calico). No VM network template changes are required.
+For **pod-network** VMs, kmc can create a Gateway API `HTTPRoute` that routes to the virt-launcher pod through a ClusterIP Service (same CNI path as any backend pod — e.g. Calico). The route attaches to an existing Gateway (Envoy Gateway). No VM network template changes are required.
 
-1. Open **Ingresses → Create Ingress**
+1. Open **HTTP Routes → Create HTTP Route**
 2. Pick cluster, namespace, and target VM
-3. Set host / path / ports (and optional `ingressClassName`)
+3. Set host / path / ports and select a parent Gateway (optional listener)
 4. kmc creates:
-   - **Service** (same name as the Ingress) with selector `kubevirt.io/vm=<vm-name>`
-   - **Ingress** with backend pointing at that Service
+   - **Service** (same name as the HTTPRoute) with selector `kubevirt.io/vm=<vm-name>`
+   - **HTTPRoute** with a `backendRef` pointing at that Service and a `parentRef` to the Gateway
 5. Labels mark ownership: `app.kubernetes.io/managed-by=kmc`, `kmc.ianunruh.com/vm`, `kmc.ianunruh.com/target-kind=VirtualMachine`
 
 **Requirements**
 
 - Guest must listen on the target port (kmc does not configure guest apps)
-- Caller needs RBAC to create/delete `services` and `ingresses` in the namespace
+- Cluster has Gateway API + Envoy Gateway, and at least one Gateway the route can attach to
+- Caller needs RBAC to create/delete `services` and `httproutes` (`gateway.networking.k8s.io`) in the namespace
 - Multus guest IPs are **not** used as backends (Service selects the pod); a soft warning is shown when the target VM is Multus-attached
+- TLS terminates on the Gateway listener, not on the HTTPRoute
 
-**Delete** removes both the Ingress and the companion Service; the VM is left intact.
+**Delete** removes both the HTTPRoute and the companion Service; the VM is left intact.
 
-**Multi-member backends:** Create Ingress or **Load Balancer** can bind a single VM, a **VM group** (kmc stamps `kmc.ianunruh.com/backend-group` on member pod templates), or a **label selector** on virt-launcher pods. Ingress uses ClusterIP + Ingress; Load Balancers use Service `type: LoadBalancer` with `externalTrafficPolicy: Local` (MetalLB / cloud LB for the VIP — Local avoids broken return paths common with Cluster policy on BGP MetalLB). Guests must listen on the pod/masquerade NIC.
+**Multi-member backends:** Create HTTP Route or **Load Balancer** can bind a single VM, a **VM group** (kmc stamps `kmc.ianunruh.com/backend-group` on member pod templates), or a **label selector** on virt-launcher pods. HTTP routes use ClusterIP + HTTPRoute; Load Balancers use Service `type: LoadBalancer` with `externalTrafficPolicy: Local` (MetalLB / cloud LB for the VIP — Local avoids broken return paths common with Cluster policy on BGP MetalLB). Guests must listen on the pod/masquerade NIC.
 
 ### VPCs (self-service Multus + VLAN)
 

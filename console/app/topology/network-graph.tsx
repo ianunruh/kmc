@@ -2,7 +2,7 @@ import { Badge, Box, Group, Stack, Text } from "@mantine/core";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import {
-  ingressesListPath,
+  httpRoutesListPath,
   loadBalancersListPath,
   vpcPath,
   vmPath,
@@ -21,10 +21,10 @@ const PAD_X = 24;
 const PAD_Y = 28;
 const HEADER_H = 22;
 
-/** Right-column kinds (pod NIC + Ingress + LoadBalancer exposure). */
+/** Right-column kinds (pod NIC + HTTPRoute + LoadBalancer exposure). */
 const RIGHT_COL_KINDS = new Set<TopologyNetworkNode["kind"]>([
   "pod",
-  "ingress",
+  "httproute",
   "loadbalancer",
 ]);
 
@@ -32,7 +32,7 @@ const KIND_COLORS: Record<TopologyNetworkNode["kind"], string> = {
   vpc: "#20c997",
   multus: "#339af0",
   pod: "#868e96",
-  ingress: "#cc5de8",
+  httproute: "#cc5de8",
   loadbalancer: "#15aabf",
 };
 
@@ -40,7 +40,7 @@ const KIND_LABELS: Record<TopologyNetworkNode["kind"], string> = {
   vpc: "VPC",
   multus: "Multus",
   pod: "Pod",
-  ingress: "Ingress",
+  httproute: "HTTP Route",
   loadbalancer: "Load Balancer",
 };
 
@@ -48,14 +48,14 @@ const KIND_LABELS: Record<TopologyNetworkNode["kind"], string> = {
 const FLOATING_EDGE_COLOR = "#fab005";
 /** Port forward edges (public Multus:port → private). */
 const PORTFORWARD_EDGE_COLOR = "#fd7e14";
-/** Ingress (pod network → VM) edges. */
-const INGRESS_EDGE_COLOR = "#cc5de8";
+/** HTTPRoute (pod network → VM) edges. */
+const HTTP_ROUTE_EDGE_COLOR = "#cc5de8";
 /** LoadBalancer VIP edges. */
 const LOADBALANCER_EDGE_COLOR = "#15aabf";
 
 const RIGHT_KIND_ORDER: Record<string, number> = {
   pod: 0,
-  ingress: 1,
+  httproute: 1,
   loadbalancer: 2,
 };
 
@@ -104,7 +104,7 @@ function edgePath(
   from: LayoutNode,
   to: LayoutNode,
   fromRight: boolean,
-  /** Vertical bias on control points so parallel edges (e.g. attach + ingress) fan apart. */
+  /** Vertical bias on control points so parallel edges (e.g. attach + HTTPRoute) fan apart. */
   curveBias = 0,
 ): string {
   const x1 = fromRight ? from.x + NODE_W : from.x;
@@ -117,8 +117,8 @@ function edgePath(
 
 function networkHref(n: TopologyNetworkNode): string | null {
   if (n.kind === "pod") return null;
-  if (n.kind === "ingress") {
-    return ingressesListPath({
+  if (n.kind === "httproute") {
+    return httpRoutesListPath({
       cluster: n.cluster,
       namespace: n.namespace,
     });
@@ -142,7 +142,7 @@ function networkSubtitle(n: TopologyNetworkNode): string {
   if (n.exists === false) bits.push("missing NAD");
   if (bits.length === 0) {
     if (n.kind === "pod") return "default cluster network";
-    if (n.kind === "ingress") return "HTTP(S) exposure";
+    if (n.kind === "httproute") return "HTTP(S) exposure";
     if (n.kind === "loadbalancer") return "L4 LoadBalancer VIP";
     if (n.kind === "multus") return "NetworkAttachmentDefinition";
     return "VPC";
@@ -178,7 +178,7 @@ export function NetworkGraph({
 
   const layout = useMemo(() => {
     // Three columns: networks (left) · VMs (middle) · pod network (right).
-    // Right column: pod → ingress → load balancer; edges leave the right of each VM.
+    // Right column: pod → HTTP route → load balancer; edges leave the right of each VM.
     // Empty columns collapse so the graph doesn't reserve blank space.
     const leftNets = networks.filter((n) => !RIGHT_COL_KINDS.has(n.kind));
     const rightNets = networks.filter((n) => RIGHT_COL_KINDS.has(n.kind));
@@ -310,11 +310,11 @@ export function NetworkGraph({
             w={16}
             h={0}
             style={{
-              borderTop: `2px dashed ${INGRESS_EDGE_COLOR}`,
+              borderTop: `2px dashed ${HTTP_ROUTE_EDGE_COLOR}`,
             }}
           />
           <Text size="xs" c="dimmed">
-            Ingress
+            HTTP Route
           </Text>
         </Group>
         <Group gap={6}>
@@ -395,16 +395,16 @@ export function NetworkGraph({
             const net = networkById.get(e.networkId);
             const isFloating = e.role === "floating";
             const isPortForward = e.role === "portforward";
-            const isIngress = e.role === "ingress";
+            const isHttpRoute = e.role === "httproute";
             const isLoadBalancer = e.role === "loadbalancer";
             const fromRightCol =
               net != null && RIGHT_COL_KINDS.has(net.kind);
-            // Fan FIP / PF / Ingress / LB so they don't sit on attachment edges.
+            // Fan FIP / PF / HTTPRoute / LB so they don't sit on attachment edges.
             const curveBias = isFloating
               ? -22
               : isPortForward
                 ? -36
-                : isIngress
+                : isHttpRoute
                   ? 22
                   : isLoadBalancer
                     ? 40
@@ -417,8 +417,8 @@ export function NetworkGraph({
               ? FLOATING_EDGE_COLOR
               : isPortForward
                 ? PORTFORWARD_EDGE_COLOR
-                : isIngress
-                  ? INGRESS_EDGE_COLOR
+                : isHttpRoute
+                  ? HTTP_ROUTE_EDGE_COLOR
                   : isLoadBalancer
                     ? LOADBALANCER_EDGE_COLOR
                     : net
@@ -432,7 +432,7 @@ export function NetworkGraph({
                 stroke={stroke}
                 strokeWidth={related?.edgeIds.has(e.id) ? 2.25 : 1.5}
                 strokeDasharray={
-                  isFloating || isPortForward || isIngress || isLoadBalancer
+                  isFloating || isPortForward || isHttpRoute || isLoadBalancer
                     ? "5 4"
                     : undefined
                 }
@@ -578,8 +578,8 @@ export function NetworkGraph({
                   fill={
                     v.floatingIpv4?.length
                       ? FLOATING_EDGE_COLOR
-                      : v.ingressHosts?.length
-                        ? INGRESS_EDGE_COLOR
+                      : v.httpRouteHosts?.length
+                        ? HTTP_ROUTE_EDGE_COLOR
                         : v.loadBalancerAddresses?.length
                           ? LOADBALANCER_EDGE_COLOR
                           : "#868e96"
@@ -592,9 +592,9 @@ export function NetworkGraph({
                         `${v.status} · ${v.floatingIpv4.join(", ")}`,
                         28,
                       )
-                    : v.ingressHosts?.length
+                    : v.httpRouteHosts?.length
                       ? truncate(
-                          `${v.status} · ${v.ingressHosts.join(", ")}`,
+                          `${v.status} · ${v.httpRouteHosts.join(", ")}`,
                           28,
                         )
                       : v.loadBalancerAddresses?.length
@@ -645,8 +645,8 @@ function HoverSummary({
     const floatEdges = edges.filter(
       (e) => e.networkId === hoverId && e.role === "floating",
     );
-    const ingressEdges = edges.filter(
-      (e) => e.networkId === hoverId && e.role === "ingress",
+    const httpRouteEdges = edges.filter(
+      (e) => e.networkId === hoverId && e.role === "httproute",
     );
     const lbEdges = edges.filter(
       (e) => e.networkId === hoverId && e.role === "loadbalancer",
@@ -657,7 +657,7 @@ function HoverSummary({
     const floatLabels = floatEdges
       .map((e) => e.label ?? vmById.get(e.vmId)?.name)
       .filter(Boolean);
-    const ingressLabels = ingressEdges
+    const httpRouteLabels = httpRouteEdges
       .map((e) => e.label ?? vmById.get(e.vmId)?.name)
       .filter(Boolean);
     const lbLabels = lbEdges
@@ -665,13 +665,13 @@ function HoverSummary({
       .filter(Boolean);
     const exposureVmNames = [
       ...new Set(
-        [...ingressEdges, ...lbEdges]
+        [...httpRouteEdges, ...lbEdges]
           .map((e) => vmById.get(e.vmId)?.name)
           .filter(Boolean) as string[],
       ),
     ];
     const isExposure =
-      net.kind === "ingress" || net.kind === "loadbalancer";
+      net.kind === "httproute" || net.kind === "loadbalancer";
     return (
       <Group gap="xs" wrap="wrap">
         <Badge
@@ -682,7 +682,7 @@ function HoverSummary({
               ? "teal"
               : net.kind === "pod"
                 ? "gray"
-                : net.kind === "ingress"
+                : net.kind === "httproute"
                   ? "grape"
                   : net.kind === "loadbalancer"
                     ? "cyan"
@@ -721,16 +721,16 @@ function HoverSummary({
             {floatLabels.length > 6 ? "…" : ""}
           </Text>
         ) : null}
-        {net.kind !== "ingress" && ingressLabels.length > 0 ? (
+        {net.kind !== "httproute" && httpRouteLabels.length > 0 ? (
           <Text size="xs" c="grape.5">
-            Ingress → {ingressLabels.slice(0, 6).join(", ")}
-            {ingressLabels.length > 6 ? "…" : ""}
+            HTTP Route → {httpRouteLabels.slice(0, 6).join(", ")}
+            {httpRouteLabels.length > 6 ? "…" : ""}
           </Text>
         ) : null}
-        {net.kind === "ingress" && ingressLabels.length > 0 ? (
+        {net.kind === "httproute" && httpRouteLabels.length > 0 ? (
           <Text size="xs" c="grape.5">
-            {ingressLabels.slice(0, 6).join(", ")}
-            {ingressLabels.length > 6 ? "…" : ""}
+            {httpRouteLabels.slice(0, 6).join(", ")}
+            {httpRouteLabels.length > 6 ? "…" : ""}
           </Text>
         ) : null}
         {net.kind !== "loadbalancer" && lbLabels.length > 0 ? (
@@ -757,8 +757,8 @@ function HoverSummary({
     const floatEdges = edges.filter(
       (e) => e.vmId === hoverId && e.role === "floating",
     );
-    const ingressEdges = edges.filter(
-      (e) => e.vmId === hoverId && e.role === "ingress",
+    const httpRouteEdges = edges.filter(
+      (e) => e.vmId === hoverId && e.role === "httproute",
     );
     const lbEdges = edges.filter(
       (e) => e.vmId === hoverId && e.role === "loadbalancer",
@@ -770,10 +770,10 @@ function HoverSummary({
       vm.floatingIpv4?.length
         ? vm.floatingIpv4
         : floatEdges.map((e) => e.label).filter(Boolean);
-    const ingressHosts =
-      vm.ingressHosts?.length
-        ? vm.ingressHosts
-        : ingressEdges.map((e) => e.label).filter(Boolean);
+    const httpRouteHosts =
+      vm.httpRouteHosts?.length
+        ? vm.httpRouteHosts
+        : httpRouteEdges.map((e) => e.label).filter(Boolean);
     const lbAddrs =
       vm.loadBalancerAddresses?.length
         ? vm.loadBalancerAddresses
@@ -798,9 +798,9 @@ function HoverSummary({
             FIP {floats.join(", ")}
           </Text>
         ) : null}
-        {ingressHosts.length > 0 ? (
+        {httpRouteHosts.length > 0 ? (
           <Text size="xs" c="grape.5">
-            Ingress {ingressHosts.join(", ")}
+            HTTP Route {httpRouteHosts.join(", ")}
           </Text>
         ) : null}
         {lbAddrs.length > 0 ? (

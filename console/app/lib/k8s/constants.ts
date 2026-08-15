@@ -19,11 +19,11 @@ export const VM_ALLOWED_LABEL_SELECTOR = `${VM_ALLOWED_LABEL}=true`;
  */
 export const IMAGE_PREFERENCE_LABEL = `${KMC_LABEL_NAMESPACE}/cluster-preference`;
 
-/** Target VirtualMachine name for kmc-managed Service / Ingress exposure. */
+/** Target VirtualMachine name for kmc-managed Service / HTTPRoute exposure. */
 export const KMC_LABEL_VM = `${KMC_LABEL_NAMESPACE}/vm`;
 
 /**
- * What a kmc-managed backend Service / Ingress is bound to.
+ * What a kmc-managed backend Service / HTTPRoute is bound to.
  * VirtualMachine | LabelSelector | Group
  */
 export const KMC_LABEL_TARGET_KIND = `${KMC_LABEL_NAMESPACE}/target-kind`;
@@ -43,8 +43,8 @@ export const KMC_ANN_MATCH_LABELS = `${KMC_LABEL_NAMESPACE}/match-labels`;
 /** Comma-separated VM names in a group (Service annotation; UI convenience). */
 export const KMC_ANN_MEMBER_VMS = `${KMC_LABEL_NAMESPACE}/member-vms`;
 
-/** Ingress name stamped on the companion backend Service (1:1 create). */
-export const KMC_LABEL_INGRESS = `${KMC_LABEL_NAMESPACE}/ingress`;
+/** HTTPRoute name stamped on the companion backend Service (1:1 create). */
+export const KMC_LABEL_HTTP_ROUTE = `${KMC_LABEL_NAMESPACE}/httproute`;
 
 /** Labels on kmc-managed resources (VPC NAD, backend Service, etc.). */
 export const KMC_LABEL_RESOURCE = `${KMC_LABEL_NAMESPACE}/resource`;
@@ -55,14 +55,20 @@ export const KMC_LABEL_RESOURCE = `${KMC_LABEL_NAMESPACE}/resource`;
  */
 export const KMC_RESOURCE_BACKEND = "backend";
 
-/** Value of kmc.ianunruh.com/resource for kmc-managed Ingresses. */
-export const KMC_RESOURCE_INGRESS = "ingress";
+/** Value of kmc.ianunruh.com/resource for kmc-managed HTTPRoutes. */
+export const KMC_RESOURCE_HTTP_ROUTE = "httproute";
 
 /** List selector for kmc-managed backend Services. */
 export const KMC_BACKEND_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_BACKEND}`;
 
-/** List selector for kmc-managed Ingresses (any membership mode). */
-export const KMC_INGRESS_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_INGRESS}`;
+/** List selector for kmc-managed HTTPRoutes (any membership mode). */
+export const KMC_HTTP_ROUTE_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_HTTP_ROUTE}`;
+
+/** Gateway API (gateway.networking.k8s.io) — HTTPRoute + Gateway. */
+export const GATEWAY_API_GROUP = "gateway.networking.k8s.io";
+export const GATEWAY_API_VERSION = "v1";
+export const HTTP_ROUTE_PLURAL = "httproutes";
+export const GATEWAY_PLURAL = "gateways";
 
 /** Max VMs that can be added to a backend group at create time. */
 export const KMC_MAX_BACKEND_GROUP_VMS = 32;

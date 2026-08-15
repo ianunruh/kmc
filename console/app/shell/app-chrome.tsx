@@ -102,10 +102,10 @@ const NAV_SECTIONS: NavSection[] = [
     label: "Network",
     items: [
       {
-        to: "/ingresses",
-        label: "Ingresses",
+        to: "/http-routes",
+        label: "HTTP Routes",
         icon: IconRoute,
-        match: (path: string) => path.startsWith("/ingresses"),
+        match: (path: string) => path.startsWith("/http-routes"),
       },
       {
         to: "/load-balancers",

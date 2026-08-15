@@ -11,7 +11,7 @@ import {
 import { IconArrowLeft, IconPencil, IconTrash } from "@tabler/icons-react";
 import { useState } from "react";
 import { Link, Outlet, redirect, useFetcher } from "react-router";
-import type { Route } from "./+types/ingresses.$cluster.$namespace.$name";
+import type { Route } from "./+types/http-routes.$cluster.$namespace.$name";
 import {
   ConfirmDeleteModal,
   DetailTabs,
@@ -21,16 +21,16 @@ import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
 import { actionFailure } from "~/lib/errors";
 import {
   detailTabPath,
-  ingressEditPath,
-  ingressPath,
-  ingressesListPath,
+  httpRouteEditPath,
+  httpRoutePath,
+  httpRoutesListPath,
 } from "~/lib/format";
-import { deleteIngress, getIngress } from "~/ingresses/ingresses.server";
+import { deleteHttpRoute, getHttpRoute } from "~/httproutes/httproutes.server";
 import { membershipModeLabel } from "~/backends/membership";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 
 export function meta({ params }: Route.MetaArgs) {
-  return [{ title: `${params.name ?? "Ingress"} · kmc` }];
+  return [{ title: `${params.name ?? "HTTP Route"} · kmc` }];
 }
 
 export async function loader({ params }: Route.LoaderArgs) {
@@ -38,8 +38,8 @@ export async function loader({ params }: Route.LoaderArgs) {
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
-  const ing = await getIngress(cluster, namespace, name);
-  return { ing };
+  const route = await getHttpRoute(cluster, namespace, name);
+  return { route };
 }
 
 export async function action({ request, params }: Route.ActionArgs) {
@@ -53,10 +53,10 @@ export async function action({ request, params }: Route.ActionArgs) {
     return { ok: false, error: `Unknown intent: ${intent}`, intent };
   }
   try {
-    await deleteIngress(cluster, namespace, name);
-    return redirect("/ingresses");
+    await deleteHttpRoute(cluster, namespace, name);
+    return redirect("/http-routes");
   } catch (err) {
-    return actionFailure("ingress.delete", err, {
+    return actionFailure("httproute.delete", err, {
       intent,
       cluster,
       namespace,
@@ -65,18 +65,19 @@ export async function action({ request, params }: Route.ActionArgs) {
   }
 }
 
-export default function IngressDetailLayout({ loaderData }: Route.ComponentProps) {
-  const { ing } = loaderData;
+export default function HttpRouteDetailLayout({ loaderData }: Route.ComponentProps) {
+  const { route } = loaderData;
   const fetcher = useFetcher<{ ok?: boolean; error?: string }>();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const busy = fetcher.state !== "idle";
-  const base = ingressPath(ing);
+  const base = httpRoutePath(route);
+  const parent = route.parentRefs[0];
 
   useFetcherResult(fetcher, (data) => {
     if (data.error) {
       notifyActionError("Delete failed", data.error);
     } else if (data.ok) {
-      notifyActionSuccess("Done", "Ingress deleted");
+      notifyActionSuccess("Done", "HTTPRoute deleted");
     }
   });
 
@@ -84,40 +85,53 @@ export default function IngressDetailLayout({ loaderData }: Route.ComponentProps
     <Stack gap="md">
       <Group justify="space-between" align="flex-start">
         <div>
-          <Anchor component={Link} to="/ingresses" size="sm" c="dimmed">
+          <Anchor component={Link} to="/http-routes" size="sm" c="dimmed">
             <Group gap={4}>
               <IconArrowLeft size={14} />
-              Ingresses
+              HTTP Routes
             </Group>
           </Anchor>
           <Group gap="sm" mt={6} align="center">
             <Title order={2} size="h3">
-              {ing.name}
+              {route.name}
             </Title>
-            {ing.backend?.membership && (
+            {route.backend?.membership && (
               <Badge variant="light" color="gray">
-                {membershipModeLabel(ing.backend.membership)}
+                {membershipModeLabel(route.backend.membership)}
               </Badge>
             )}
-            {ing.className && (
+            {parent && (
               <Badge variant="light" color="gray">
-                {ing.className}
+                {parent.namespace && parent.namespace !== route.namespace
+                  ? `${parent.namespace}/`
+                  : ""}
+                {parent.name}
               </Badge>
             )}
-            {ing.endpointsTotal != null && (
+            {route.accepted === true && (
+              <Badge variant="light" color="teal">
+                Accepted
+              </Badge>
+            )}
+            {route.accepted === false && (
+              <Badge variant="light" color="orange">
+                Not accepted
+              </Badge>
+            )}
+            {route.endpointsTotal != null && (
               <Badge variant="light" color="gray">
-                {ing.endpointsReady ?? 0}/{ing.endpointsTotal} endpoints
+                {route.endpointsReady ?? 0}/{route.endpointsTotal} endpoints
               </Badge>
             )}
           </Group>
           <ResourceIdentity
             items={[
-              { label: ing.cluster, to: ingressesListPath({ cluster: ing.cluster }) },
+              { label: route.cluster, to: httpRoutesListPath({ cluster: route.cluster }) },
               {
-                label: ing.namespace,
-                to: ingressesListPath({
-                  cluster: ing.cluster,
-                  namespace: ing.namespace,
+                label: route.namespace,
+                to: httpRoutesListPath({
+                  cluster: route.cluster,
+                  namespace: route.namespace,
                 }),
               },
             ]}
@@ -126,7 +140,7 @@ export default function IngressDetailLayout({ loaderData }: Route.ComponentProps
         <Group gap="xs">
           <Button
             component={Link}
-            to={ingressEditPath(ing)}
+            to={httpRouteEditPath(route)}
             variant="light"
             leftSection={<IconPencil size={16} />}
           >
@@ -144,39 +158,39 @@ export default function IngressDetailLayout({ loaderData }: Route.ComponentProps
         </Group>
       </Group>
 
-      {ing.vm && !ing.vm.exists && (
+      {route.vm && !route.vm.exists && (
         <Alert color="yellow" variant="light" title="Target VM missing">
-          Bound VM <Code>{ing.vm.name}</Code> was not found in this namespace.
+          Bound VM <Code>{route.vm.name}</Code> was not found in this namespace.
           The Service may have empty endpoints.
         </Alert>
       )}
-      {ing.vm?.exists && !ing.vm.podNetwork && (
+      {route.vm?.exists && !route.vm.podNetwork && (
         <Alert color="yellow" variant="light" title="Multus network">
           Target VM uses Multus. The companion Service selects the virt-launcher
           pod IP, not Multus guest addresses.
         </Alert>
       )}
-      {(ing.backend?.matchedVms ?? []).some((vm) => !vm.podNetwork) &&
-        !(ing.vm?.exists && !ing.vm.podNetwork) && (
+      {(route.backend?.matchedVms ?? []).some((vm) => !vm.podNetwork) &&
+        !(route.vm?.exists && !route.vm.podNetwork) && (
           <Alert color="yellow" variant="light" title="Multus members">
             One or more matched VMs are Multus-only. The Service selects
             virt-launcher pod IPs, not Multus guest addresses.
           </Alert>
         )}
-      {ing.backend?.exists &&
-        (ing.backend.matchedVms?.length ?? 0) === 0 && (
+      {route.backend?.exists &&
+        (route.backend.matchedVms?.length ?? 0) === 0 && (
           <Alert color="yellow" variant="light" title="No matching VMs">
             No VMs currently match the Service selector. Group members may need
             a restart for labels to appear on virt-launcher pods.
           </Alert>
         )}
-      {ing.backend && !ing.backend.exists && (
+      {route.backend && !route.backend.exists && (
         <Alert color="red" variant="light" title="Companion Service missing">
           Expected Service{" "}
           <Code>
-            {ing.namespace}/{ing.serviceName ?? ing.name}
+            {route.namespace}/{route.serviceName ?? route.name}
           </Code>
-          . Recreate the Ingress or restore the Service.
+          . Recreate the HTTPRoute or restore the Service.
         </Alert>
       )}
 
@@ -192,10 +206,10 @@ export default function IngressDetailLayout({ loaderData }: Route.ComponentProps
 
       <ConfirmDeleteModal
         opened={deleteOpen}
-        resourceName={ing.name}
-        identity={`${ing.cluster}/${ing.namespace}/${ing.name}`}
-        title="Delete Ingress"
-        confirmLabel="Delete Ingress"
+        resourceName={route.name}
+        identity={`${route.cluster}/${route.namespace}/${route.name}`}
+        title="Delete HTTP Route"
+        confirmLabel="Delete HTTP Route"
         warning="Also deletes the companion ClusterIP Service with the same name. Group membership labels are cleared. VirtualMachines are not deleted."
         loading={busy}
         onClose={() => setDeleteOpen(false)}

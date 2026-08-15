@@ -53,7 +53,7 @@ import {
   canStop,
   canUnpause,
   floatingIpCreatePath,
-  ingressCreatePath,
+  httpRouteCreatePath,
   loadBalancerCreatePath,
   portForwardCreatePath,
   vmConsolePath,
@@ -493,7 +493,7 @@ export default function VmDetailLayout({ loaderData }: Route.ComponentProps) {
               <Menu.Label>Pod plane</Menu.Label>
               <Menu.Item
                 component={Link}
-                to={ingressCreatePath({
+                to={httpRouteCreatePath({
                   cluster: vm.cluster,
                   namespace: vm.namespace,
                   vmName: vm.name,
@@ -502,11 +502,11 @@ export default function VmDetailLayout({ loaderData }: Route.ComponentProps) {
                 disabled={!hasPodNetwork}
                 title={
                   hasPodNetwork
-                    ? "HTTP(S) Ingress on the pod network"
+                    ? "HTTPRoute on the pod network"
                     : "Guest needs a pod/masquerade NIC"
                 }
               >
-                Ingress
+                HTTP Route
               </Menu.Item>
               <Menu.Item
                 component={Link}

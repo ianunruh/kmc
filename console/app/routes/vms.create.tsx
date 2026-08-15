@@ -1076,7 +1076,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
                 <Text size="xs" c="dimmed">
                   Multus attachments in order (first Multus is primary for the default
                   route when IPAM applies). Leave empty for pod network only (masquerade
-                  NAT via virt-launcher — works with Ingress). With Multus, a pod NIC is
+                  NAT via virt-launcher — works with HTTPRoute). With Multus, a pod NIC is
                   added first by default so Terminal port-forward works.
                 </Text>
               </div>
@@ -1126,7 +1126,7 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
               {form.values.networks.length > 0 ? (
                 <Switch
                   label="Include pod network (management)"
-                  description="Adds a masquerade pod NIC as the first interface so browser Terminal (SSH port-forward) and Ingress-style access work. Multus stays the default route. Turn off for Multus-only guests."
+                  description="Adds a masquerade pod NIC as the first interface so browser Terminal (SSH port-forward) and HTTPRoute-style access work. Multus stays the default route. Turn off for Multus-only guests."
                   checked={form.values.includePodNetwork}
                   onChange={(e) =>
                     form.setFieldValue("includePodNetwork", e.currentTarget.checked)

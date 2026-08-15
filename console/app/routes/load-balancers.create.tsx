@@ -14,7 +14,7 @@ import { notifyActionError } from "~/lib/action-feedback";
 import { FormActions, FormSection, PageHeader } from "~/ui";
 import { logServerError } from "~/lib/errors";
 import {
-  ingressCreatePath,
+  httpRouteCreatePath,
   loadBalancerPath,
   validateDns1123Label,
 } from "~/lib/format";
@@ -252,9 +252,9 @@ export default function CreateLoadBalancerPage({
     [vmsFetcher.data?.vms],
   );
 
-  const ingressPrefill = useMemo(
+  const httpRoutePrefill = useMemo(
     () =>
-      ingressCreatePath({
+      httpRouteCreatePath({
         cluster: form.values.cluster || null,
         namespace: form.values.namespace || null,
         vmName: form.values.vmName || null,
@@ -315,14 +315,14 @@ export default function CreateLoadBalancerPage({
       )}
 
       <Alert color="gray" variant="light" title="How this works">
-        Same backend membership as Ingress (single VM, group, or labels), but
+        Same backend membership as HTTP Route (single VM, group, or labels), but
         the Service type is <code>LoadBalancer</code> with{" "}
         <code>externalTrafficPolicy: Local</code> (required for MetalLB/BGP
         return-path correctness on this platform). The guest must listen on the{" "}
         <strong>pod/masquerade</strong> interface, not only Multus. Need HTTP
         host/path routing instead?{" "}
-        <Text component={Link} to={ingressPrefill} size="sm" c="blue.4" span>
-          Create an Ingress
+        <Text component={Link} to={httpRoutePrefill} size="sm" c="blue.4" span>
+          Create an HTTP Route
         </Text>
         .
       </Alert>

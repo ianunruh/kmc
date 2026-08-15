@@ -15,7 +15,7 @@ import {
 import { IconDotsVertical, IconPlus, IconSearch, IconTrash } from "@tabler/icons-react";
 import { useMemo, useState } from "react";
 import { Link, useFetcher } from "react-router";
-import type { Route } from "./+types/ingresses._index";
+import type { Route } from "./+types/http-routes._index";
 import {
   BulkActionBar,
   ConfirmBulkDeleteModal,
@@ -42,27 +42,27 @@ import {
 import { actionFailure } from "~/lib/errors";
 import {
   formatAge,
-  ingressEditPath,
-  ingressHostUrl,
-  ingressPath,
-  ingressesListPath,
+  httpRouteEditPath,
+  httpRouteHostUrl,
+  httpRoutePath,
+  httpRoutesListPath,
   vmPath,
 } from "~/lib/format";
 import { CopyButton } from "~/ui";
 import { clusterFromRequest } from "~/lib/search-params";
 import { matchesQuery, useListFilters } from "~/lib/use-list-filters";
-import { deleteIngress, listIngresses } from "~/ingresses/ingresses.server";
+import { deleteHttpRoute, listHttpRoutes } from "~/httproutes/httproutes.server";
 import { useRefresh } from "~/lib/refresh";
-import type { BulkActionResult, IngressSummary } from "~/lib/types";
+import type { BulkActionResult, HttpRouteSummary } from "~/lib/types";
 import { resourceKey, useRowSelection } from "~/lib/use-row-selection";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 
 export function meta(_args: Route.MetaArgs) {
-  return [{ title: "Ingresses · kmc" }];
+  return [{ title: "HTTP Routes · kmc" }];
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
-  return listIngresses(clusterFromRequest(request));
+  return listHttpRoutes(clusterFromRequest(request));
 }
 
 export async function action({ request }: Route.ActionArgs) {
@@ -81,7 +81,7 @@ export async function action({ request }: Route.ActionArgs) {
       };
     }
     return runBulkAction(intent, targets, namespacedKey, async (t) => {
-      await deleteIngress(t.cluster, t.namespace, t.name);
+      await deleteHttpRoute(t.cluster, t.namespace, t.name);
     });
   }
 
@@ -96,10 +96,10 @@ export async function action({ request }: Route.ActionArgs) {
     return { ok: false, error: "Missing identity", intent };
   }
   try {
-    await deleteIngress(cluster, namespace, name);
+    await deleteHttpRoute(cluster, namespace, name);
     return { ok: true, intent };
   } catch (err) {
-    return actionFailure("ingress.delete", err, {
+    return actionFailure("httproute.delete", err, {
       intent,
       cluster,
       namespace,
@@ -112,32 +112,41 @@ type ActionResult =
   | { ok?: boolean; error?: string; intent?: string }
   | BulkActionResult;
 
-export default function IngressesPage({ loaderData }: Route.ComponentProps) {
+function parentLabel(route: HttpRouteSummary): string {
+  const parent = route.parentRefs[0];
+  if (!parent) return "—";
+  const ns = parent.namespace && parent.namespace !== route.namespace
+    ? `${parent.namespace}/`
+    : "";
+  return `${ns}${parent.name}`;
+}
+
+export default function HttpRoutesPage({ loaderData }: Route.ComponentProps) {
   const { items, clusters } = loaderData;
   const fetcher = useFetcher<ActionResult>();
   const { refreshNow } = useRefresh();
   const { filters, qDraft, setQ, setFilter } = useListFilters();
-  const [deleteTarget, setDeleteTarget] = useState<IngressSummary | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<HttpRouteSummary | null>(null);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
   const namespaces = useMemo(() => {
-    const set = new Set(items.map((ing) => ing.namespace));
+    const set = new Set(items.map((route) => route.namespace));
     return Array.from(set).sort();
   }, [items]);
 
   const filtered = useMemo(() => {
-    return items.filter((ing) => {
-      if (filters.cluster && ing.cluster !== filters.cluster) return false;
-      if (filters.namespace && ing.namespace !== filters.namespace) return false;
+    return items.filter((route) => {
+      if (filters.cluster && route.cluster !== filters.cluster) return false;
+      if (filters.namespace && route.namespace !== filters.namespace) return false;
       return matchesQuery(qDraft, [
-        ing.name,
-        ing.namespace,
-        ing.cluster,
-        ing.vmName,
-        ing.membershipMode,
-        ing.className,
-        ...(ing.hosts ?? []),
-        ing.address,
+        route.name,
+        route.namespace,
+        route.cluster,
+        route.vmName,
+        route.membershipMode,
+        parentLabel(route),
+        ...(route.hosts ?? []),
+        route.address,
       ]);
     });
   }, [items, filters.cluster, filters.namespace, qDraft]);
@@ -155,7 +164,7 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
   } = useRowSelection(visibleKeys);
 
   const selectedItems = useMemo(
-    () => filtered.filter((ing) => selected.has(resourceKey(ing))),
+    () => filtered.filter((route) => selected.has(resourceKey(route))),
     [filtered, selected],
   );
 
@@ -174,7 +183,7 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
     if (data.error) {
       notifyActionError("Action failed", data.error, { intent: data.intent });
     } else if (data.ok) {
-      notifyActionSuccess("Done", "Ingress and companion Service deleted");
+      notifyActionSuccess("Done", "HTTPRoute and companion Service deleted");
       refreshNow();
     }
   });
@@ -185,15 +194,15 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
   return (
     <Stack gap="md">
       <PageHeader
-        title="Ingresses"
-        description={`${filtered.length} shown · ${items.length} total · HTTP(S) via ClusterIP Service (single VM, group, or labels)`}
+        title="HTTP Routes"
+        description={`${filtered.length} shown · ${items.length} total · HTTPRoute via Gateway API (single VM, group, or labels)`}
         actions={
           <Button
             component={Link}
-            to="/ingresses/create"
+            to="/http-routes/create"
             leftSection={<IconPlus size={16} />}
           >
-            Create Ingress
+            Create HTTP Route
           </Button>
         }
       />
@@ -207,7 +216,7 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
       <ConsolePaper>
         <FilterBar>
           <TextInput
-            placeholder="Search name, host, VM, membership, namespace…"
+            placeholder="Search name, host, VM, Gateway, namespace…"
             leftSection={<IconSearch size={14} />}
             value={qDraft}
             onChange={(e) => setQ(e.currentTarget.value)}
@@ -252,7 +261,7 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
 
           <ResourceTable
             isEmpty={filtered.length === 0}
-            emptyMessage="No kmc-managed Ingresses yet. Create one to expose pod-network VM(s) over HTTP(S)."
+            emptyMessage="No kmc-managed HTTPRoutes yet. Create one to expose pod-network VM(s) over HTTP(S) via a Gateway."
             headers={[
               <Checkbox
                 key="select-all"
@@ -266,59 +275,60 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
               "Cluster",
               "Namespace",
               "Hosts",
+              "Gateway",
               "Backend",
               "Endpoints",
               "Age",
               "",
             ]}
           >
-            {filtered.map((ing) => {
-              const key = resourceKey(ing);
+            {filtered.map((route) => {
+              const key = resourceKey(route);
               return (
                 <Table.Tr key={key} bg={isSelected(key) ? "dark.7" : undefined}>
                   <Table.Td w={40}>
                     <Checkbox
-                      aria-label={`Select ${ing.name}`}
+                      aria-label={`Select ${route.name}`}
                       checked={isSelected(key)}
                       disabled={busy}
                       onChange={() => toggle(key)}
                     />
                   </Table.Td>
                   <Table.Td>
-                    <ResourceLink to={ingressPath(ing)}>{ing.name}</ResourceLink>
-                    {ing.address && (
+                    <ResourceLink to={httpRoutePath(route)}>{route.name}</ResourceLink>
+                    {route.address && (
                       <Text size="xs" c="dimmed">
-                        {ing.address}
+                        {route.address}
                       </Text>
                     )}
                   </Table.Td>
                   <Table.Td>
-                    <ResourceLink to={ingressesListPath({ cluster: ing.cluster })} dimmed>
-                      {ing.cluster}
+                    <ResourceLink to={httpRoutesListPath({ cluster: route.cluster })} dimmed>
+                      {route.cluster}
                     </ResourceLink>
                   </Table.Td>
                   <Table.Td>
                     <ResourceLink
-                      to={ingressesListPath({
-                        cluster: ing.cluster,
-                        namespace: ing.namespace,
+                      to={httpRoutesListPath({
+                        cluster: route.cluster,
+                        namespace: route.namespace,
                       })}
                       dimmed
                     >
-                      {ing.namespace}
+                      {route.namespace}
                     </ResourceLink>
                   </Table.Td>
                   <Table.Td>
-                    {ing.hosts.length === 0 ? (
+                    {route.hosts.length === 0 ? (
                       <Text size="sm" c="dimmed">
                         —
                       </Text>
                     ) : (
                       <Group gap="xs" wrap="wrap">
-                        {ing.hosts.map((host) => (
+                        {route.hosts.map((host) => (
                           <Group key={host} gap={2} wrap="nowrap">
                             <Anchor
-                              href={ingressHostUrl(host, ing.tlsHosts)}
+                              href={httpRouteHostUrl(host, route.httpsHosts)}
                               target="_blank"
                               rel="noopener noreferrer"
                               size="sm"
@@ -326,7 +336,7 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
                               {host}
                             </Anchor>
                             <CopyButton
-                              value={ingressHostUrl(host, ing.tlsHosts)}
+                              value={httpRouteHostUrl(host, route.httpsHosts)}
                               label="Copy URL"
                               size="xs"
                             />
@@ -336,24 +346,29 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
                     )}
                   </Table.Td>
                   <Table.Td>
-                    {ing.membershipMode === "group" ? (
+                    <Text size="sm" c="dimmed">
+                      {parentLabel(route)}
+                    </Text>
+                  </Table.Td>
+                  <Table.Td>
+                    {route.membershipMode === "group" ? (
                       <Text size="sm" c="dimmed">
                         VM group
                       </Text>
-                    ) : ing.membershipMode === "labels" ? (
+                    ) : route.membershipMode === "labels" ? (
                       <Text size="sm" c="dimmed">
                         Labels
                       </Text>
-                    ) : ing.vmName ? (
+                    ) : route.vmName ? (
                       <ResourceLink
                         to={vmPath({
-                          cluster: ing.cluster,
-                          namespace: ing.namespace,
-                          name: ing.vmName,
+                          cluster: route.cluster,
+                          namespace: route.namespace,
+                          name: route.vmName,
                         })}
                         dimmed
                       >
-                        {ing.vmName}
+                        {route.vmName}
                       </ResourceLink>
                     ) : (
                       <Text size="sm" c="dimmed">
@@ -365,21 +380,21 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
                     <Text
                       size="sm"
                       c={
-                        ing.endpointsTotal != null &&
-                        (ing.endpointsReady ?? 0) === 0
+                        route.endpointsTotal != null &&
+                        (route.endpointsReady ?? 0) === 0
                           ? "orange"
                           : "dimmed"
                       }
                     >
-                      {ing.endpointsTotal != null
-                        ? `${ing.endpointsReady ?? 0}/${ing.endpointsTotal}`
+                      {route.endpointsTotal != null
+                        ? `${route.endpointsReady ?? 0}/${route.endpointsTotal}`
                         : "—"}
                     </Text>
                   </Table.Td>
                   <Table.Td>
-                    <Tooltip label={ing.age || "unknown"}>
+                    <Tooltip label={route.age || "unknown"}>
                       <Text size="sm" c="dimmed">
-                        {formatAge(ing.age)}
+                        {formatAge(route.age)}
                       </Text>
                     </Tooltip>
                   </Table.Td>
@@ -389,23 +404,23 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
                         <ActionIcon
                           variant="subtle"
                           color="gray"
-                          aria-label={`Actions for ${ing.name}`}
+                          aria-label={`Actions for ${route.name}`}
                         >
                           <IconDotsVertical size={16} />
                         </ActionIcon>
                       </Menu.Target>
                       <Menu.Dropdown>
-                        <Menu.Item component={Link} to={ingressPath(ing)}>
+                        <Menu.Item component={Link} to={httpRoutePath(route)}>
                           Open
                         </Menu.Item>
-                        <Menu.Item component={Link} to={ingressEditPath(ing)}>
+                        <Menu.Item component={Link} to={httpRouteEditPath(route)}>
                           Edit
                         </Menu.Item>
                         <Menu.Item
                           color="red"
                           leftSection={<IconTrash size={14} />}
                           disabled={busy}
-                          onClick={() => setDeleteTarget(ing)}
+                          onClick={() => setDeleteTarget(route)}
                         >
                           Delete
                         </Menu.Item>
@@ -427,8 +442,8 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
             ? `${deleteTarget.cluster}/${deleteTarget.namespace}/${deleteTarget.name}`
             : null
         }
-        title="Delete Ingress"
-        confirmLabel="Delete Ingress"
+        title="Delete HTTP Route"
+        confirmLabel="Delete HTTP Route"
         warning="Also deletes the companion ClusterIP Service with the same name. Group membership labels are cleared. VirtualMachines are not deleted."
         loading={busy}
         onClose={() => setDeleteTarget(null)}
@@ -451,7 +466,7 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
         opened={bulkDeleteOpen}
         count={selectedItems.length}
         identities={selectedItems.map(resourceKey)}
-        title={`Delete ${selectedItems.length} ingress${selectedItems.length === 1 ? "" : "es"}`}
+        title={`Delete ${selectedItems.length} HTTP route${selectedItems.length === 1 ? "" : "s"}`}
         confirmLabel={`Delete ${selectedItems.length}`}
         warning="Also deletes the companion ClusterIP Service with the same name. Group membership labels are cleared. VirtualMachines are not deleted."
         loading={busy}
@@ -461,10 +476,10 @@ export default function IngressesPage({ loaderData }: Route.ComponentProps) {
             {
               intent: "bulk-delete",
               targets: bulkTargetsJson(
-                selectedItems.map((ing) => ({
-                  cluster: ing.cluster,
-                  namespace: ing.namespace,
-                  name: ing.name,
+                selectedItems.map((route) => ({
+                  cluster: route.cluster,
+                  namespace: route.namespace,
+                  name: route.name,
                 })),
               ),
             },

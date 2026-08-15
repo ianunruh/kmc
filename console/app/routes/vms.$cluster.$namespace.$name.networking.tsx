@@ -35,10 +35,10 @@ import {
   floatingIpDetailPath,
   floatingIpsListPath,
   formatAge,
-  ingressCreatePath,
-  ingressHostUrl,
-  ingressPath,
-  ingressesListPath,
+  httpRouteCreatePath,
+  httpRouteHostUrl,
+  httpRoutePath,
+  httpRoutesListPath,
   loadBalancerCreatePath,
   loadBalancerPath,
   loadBalancersListPath,
@@ -50,14 +50,14 @@ import {
 import type {
   BackendSummary,
   FloatingIpSummary,
-  IngressSummary,
+  HttpRouteSummary,
   PortForwardSummary,
 } from "~/lib/types";
 import {
   deleteLoadBalancer,
   listLoadBalancersForVm,
 } from "~/backends/backends.server";
-import { deleteIngress, listIngressesForVm } from "~/ingresses/ingresses.server";
+import { deleteHttpRoute, listHttpRoutesForVm } from "~/httproutes/httproutes.server";
 import {
   deletePortForward,
   disassociateFloatingIp,
@@ -97,11 +97,11 @@ export async function loader({ params }: Route.LoaderArgs) {
     portForwards = [];
   }
 
-  let ingresses: IngressSummary[] = [];
+  let httpRoutes: HttpRouteSummary[] = [];
   try {
-    ingresses = await listIngressesForVm(cluster, namespace, name);
+    httpRoutes = await listHttpRoutesForVm(cluster, namespace, name);
   } catch {
-    ingresses = [];
+    httpRoutes = [];
   }
 
   let loadBalancers: BackendSummary[] = [];
@@ -119,7 +119,7 @@ export async function loader({ params }: Route.LoaderArgs) {
   return {
     floatingIps,
     portForwards,
-    ingresses,
+    httpRoutes,
     loadBalancers,
     hasPodNetwork,
     vpcPrefill: vpcPrefill
@@ -170,12 +170,12 @@ export async function action({ request, params }: Route.ActionArgs) {
       });
       return { ok: true, intent };
     }
-    if (intent === "delete-ingress") {
-      const ingName = String(form.get("name") ?? "").trim();
-      if (!ingName) {
-        return { ok: false, error: "Missing Ingress name", intent };
+    if (intent === "delete-http-route") {
+      const routeName = String(form.get("name") ?? "").trim();
+      if (!routeName) {
+        return { ok: false, error: "Missing HTTPRoute name", intent };
       }
-      await deleteIngress(cluster, namespace, ingName);
+      await deleteHttpRoute(cluster, namespace, routeName);
       return { ok: true, intent };
     }
     if (intent === "delete-load-balancer") {
@@ -202,7 +202,7 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
   const {
     floatingIps,
     portForwards,
-    ingresses,
+    httpRoutes,
     loadBalancers,
     hasPodNetwork,
     vpcPrefill,
@@ -213,7 +213,7 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
     null,
   );
   const [deletePfTarget, setDeletePfTarget] = useState<PortForwardSummary | null>(null);
-  const [deleteIngTarget, setDeleteIngTarget] = useState<IngressSummary | null>(null);
+  const [deleteRouteTarget, setDeleteRouteTarget] = useState<HttpRouteSummary | null>(null);
   const [deleteLbTarget, setDeleteLbTarget] = useState<BackendSummary | null>(null);
   const busy = fetcher.state !== "idle";
 
@@ -238,8 +238,8 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
       notifyActionSuccess("Done", "Port forward deleted");
       refreshNow();
     }
-    if (data.ok && data.intent === "delete-ingress") {
-      notifyActionSuccess("Done", "Ingress deleted");
+    if (data.ok && data.intent === "delete-http-route") {
+      notifyActionSuccess("Done", "HTTPRoute deleted");
       refreshNow();
     }
     if (data.ok && data.intent === "delete-load-balancer") {
@@ -351,8 +351,9 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
             gateway on the router.
           </Text>
           <Text size="sm">
-            <strong>Pod plane</strong> (masquerade NIC): Ingress = HTTP(S) host/path;
-            Load balancer = L4 VIP (TCP/UDP). The guest must listen on the pod interface.
+            <strong>Pod plane</strong> (masquerade NIC): HTTP Route = HTTP(S) host/path
+            via Gateway API; Load balancer = L4 VIP (TCP/UDP). The guest must listen on
+            the pod interface.
           </Text>
         </Stack>
       </Alert>
@@ -614,12 +615,12 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
       </DetailSection>
 
       <DetailSection
-        title="Ingresses"
+        title="HTTP Routes"
         actions={
           <Group gap="xs">
             <Button
               component={Link}
-              to={ingressesListPath({
+              to={httpRoutesListPath({
                 cluster: vm.cluster,
                 namespace: vm.namespace,
               })}
@@ -627,11 +628,11 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
               variant="subtle"
               leftSection={<IconWorld size={14} />}
             >
-              All ingresses
+              All HTTP routes
             </Button>
             <Button
               component={Link}
-              to={ingressCreatePath({
+              to={httpRouteCreatePath({
                 cluster: vm.cluster,
                 namespace: vm.namespace,
                 vmName: vm.name,
@@ -644,7 +645,7 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
               title={
                 hasPodNetwork
                   ? undefined
-                  : "Guest needs a pod/masquerade NIC for Ingress"
+                  : "Guest needs a pod/masquerade NIC for HTTPRoute"
               }
             >
               Create
@@ -653,17 +654,17 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
         }
       >
         <Text size="sm" c="dimmed" mb="sm">
-          Pod plane · HTTP(S) routes via ClusterIP Service + Ingress.
+          Pod plane · HTTP(S) routes via ClusterIP Service + HTTPRoute (Gateway API).
         </Text>
         {!hasPodNetwork ? (
           <Alert color="yellow" variant="light" title="No pod network" mb="sm">
-            This VM is Multus-only. Ingress selects the virt-launcher pod IP — enable
+            This VM is Multus-only. HTTPRoute selects the virt-launcher pod IP — enable
             “Include pod network” on the VM (or recreate dual-home) before exposing.
           </Alert>
         ) : null}
-        {ingresses.length === 0 ? (
+        {httpRoutes.length === 0 ? (
           <Text size="sm" c="dimmed">
-            No Ingresses bound to this VM.
+            No HTTPRoutes bound to this VM.
           </Text>
         ) : (
           <Table.ScrollContainer
@@ -682,24 +683,24 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
-                {ingresses.map((ing) => (
-                  <Table.Tr key={ing.name}>
+                {httpRoutes.map((route) => (
+                  <Table.Tr key={route.name}>
                     <Table.Td>
-                      <ResourceLink to={ingressPath(ing)}>{ing.name}</ResourceLink>
-                      {ing.address ? (
-                        <CopyableValue value={ing.address} size="xs" />
+                      <ResourceLink to={httpRoutePath(route)}>{route.name}</ResourceLink>
+                      {route.address ? (
+                        <CopyableValue value={route.address} size="xs" />
                       ) : null}
                     </Table.Td>
                     <Table.Td>
-                      {ing.hosts.length === 0 ? (
+                      {route.hosts.length === 0 ? (
                         <Text size="sm" c="dimmed">
                           —
                         </Text>
                       ) : (
                         <Group gap="xs" wrap="wrap">
-                          {ing.hosts.map((host) => {
-                            const tls = ing.tlsHosts.includes(host);
-                            const url = ingressHostUrl(host, ing.tlsHosts);
+                          {route.hosts.map((host) => {
+                            const https = route.httpsHosts.includes(host);
+                            const url = httpRouteHostUrl(host, route.httpsHosts);
                             return (
                               <Group key={host} gap={2} wrap="nowrap">
                                 <Anchor
@@ -709,9 +710,9 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
                                   size="sm"
                                 >
                                   {host}
-                                  {tls ? (
+                                  {https ? (
                                     <Text component="span" size="xs" c="dimmed" ml={4}>
-                                      (TLS)
+                                      (HTTPS)
                                     </Text>
                                   ) : null}
                                 </Anchor>
@@ -726,19 +727,19 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
                       <Text
                         size="sm"
                         c={
-                          ing.endpointsTotal != null && (ing.endpointsReady ?? 0) === 0
+                          route.endpointsTotal != null && (route.endpointsReady ?? 0) === 0
                             ? "orange"
                             : "dimmed"
                         }
                       >
-                        {ing.endpointsTotal != null
-                          ? `${ing.endpointsReady ?? 0}/${ing.endpointsTotal}`
+                        {route.endpointsTotal != null
+                          ? `${route.endpointsReady ?? 0}/${route.endpointsTotal}`
                           : "—"}
                       </Text>
                     </Table.Td>
                     <Table.Td>
                       <Text size="sm" c="dimmed">
-                        {formatAge(ing.age)}
+                        {formatAge(route.age)}
                       </Text>
                     </Table.Td>
                     <Table.Td>
@@ -747,7 +748,7 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
                         variant="subtle"
                         color="red"
                         disabled={busy}
-                        onClick={() => setDeleteIngTarget(ing)}
+                        onClick={() => setDeleteRouteTarget(route)}
                       >
                         Delete
                       </Button>
@@ -968,28 +969,28 @@ export default function VmNetworkingTab({ loaderData }: Route.ComponentProps) {
       />
 
       <ConfirmDeleteModal
-        opened={deleteIngTarget != null}
-        resourceName={deleteIngTarget?.name ?? null}
+        opened={deleteRouteTarget != null}
+        resourceName={deleteRouteTarget?.name ?? null}
         identity={
-          deleteIngTarget
-            ? `${deleteIngTarget.cluster}/${deleteIngTarget.namespace}/${deleteIngTarget.name}`
+          deleteRouteTarget
+            ? `${deleteRouteTarget.cluster}/${deleteRouteTarget.namespace}/${deleteRouteTarget.name}`
             : null
         }
-        title="Delete Ingress"
-        confirmLabel="Delete Ingress"
+        title="Delete HTTP Route"
+        confirmLabel="Delete HTTP Route"
         warning="Also deletes the companion ClusterIP Service when kmc owns it. VirtualMachines are not deleted."
         loading={busy}
-        onClose={() => setDeleteIngTarget(null)}
+        onClose={() => setDeleteRouteTarget(null)}
         onConfirm={() => {
-          if (!deleteIngTarget) return;
+          if (!deleteRouteTarget) return;
           fetcher.submit(
             {
-              intent: "delete-ingress",
-              name: deleteIngTarget.name,
+              intent: "delete-http-route",
+              name: deleteRouteTarget.name,
             },
             { method: "post" },
           );
-          setDeleteIngTarget(null);
+          setDeleteRouteTarget(null);
         }}
       />
 

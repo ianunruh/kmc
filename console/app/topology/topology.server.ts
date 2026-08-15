@@ -13,7 +13,10 @@ import {
   KMC_ANN_CIDR,
   KMC_ANN_MEMBER_VMS,
   KMC_BACKEND_LABEL_SELECTOR,
-  KMC_INGRESS_LABEL_SELECTOR,
+  GATEWAY_API_GROUP,
+  GATEWAY_API_VERSION,
+  HTTP_ROUTE_PLURAL,
+  KMC_HTTP_ROUTE_LABEL_SELECTOR,
   KMC_LABEL_BACKEND_GROUP,
   KMC_LABEL_RESOURCE,
   KMC_LABEL_VM,
@@ -39,15 +42,17 @@ import { listFloatingIps, listPortForwards } from "~/vpcs/vpcs.server";
 
 import { listClusters } from "~/vms/vms.server";
 
-type KubeIngress = {
+type KubeHttpRoute = {
   metadata?: {
     name?: string;
     namespace?: string;
     labels?: Record<string, string>;
   };
   spec?: {
-    rules?: Array<{ host?: string }>;
-    tls?: Array<{ hosts?: string[] }>;
+    hostnames?: string[];
+    rules?: Array<{
+      backendRefs?: Array<{ name?: string }>;
+    }>;
   };
 };
 
@@ -112,8 +117,8 @@ function podNodeId(cluster: string, namespace: string): string {
   return nodeId(cluster, namespace, "__pod__");
 }
 
-function ingressNodeId(cluster: string, namespace: string): string {
-  return nodeId(cluster, namespace, "__ingress__");
+function httpRouteNodeId(cluster: string, namespace: string): string {
+  return nodeId(cluster, namespace, "__httproute__");
 }
 
 function loadBalancerNodeId(cluster: string, namespace: string): string {
@@ -512,7 +517,7 @@ async function loadClusterTopology(
     );
   }
 
-  // kmc backend Services (Ingress companions + LoadBalancers)
+  // kmc backend Services (HTTPRoute companions + LoadBalancers)
   let backendServices: KubeBackendService[] = [];
   try {
     const { core } = getClusterClients(cluster);
@@ -535,35 +540,33 @@ async function loadClusterTopology(
     backendByKey.set(`${sns}/${sn}`, svc);
   }
 
-  // Ingresses: one synthetic "ingress" node per namespace + edges to target VMs.
+  // HTTPRoutes: one synthetic "httproute" node per namespace + edges to target VMs.
   try {
-    const { networking } = getClusterClients(cluster);
-    const ingRes = await networking.listIngressForAllNamespaces({
-      labelSelector: KMC_INGRESS_LABEL_SELECTOR,
-    });
+    const { custom } = getClusterClients(cluster);
+    const routeRes = (await custom.listClusterCustomObject({
+      group: GATEWAY_API_GROUP,
+      version: GATEWAY_API_VERSION,
+      plural: HTTP_ROUTE_PLURAL,
+      labelSelector: KMC_HTTP_ROUTE_LABEL_SELECTOR,
+    })) as { items?: KubeHttpRoute[] };
 
-    for (const ing of (ingRes.items ?? []) as KubeIngress[]) {
-      const name = ing.metadata?.name;
-      const namespace = ing.metadata?.namespace;
+    for (const route of routeRes.items ?? []) {
+      const name = route.metadata?.name;
+      const namespace = route.metadata?.namespace;
       if (!name || !namespace) continue;
 
-      const hosts = new Set<string>();
-      for (const rule of ing.spec?.rules ?? []) {
-        if (rule.host) hosts.add(rule.host);
-      }
-      for (const tls of ing.spec?.tls ?? []) {
-        for (const h of tls.hosts ?? []) {
-          if (h) hosts.add(h);
-        }
-      }
-      const hostList = Array.from(hosts);
+      const hostList = (route.spec?.hostnames ?? []).filter((h): h is string =>
+        Boolean(h),
+      );
       const edgeLabel = hostList[0] ?? name;
 
       const targetVmNames = new Set<string>();
-      const labeledVm = ing.metadata?.labels?.[KMC_LABEL_VM]?.trim();
+      const labeledVm = route.metadata?.labels?.[KMC_LABEL_VM]?.trim();
       if (labeledVm) targetVmNames.add(labeledVm);
 
-      const backend = backendByKey.get(`${namespace}/${name}`);
+      const backendName =
+        route.spec?.rules?.[0]?.backendRefs?.[0]?.name ?? name;
+      const backend = backendByKey.get(`${namespace}/${backendName}`);
       if (backend) {
         for (const m of targetVmsFromBackend(
           backend,
@@ -576,14 +579,14 @@ async function loadClusterTopology(
 
       if (targetVmNames.size === 0) continue;
 
-      const iid = ingressNodeId(cluster, namespace);
-      if (!networksById.has(iid)) {
-        networksById.set(iid, {
-          id: iid,
-          kind: "ingress",
+      const rid = httpRouteNodeId(cluster, namespace);
+      if (!networksById.has(rid)) {
+        networksById.set(rid, {
+          id: rid,
+          kind: "httproute",
           cluster,
           namespace,
-          name: "ingress",
+          name: "http routes",
           exists: true,
         });
       }
@@ -593,31 +596,31 @@ async function loadClusterTopology(
         if (!target) continue;
 
         if (hostList.length > 0) {
-          const existing = target.ingressHosts ?? [];
+          const existing = target.httpRouteHosts ?? [];
           const merged = [...existing];
           for (const h of hostList) {
             if (!merged.includes(h)) merged.push(h);
           }
-          target.ingressHosts = merged;
+          target.httpRouteHosts = merged;
         }
 
         edges.push({
-          id: `ing:${iid}->${target.id}:${name}`,
-          networkId: iid,
+          id: `httproute:${rid}->${target.id}:${name}`,
+          networkId: rid,
           vmId: target.id,
-          role: "ingress",
+          role: "httproute",
           label: edgeLabel,
         });
       }
     }
   } catch (err) {
     console.error(
-      `topology ingresses (${cluster}):`,
+      `topology http routes (${cluster}):`,
       err instanceof Error ? err.message : String(err),
     );
   }
 
-  // Load balancers: synthetic node per namespace (right column, under ingress).
+  // Load balancers: synthetic node per namespace (right column, under HTTP routes).
   try {
     for (const svc of backendServices) {
       if ((svc.spec?.type ?? "ClusterIP") !== "LoadBalancer") continue;
@@ -675,7 +678,7 @@ async function loadClusterTopology(
 
   const kindOrder = (k: TopologyNetworkNode["kind"]) => {
     if (k === "pod") return 0;
-    if (k === "ingress") return 1;
+    if (k === "httproute") return 1;
     if (k === "loadbalancer") return 2;
     return 3;
   };
@@ -733,7 +736,7 @@ export async function listNetworkTopology(clusterFilter?: ClusterId): Promise<{
 
   const kindOrder = (k: TopologyNetworkNode["kind"]) => {
     if (k === "pod") return 0;
-    if (k === "ingress") return 1;
+    if (k === "httproute") return 1;
     if (k === "loadbalancer") return 2;
     return 3;
   };

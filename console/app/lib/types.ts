@@ -46,7 +46,7 @@ export interface VmSummary {
   /** Public floating IPs associated with this VM (from router policy ConfigMaps). */
   floatingIpv4?: string[];
   /** Compact exposure chips for the VM list (hosts / VIP addresses). */
-  ingressHosts?: string[];
+  httpRouteHosts?: string[];
   loadBalancerAddresses?: string[];
   age: string;
   nodeName?: string;
@@ -781,8 +781,8 @@ export interface CreateBackendRequest {
   /** Default ClusterIP; use LoadBalancer for L4 VIP backends. */
   serviceType?: BackendServiceType;
   /**
-   * Extra labels merged onto the Service (e.g. ingress name linkage when
-   * created as a companion to an Ingress).
+   * Extra labels merged onto the Service (e.g. HTTPRoute name linkage when
+   * created as a companion to an HTTPRoute).
    */
   extraLabels?: Record<string, string>;
 }
@@ -822,47 +822,72 @@ export interface BackendSummary {
   endpointsTotal?: number;
 }
 
-// --- Ingresses (networking.k8s.io) bound to VMs ---
+// --- HTTPRoutes (gateway.networking.k8s.io) bound to VMs ---
 
-export interface IngressSummary {
+export type HttpRoutePathType = "PathPrefix" | "Exact" | "RegularExpression";
+
+export interface HttpRouteParentRef {
+  name: string;
+  namespace?: string;
+  sectionName?: string;
+  kind?: string;
+}
+
+/** Cluster Gateway picker option (Envoy Gateway / Gateway API). */
+export interface GatewayOption {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  gatewayClassName?: string;
+  listeners: Array<{
+    name: string;
+    protocol: string;
+    port: number;
+    hostname?: string;
+  }>;
+  addresses: string[];
+}
+
+export interface HttpRouteSummary {
   cluster: ClusterId;
   namespace: string;
   name: string;
   hosts: string[];
   /**
-   * Hosts covered by Ingress TLS (use https for these).
-   * When a TLS block has no hosts listed, every rule host is included.
+   * Hosts that should open as https, based on the parent Gateway listener
+   * protocol (HTTPS/TLS). HTTPRoute itself has no Ingress-style TLS block.
    */
-  tlsHosts: string[];
-  className?: string;
+  httpsHosts: string[];
+  parentRefs: HttpRouteParentRef[];
+  /** First parent Gateway Accepted=True when status is present. */
+  accepted?: boolean;
   /** single-vm | labels | group (from target-kind label) */
   membershipMode?: BackendMembershipMode | "unknown";
   /** Target VM name when membership is single-vm */
   vmName?: string;
-  /** Companion Service name (same as Ingress in v1) */
+  /** Companion Service name (same as HTTPRoute in v1) */
   serviceName?: string;
   age: string;
-  /** First loadBalancer ingress host/IP when present */
+  /** First address from the parent Gateway status, when resolved */
   address?: string;
   /** Companion Service endpoint readiness when loaded */
   endpointsReady?: number;
   endpointsTotal?: number;
 }
 
-export interface IngressRulePath {
+export interface HttpRouteRuleMatch {
   path: string;
   pathType: string;
   serviceName: string;
   servicePort: number | string;
 }
 
-export interface IngressRuleInfo {
-  host?: string;
-  paths: IngressRulePath[];
+export interface HttpRouteRuleInfo {
+  matches: HttpRouteRuleMatch[];
 }
 
-/** Companion backend Service details (membership + selector) on Ingress detail. */
-export interface IngressBackendInfo {
+/** Companion backend Service details (membership + selector) on HTTPRoute detail. */
+export interface HttpRouteBackendInfo {
   /** Service exists in the cluster */
   exists: boolean;
   serviceType?: string;
@@ -872,12 +897,11 @@ export interface IngressBackendInfo {
   matchedVms?: BackendMatchedVm[];
 }
 
-export interface IngressDetail extends IngressSummary {
+export interface HttpRouteDetail extends HttpRouteSummary {
   uid?: string;
   labels: Record<string, string>;
   annotations: Record<string, string>;
-  rules: IngressRuleInfo[];
-  tls?: Array<{ hosts: string[]; secretName?: string }>;
+  rules: HttpRouteRuleInfo[];
   servicePorts?: Array<{
     name?: string;
     port: number;
@@ -888,14 +912,12 @@ export interface IngressDetail extends IngressSummary {
   endpointsReady?: number;
   endpointsTotal?: number;
   /** Parsed from companion Service labels + spec.selector */
-  backend?: IngressBackendInfo;
+  backend?: HttpRouteBackendInfo;
   /** single-vm binding only */
   vm?: { name: string; exists: boolean; podNetwork: boolean };
 }
 
-export type IngressPathType = "Prefix" | "Exact" | "ImplementationSpecific";
-
-export interface CreateIngressRequest {
+export interface CreateHttpRouteRequest {
   cluster: ClusterId;
   namespace: string;
   name: string;
@@ -906,32 +928,34 @@ export interface CreateIngressRequest {
   membership?: BackendMembership;
   host: string;
   path?: string;
-  pathType?: IngressPathType;
+  pathType?: HttpRoutePathType;
   servicePort?: number;
   targetPort?: number;
-  ingressClassName?: string;
+  /** Parent Gateway (required for the route to attach). */
+  gatewayName: string;
+  gatewayNamespace?: string;
+  /** Optional Gateway listener name (parentRef.sectionName). */
+  sectionName?: string;
   /**
    * Expose an existing Service instead of creating a companion backend.
    * When set, membership/targetPort are not used for create.
    */
   existingServiceName?: string;
-  /** Optional TLS: secret name enables HTTPS for the host. */
-  tlsSecretName?: string;
 }
 
-/** Patch host/path/TLS/class and optionally companion Service ports. */
-export interface UpdateIngressRequest {
+/** Patch host/path/parent and optionally companion Service ports. */
+export interface UpdateHttpRouteRequest {
   cluster: ClusterId;
   namespace: string;
   name: string;
   host?: string;
   path?: string;
-  pathType?: IngressPathType;
+  pathType?: HttpRoutePathType;
   servicePort?: number;
   targetPort?: number;
-  ingressClassName?: string | null;
-  /** Empty string clears TLS; undefined leaves unchanged. */
-  tlsSecretName?: string | null;
+  gatewayName?: string;
+  gatewayNamespace?: string | null;
+  sectionName?: string | null;
   membership?: BackendMembership;
 }
 
@@ -1597,12 +1621,12 @@ export type TopologyNetworkKind =
   | "vpc"
   | "multus"
   | "pod"
-  | "ingress"
+  | "httproute"
   | "loadbalancer";
 
 export interface TopologyNetworkNode {
   /**
-   * Stable id: `cluster/namespace/name`, `…/__pod__`, `…/__ingress__`,
+   * Stable id: `cluster/namespace/name`, `…/__pod__`, `…/__httproute__`,
    * or `…/__loadbalancer__`.
    */
   id: string;
@@ -1625,8 +1649,8 @@ export interface TopologyVmNode {
   ready: boolean;
   /** Public floating IPs associated with this VM (from router policy). */
   floatingIpv4?: string[];
-  /** Ingress hostnames bound to this VM (kmc-managed Ingress via pod network). */
-  ingressHosts?: string[];
+  /** HTTPRoute hostnames bound to this VM (kmc-managed HTTPRoute via pod network). */
+  httpRouteHosts?: string[];
   /** LoadBalancer VIPs / names exposing this VM on the pod network. */
   loadBalancerAddresses?: string[];
 }
@@ -1640,11 +1664,11 @@ export interface TopologyEdge {
   /**
    * `attachment` (default): Multus/pod NIC on the VM.
    * `floating`: 1:1 public→private DNAT via a router external gateway.
-   * `ingress`: HTTP(S) exposure via Ingress on the pod network.
+   * `httproute`: HTTP(S) exposure via HTTPRoute on the pod network.
    * `loadbalancer`: L4 Service type LoadBalancer on the pod network.
    */
-  role?: "attachment" | "floating" | "portforward" | "ingress" | "loadbalancer";
-  /** Optional display label (e.g. floating public address, ingress host, VIP). */
+  role?: "attachment" | "floating" | "portforward" | "httproute" | "loadbalancer";
+  /** Optional display label (e.g. floating public address, HTTPRoute host, VIP). */
   label?: string;
 }
 
