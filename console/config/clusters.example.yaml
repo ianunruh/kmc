@@ -16,11 +16,12 @@ clusters:
     tokenFile: config/secrets/prod-sjc1.token
     # Optional: public S3 API base URL for Object Storage (ObjectBucketClaim) UI
     objectStorageEndpoint: https://s3.kcloud.io
-    # Optional: underlay CIDRs for dual-home Multus guests (pod NIC routes).
-    # network:
-    #   podCIDR: 10.95.0.0/16
-    #   serviceCIDR: 10.96.0.0/12
-    #   # dnsIP: 10.96.0.10
+    # Underlay CIDRs for dual-home Multus guests (pod NIC routes).
+    # Required so KubeVirt port-forward / browser Terminal can reach guest :22.
+    network:
+      podCIDR: 10.95.0.0/16
+      serviceCIDR: 10.96.0.0/12
+      dnsIP: 10.96.0.10
   - id: homelab
     displayName: homelab
     apiServer: https://kubernetes.den1.kcloud.zone:6443
@@ -34,8 +35,9 @@ clusters:
     prometheusUrl: https://prometheus.k8s.kcloud.zone
     # Optional: public S3 API base URL for Object Storage (ObjectBucketClaim) UI
     objectStorageEndpoint: https://s3.kcloud.zone
-    # Optional: underlay CIDRs for dual-home Multus guests (pod NIC routes)
-    # network:
-    #   podCIDR: 10.19.0.0/16
-    #   serviceCIDR: 10.20.0.0/16
-    #   dnsIP: 10.20.0.10
+    # Underlay CIDRs for dual-home Multus guests (pod NIC routes).
+    # Required so KubeVirt port-forward / browser Terminal can reach guest :22.
+    network:
+      podCIDR: 10.19.0.0/16
+      serviceCIDR: 10.20.0.0/16
+      dnsIP: 10.20.0.10
