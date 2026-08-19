@@ -1,15 +1,20 @@
 import { Group, Text, Tooltip } from "@mantine/core";
 import type { ClusterInfo } from "~/lib/types";
 
+function probeLabel(c: ClusterInfo): string {
+  const latency = c.latencyMs != null ? `${c.latencyMs}ms` : null;
+  if (c.reachable) {
+    return latency ? `readyz ${latency}` : "reachable";
+  }
+  const error = c.error || "unreachable";
+  return latency ? `${error} · ${latency}` : error;
+}
+
 export function ClusterHealth({ clusters }: { clusters: ClusterInfo[] }) {
   return (
     <Group gap="md">
       {clusters.map((c) => (
-        <Tooltip
-          key={c.id}
-          label={c.reachable ? "reachable" : c.error || "unreachable"}
-          withArrow
-        >
+        <Tooltip key={c.id} label={probeLabel(c)} withArrow>
           <Group gap={6}>
             <span
               style={{

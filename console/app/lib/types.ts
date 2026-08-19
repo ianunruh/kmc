@@ -4,6 +4,8 @@ export interface ClusterInfo {
   id: ClusterId;
   reachable: boolean;
   error?: string;
+  /** Round-trip ms for GET /readyz (set even when the probe fails). */
+  latencyMs?: number;
   hasInstanceTypes: boolean;
   defaultStorageClass?: string;
 }

@@ -378,3 +378,35 @@ export function httpErrorMessage(status: number, body: string): string {
   }
   return body || `HTTP ${status}`;
 }
+
+export type ReadyzProbe = {
+  ok: boolean;
+  latencyMs: number;
+  status?: number;
+  error?: string;
+};
+
+/** Timed GET /readyz against the cluster apiserver. */
+export async function probeReadyz(kc: k8s.KubeConfig): Promise<ReadyzProbe> {
+  const started = performance.now();
+  try {
+    const res = await k8sFetch(kc, "/readyz");
+    const latencyMs = Math.max(0, Math.round(performance.now() - started));
+    if (res.ok) {
+      return { ok: true, latencyMs, status: res.status };
+    }
+    const body = (await res.text()).trim();
+    return {
+      ok: false,
+      latencyMs,
+      status: res.status,
+      error: httpErrorMessage(res.status, body),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      latencyMs: Math.max(0, Math.round(performance.now() - started)),
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}

@@ -24,6 +24,7 @@ import {
   getConfiguredContexts,
   httpErrorMessage,
   k8sFetch,
+  probeReadyz,
 } from "~/lib/k8s/clients.server";
 import type { KubeConfig } from "@kubernetes/client-node";
 import { assertVmNamespaceAllowed } from "~/lib/k8s/catalog.server";
@@ -869,13 +870,17 @@ export async function getVm(
 
 async function probeCluster(id: ClusterId): Promise<ClusterInfo> {
   try {
-    const { custom, storage } = getClusterClients(id);
-    await custom.listClusterCustomObject({
-      group: "kubevirt.io",
-      version: "v1",
-      plural: "virtualmachines",
-      limit: 1,
-    });
+    const { kc, custom, storage } = getClusterClients(id);
+    const probe = await probeReadyz(kc);
+    if (!probe.ok) {
+      return {
+        id,
+        reachable: false,
+        error: probe.error || "readyz failed",
+        latencyMs: probe.latencyMs,
+        hasInstanceTypes: false,
+      };
+    }
 
     let hasInstanceTypes = false;
     try {
@@ -910,6 +915,7 @@ async function probeCluster(id: ClusterId): Promise<ClusterInfo> {
     return {
       id,
       reachable: true,
+      latencyMs: probe.latencyMs,
       hasInstanceTypes,
       defaultStorageClass,
     };
