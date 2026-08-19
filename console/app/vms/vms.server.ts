@@ -868,7 +868,23 @@ export async function getVm(
   return { ...detail, networks };
 }
 
-async function probeCluster(id: ClusterId): Promise<ClusterInfo> {
+/** Collapse root+route probes and skip /readyz on rapid navigations. */
+const PROBE_CACHE_TTL_MS = 15_000;
+const PROBE_CACHE_FAILURE_TTL_MS = 5_000;
+
+type ProbeCacheEntry = {
+  expiresAt: number;
+  value?: ClusterInfo;
+  inflight?: Promise<ClusterInfo>;
+};
+
+const probeCache = new Map<ClusterId, ProbeCacheEntry>();
+
+function cloneClusterInfo(info: ClusterInfo): ClusterInfo {
+  return { ...info };
+}
+
+async function probeClusterUncached(id: ClusterId): Promise<ClusterInfo> {
   try {
     const { kc, custom, storage } = getClusterClients(id);
     const probe = await probeReadyz(kc);
@@ -927,6 +943,42 @@ async function probeCluster(id: ClusterId): Promise<ClusterInfo> {
       hasInstanceTypes: false,
     };
   }
+}
+
+async function probeCluster(id: ClusterId): Promise<ClusterInfo> {
+  const now = Date.now();
+  const hit = probeCache.get(id);
+  if (hit?.value && hit.expiresAt > now) {
+    return cloneClusterInfo(hit.value);
+  }
+  if (hit?.inflight) {
+    return hit.inflight.then(cloneClusterInfo);
+  }
+
+  const inflight = probeClusterUncached(id)
+    .then((value) => {
+      const ttl = value.reachable
+        ? PROBE_CACHE_TTL_MS
+        : PROBE_CACHE_FAILURE_TTL_MS;
+      probeCache.set(id, { expiresAt: Date.now() + ttl, value });
+      return value;
+    })
+    .catch((err) => {
+      const value: ClusterInfo = {
+        id,
+        reachable: false,
+        error: err instanceof Error ? err.message : String(err),
+        hasInstanceTypes: false,
+      };
+      probeCache.set(id, {
+        expiresAt: Date.now() + PROBE_CACHE_FAILURE_TTL_MS,
+        value,
+      });
+      return value;
+    });
+
+  probeCache.set(id, { expiresAt: 0, inflight });
+  return inflight.then(cloneClusterInfo);
 }
 
 export async function listClusters(): Promise<ClusterInfo[]> {
