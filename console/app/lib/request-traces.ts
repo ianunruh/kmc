@@ -12,11 +12,13 @@ export type MatchedRequestTrace = RequestTrace & {
 };
 
 export function tracesFromMatches(
-  matches: Array<{ id: string; data?: unknown }>,
+  matches: Array<{ id: string; data?: unknown; loaderData?: unknown }>,
 ): MatchedRequestTrace[] {
   const out: MatchedRequestTrace[] = [];
   for (const match of matches) {
-    const data = match.data as { traces?: RequestTrace[] } | null | undefined;
+    // React Router 7+ exposes loader results as `loaderData`; older Remix used `data`.
+    const raw = match.loaderData ?? match.data;
+    const data = raw as { traces?: RequestTrace[] } | null | undefined;
     if (!data?.traces?.length) continue;
     for (const trace of data.traces) {
       out.push({ ...trace, routeId: match.id });

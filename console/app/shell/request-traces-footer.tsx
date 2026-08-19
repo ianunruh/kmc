@@ -31,9 +31,9 @@ export function RequestTracesFooter() {
 
   return (
     <>
-      <Group h="100%" px="md" justify="flex-end" wrap="nowrap">
+      <Group h="100%" w="100%" px="md" justify="flex-end" align="center" wrap="nowrap">
         <UnstyledButton onClick={open}>
-          <Text size="xs" c="dimmed">
+          <Text size="xs" lh={1} c="dimmed">
             {traces.length} request{traces.length === 1 ? "" : "s"} · max{" "}
             <Text span c="gray.4" ff="monospace">
               {maxElapsed}ms
@@ -46,7 +46,7 @@ export function RequestTracesFooter() {
         opened={opened}
         onClose={close}
         title="Page load requests"
-        size="xl"
+        size="90vw"
         centered
       >
         <RequestTraceTable traces={traces} />
@@ -57,16 +57,16 @@ export function RequestTracesFooter() {
 
 function RequestTraceTable({ traces }: { traces: MatchedRequestTrace[] }) {
   return (
-    <Table.ScrollContainer className="kmc-table-scroll" minWidth={720} type="native">
-      <Table className="kmc-table" highlightOnHover verticalSpacing={6} fz="xs">
+    <Table.ScrollContainer className="kmc-table-scroll" minWidth={960} type="native">
+      <Table className="kmc-table" highlightOnHover verticalSpacing={6} fz="xs" layout="fixed">
         <Table.Thead>
           <Table.Tr>
-            <Table.Th>Method</Table.Th>
-            <Table.Th>Status</Table.Th>
-            <Table.Th>Elapsed</Table.Th>
-            <Table.Th>Host</Table.Th>
+            <Table.Th w={80}>Method</Table.Th>
+            <Table.Th w={70}>Status</Table.Th>
+            <Table.Th w={90}>Elapsed</Table.Th>
+            <Table.Th w={220}>Host</Table.Th>
             <Table.Th>Path</Table.Th>
-            <Table.Th>Loader</Table.Th>
+            <Table.Th w={280}>Loader</Table.Th>
           </Table.Tr>
         </Table.Thead>
         <Table.Tbody>
@@ -94,7 +94,7 @@ function RequestTraceTable({ traces }: { traces: MatchedRequestTrace[] }) {
                 </Badge>
               </Table.Td>
               <Table.Td>
-                <Text size="xs" c="dimmed" lineClamp={1} maw={180} title={trace.host}>
+                <Text size="xs" c="dimmed" lineClamp={1} title={trace.host}>
                   {trace.host ?? "—"}
                 </Text>
               </Table.Td>
@@ -102,15 +102,14 @@ function RequestTraceTable({ traces }: { traces: MatchedRequestTrace[] }) {
                 <Text
                   size="xs"
                   ff="monospace"
-                  lineClamp={2}
-                  maw={420}
+                  style={{ overflowWrap: "anywhere" }}
                   title={trace.error ? `${trace.path} — ${trace.error}` : trace.path}
                 >
                   {trace.path}
                 </Text>
               </Table.Td>
               <Table.Td>
-                <Text size="xs" c="dimmed" lineClamp={1} title={trace.routeId}>
+                <Text size="xs" c="dimmed" ff="monospace" title={trace.routeId}>
                   {formatRouteId(trace.routeId)}
                 </Text>
               </Table.Td>

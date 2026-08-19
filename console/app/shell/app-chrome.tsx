@@ -199,8 +199,9 @@ export function AppChrome({
 
   return (
     <AppShell
+      layout="alt"
       header={{ height: 52 }}
-      footer={{ height: 28 }}
+      footer={{ height: 32 }}
       navbar={{
         width: 220,
         breakpoint: "sm",
@@ -220,6 +221,8 @@ export function AppChrome({
         footer: {
           background: "#12151a",
           borderTop: "1px solid #1e242c",
+          display: "flex",
+          alignItems: "center",
         },
       }}
     >
@@ -324,11 +327,6 @@ export function AppChrome({
           variant="subtle"
           mt="xs"
         />
-        <Box mt="auto" p="xs">
-          <Text size="xs" c="dimmed">
-            {authMode === "impersonate" ? "impersonate mode" : "localhost console"}
-          </Text>
-        </Box>
       </AppShell.Navbar>
 
       <AppShell.Main className="kmc-shell-main">{children}</AppShell.Main>

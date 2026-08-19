@@ -6,8 +6,6 @@ export interface ClusterInfo {
   error?: string;
   /** Round-trip ms for GET /readyz (set even when the probe fails). */
   latencyMs?: number;
-  hasInstanceTypes: boolean;
-  defaultStorageClass?: string;
 }
 
 /** Kubernetes Event (core/v1) projected for detail UIs */

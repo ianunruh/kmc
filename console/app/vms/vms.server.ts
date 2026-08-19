@@ -886,7 +886,7 @@ function cloneClusterInfo(info: ClusterInfo): ClusterInfo {
 
 async function probeClusterUncached(id: ClusterId): Promise<ClusterInfo> {
   try {
-    const { kc, custom, storage } = getClusterClients(id);
+    const { kc } = getClusterClients(id);
     const probe = await probeReadyz(kc);
     if (!probe.ok) {
       return {
@@ -894,53 +894,19 @@ async function probeClusterUncached(id: ClusterId): Promise<ClusterInfo> {
         reachable: false,
         error: probe.error || "readyz failed",
         latencyMs: probe.latencyMs,
-        hasInstanceTypes: false,
       };
-    }
-
-    let hasInstanceTypes = false;
-    try {
-      const its = (await custom.listClusterCustomObject({
-        group: "instancetype.kubevirt.io",
-        version: "v1beta1",
-        plural: "virtualmachineclusterinstancetypes",
-        limit: 1,
-      })) as { items?: unknown[] };
-      hasInstanceTypes = (its.items?.length ?? 0) > 0;
-    } catch {
-      hasInstanceTypes = false;
-    }
-
-    let defaultStorageClass: string | undefined;
-    try {
-      const scs = await storage.listStorageClass();
-      const items = scs.items ?? [];
-      const def = items.find(
-        (sc) =>
-          sc.metadata?.annotations?.["storageclass.kubernetes.io/is-default-class"] ===
-            "true" ||
-          sc.metadata?.annotations?.[
-            "storageclass.beta.kubernetes.io/is-default-class"
-          ] === "true",
-      );
-      defaultStorageClass = def?.metadata?.name ?? items[0]?.metadata?.name;
-    } catch {
-      // optional
     }
 
     return {
       id,
       reachable: true,
       latencyMs: probe.latencyMs,
-      hasInstanceTypes,
-      defaultStorageClass,
     };
   } catch (err) {
     return {
       id,
       reachable: false,
       error: err instanceof Error ? err.message : String(err),
-      hasInstanceTypes: false,
     };
   }
 }
@@ -968,7 +934,6 @@ async function probeCluster(id: ClusterId): Promise<ClusterInfo> {
         id,
         reachable: false,
         error: err instanceof Error ? err.message : String(err),
-        hasInstanceTypes: false,
       };
       probeCache.set(id, {
         expiresAt: Date.now() + PROBE_CACHE_FAILURE_TTL_MS,
