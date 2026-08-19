@@ -20,6 +20,7 @@ import { authMiddleware, getRequestSession } from "./lib/auth/middleware.server"
 import { getAuthMode } from "./lib/auth/mode.server";
 import { isPublicPath } from "./lib/auth/paths.server";
 import type { AuthMode, SessionUser } from "./lib/auth/types";
+import { tracedLoader } from "./lib/request-traces.server";
 
 import "@fontsource/geist-mono/400.css";
 import "@fontsource/geist-mono/500.css";
@@ -45,7 +46,7 @@ export type RootLoaderData = {
   user: SessionUser | null;
 };
 
-export async function loader({ request }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ request }: Route.LoaderArgs) => {
   const url = new URL(request.url);
   const publicAuth = isPublicPath(url.pathname);
 
@@ -74,7 +75,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       user,
     } satisfies RootLoaderData;
   }
-}
+});
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (

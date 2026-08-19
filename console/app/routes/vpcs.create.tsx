@@ -22,12 +22,13 @@ import { listClusters } from "~/vms/vms.server";
 import { getConfiguredContexts } from "~/lib/k8s/clients.server";
 import { clusterHasVlanPools } from "~/lib/ipam/vlan-pools.server";
 import type { ClusterCatalog, CreateVpcRequest } from "~/lib/types";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Create VPC · kmc" }];
 }
 
-export async function loader() {
+export const loader = tracedLoader(async () => {
   const clusters = await listClusters();
   const contexts = getConfiguredContexts();
   const vlanByCluster: Record<
@@ -44,7 +45,7 @@ export async function loader() {
     }));
   }
   return { clusters, vlanByCluster };
-}
+});
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();

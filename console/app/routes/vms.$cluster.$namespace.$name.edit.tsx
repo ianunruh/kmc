@@ -30,12 +30,13 @@ import { instanceTypeSelectData } from "~/instancetypes/options";
 import type { UpdateVmRequest } from "~/lib/types";
 import { VM_RUN_STRATEGIES } from "~/lib/types";
 import { getVm, updateVm } from "~/vms/vms.server";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `Edit ${params.name ?? "VM"} · kmc` }];
 }
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
@@ -45,7 +46,7 @@ export async function loader({ params }: Route.LoaderArgs) {
     getClusterCatalog(cluster),
   ]);
   return { vm, catalog };
-}
+});
 
 export async function action({ request, params }: Route.ActionArgs) {
   const { cluster, namespace, name } = params;

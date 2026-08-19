@@ -4,10 +4,11 @@ import type { Route } from "./+types/datavolumes.$cluster.$namespace.$name.yaml"
 import { DetailSection, YamlPanel } from "~/ui";
 import { getCustomObjectYaml } from "~/lib/k8s/yaml.server";
 import type { loader as detailLoader } from "./datavolumes.$cluster.$namespace.$name";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 const LAYOUT_ID = "routes/datavolumes.$cluster.$namespace.$name";
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
@@ -23,7 +24,7 @@ export async function loader({ params }: Route.LoaderArgs) {
   });
 
   return { yaml };
-}
+});
 
 export default function DataVolumeYamlTab({ loaderData }: Route.ComponentProps) {
   const data = useRouteLoaderData(LAYOUT_ID) as Awaited<

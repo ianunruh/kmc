@@ -4,17 +4,18 @@ import type { Route } from "./+types/load-balancers.$cluster.$namespace.$name.ya
 import { DetailSection, YamlPanel } from "~/ui";
 import { getBackendYaml } from "~/backends/backends.server";
 import type { loader as detailLoader } from "./load-balancers.$cluster.$namespace.$name";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 const LAYOUT_ID = "routes/load-balancers.$cluster.$namespace.$name";
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
   const yaml = await getBackendYaml(cluster, namespace, name);
   return { yaml };
-}
+});
 
 export default function LoadBalancerYamlTab({
   loaderData,

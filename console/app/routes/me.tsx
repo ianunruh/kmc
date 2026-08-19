@@ -4,12 +4,13 @@ import { toActor } from "~/lib/auth/actor.server";
 import { getRequestSession } from "~/lib/auth/middleware.server";
 import { getAuthMode } from "~/lib/auth/mode.server";
 import { ConsolePaper, PageHeader } from "~/ui";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Identity · kmc" }];
 }
 
-export async function loader(_args: Route.LoaderArgs) {
+export const loader = tracedLoader(async (_args: Route.LoaderArgs) => {
   const mode = getAuthMode();
   const session = getRequestSession();
   const displayActor = session?.user ? toActor(session.user) : null;
@@ -27,7 +28,7 @@ export async function loader(_args: Route.LoaderArgs) {
       : null,
     actor: displayActor,
   };
-}
+});
 
 export default function MePage({ loaderData }: Route.ComponentProps) {
   const { mode, session, actor } = loaderData;

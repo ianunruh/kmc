@@ -49,12 +49,13 @@ import {
   ResourceTable,
   Table,
 } from "~/ui";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "SSH Keys · kmc" }];
 }
 
-export async function loader(_args: Route.LoaderArgs) {
+export const loader = tracedLoader(async (_args: Route.LoaderArgs) => {
   const session = getRequestSession();
   const user = session?.user ?? null;
   const { keys, settingsCluster, error } = await listSshKeysOrEmpty(user);
@@ -65,7 +66,7 @@ export async function loader(_args: Route.LoaderArgs) {
     settingsCluster,
     listError: error ?? null,
   };
-}
+});
 
 export async function action({ request }: Route.ActionArgs) {
   const session = getRequestSession();

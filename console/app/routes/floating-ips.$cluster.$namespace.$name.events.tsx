@@ -2,8 +2,9 @@ import type { Route } from "./+types/floating-ips.$cluster.$namespace.$name.even
 import { EventsPanel } from "~/ui";
 import { listResourceEvents } from "~/lib/k8s/events.server";
 import { getFloatingIp } from "~/vpcs/vpcs.server";
+import { tracedLoader } from "~/lib/request-traces.server";
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
@@ -19,7 +20,7 @@ export async function loader({ params }: Route.LoaderArgs) {
   });
 
   return { events };
-}
+});
 
 export default function FloatingIpEventsTab({ loaderData }: Route.ComponentProps) {
   return <EventsPanel events={loaderData.events} />;

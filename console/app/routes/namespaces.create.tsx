@@ -17,14 +17,15 @@ import {
   type NamespaceQuotaFormValues,
 } from "~/namespaces/quota-form-fields";
 import { listClusters } from "~/vms/vms.server";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Create Namespace · kmc" }];
 }
 
-export async function loader() {
+export const loader = tracedLoader(async () => {
   return { clusters: await listClusters() };
-}
+});
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();

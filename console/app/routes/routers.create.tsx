@@ -37,6 +37,7 @@ import { listSshKeysOrEmpty } from "~/ssh-keys/ssh-keys.server";
 import { listClusters } from "~/vms/vms.server";
 import { createRouter, listRouterAttachableVpcs } from "~/vpcs/routers.server";
 import { listPublicEgressNetworks } from "~/vpcs/vpcs.server";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 type AttachableVpc = Awaited<ReturnType<typeof listRouterAttachableVpcs>>[number];
 type AttachableFetcherData = { attachable: AttachableVpc[] };
@@ -45,7 +46,7 @@ export function meta(_args: Route.MetaArgs) {
   return [{ title: "Create router · kmc" }];
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ request }: Route.LoaderArgs) => {
   const url = new URL(request.url);
   /** Only set when present in the URL (locks the field). Do not default. */
   const preCluster = url.searchParams.get("cluster")?.trim() || "";
@@ -104,7 +105,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     sshKeysError: sshKeysError ?? null,
     signedIn: Boolean(session?.user),
   };
-}
+});
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();

@@ -10,14 +10,15 @@ import { dataVolumePath, validateDns1123Label } from "~/lib/format";
 import { createDataVolume } from "~/datavolumes/datavolumes.server";
 import { listClusters } from "~/vms/vms.server";
 import type { ClusterCatalog, CreateDataVolumeRequest } from "~/lib/types";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Create DataVolume · kmc" }];
 }
 
-export async function loader() {
+export const loader = tracedLoader(async () => {
   return { clusters: await listClusters() };
-}
+});
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();

@@ -22,19 +22,20 @@ import { actionFailure } from "~/lib/errors";
 import { dataVolumePath, dataVolumesListPath, detailTabPath } from "~/lib/format";
 import { deleteDataVolume, getDataVolume } from "~/datavolumes/datavolumes.server";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `${params.name ?? "DataVolume"} · kmc` }];
 }
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
   const dv = await getDataVolume(cluster, namespace, name);
   return { dv };
-}
+});
 
 export async function action({ request, params }: Route.ActionArgs) {
   const { cluster, namespace, name } = params;

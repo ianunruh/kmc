@@ -18,19 +18,20 @@ import {
 } from "~/lib/format";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 import { deletePortForward, getPortForward } from "~/vpcs/vpcs.server";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `${params.name ?? "Port Forward"} · Port Forward · kmc` }];
 }
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
   const pf = await getPortForward(cluster, namespace, name);
   return { pf };
-}
+});
 
 export async function action({ request, params }: Route.ActionArgs) {
   const { cluster, namespace, name } = params;

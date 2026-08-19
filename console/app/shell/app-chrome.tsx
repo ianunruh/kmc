@@ -37,6 +37,7 @@ import type { ClusterInfo } from "~/lib/types";
 import type { AuthMode, SessionUser } from "~/lib/auth/types";
 import { ClusterHealth } from "./cluster-health";
 import { RefreshControl } from "./refresh-control";
+import { RequestTracesFooter } from "./request-traces-footer";
 import { TopLoadingBar } from "./top-loading-bar";
 
 type NavItem = {
@@ -199,6 +200,7 @@ export function AppChrome({
   return (
     <AppShell
       header={{ height: 52 }}
+      footer={{ height: 28 }}
       navbar={{
         width: 220,
         breakpoint: "sm",
@@ -214,6 +216,10 @@ export function AppChrome({
         navbar: {
           background: "#12151a",
           borderRight: "1px solid #1e242c",
+        },
+        footer: {
+          background: "#12151a",
+          borderTop: "1px solid #1e242c",
         },
       }}
     >
@@ -326,6 +332,9 @@ export function AppChrome({
       </AppShell.Navbar>
 
       <AppShell.Main className="kmc-shell-main">{children}</AppShell.Main>
+      <AppShell.Footer>
+        <RequestTracesFooter />
+      </AppShell.Footer>
     </AppShell>
   );
 }

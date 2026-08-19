@@ -23,6 +23,7 @@ import {
   stopVm,
   unpauseVm,
 } from "~/vms/vms.server";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [
@@ -31,9 +32,9 @@ export function meta(_args: Route.MetaArgs) {
   ];
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ request }: Route.LoaderArgs) => {
   return listVms(clusterFromRequest(request));
-}
+});
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();

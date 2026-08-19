@@ -1,8 +1,9 @@
 import type { Route } from "./+types/load-balancers.$cluster.$namespace.$name.events";
 import { EventsPanel } from "~/ui";
 import { listResourceEvents } from "~/lib/k8s/events.server";
+import { tracedLoader } from "~/lib/request-traces.server";
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
@@ -16,7 +17,7 @@ export async function loader({ params }: Route.LoaderArgs) {
   });
 
   return { events };
-}
+});
 
 export default function LoadBalancerEventsTab({
   loaderData,

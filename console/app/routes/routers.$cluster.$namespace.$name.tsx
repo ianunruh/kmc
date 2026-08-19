@@ -23,12 +23,13 @@ import {
 } from "~/vpcs/routers.server";
 import { listPublicEgressNetworks } from "~/vpcs/vpcs.server";
 import { restartVm } from "~/vms/vms.server";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `${params.name ?? "Router"} · kmc` }];
 }
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
@@ -69,7 +70,7 @@ export async function loader({ params }: Route.LoaderArgs) {
     })),
     signedIn: Boolean(session?.user),
   };
-}
+});
 
 export async function action({ request, params }: Route.ActionArgs) {
   const { cluster, namespace, name } = params;

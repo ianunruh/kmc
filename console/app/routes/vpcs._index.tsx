@@ -53,14 +53,15 @@ import { useRefresh } from "~/lib/refresh";
 import type { BulkActionResult, VpcSummary } from "~/lib/types";
 import { resourceKey, useRowSelection } from "~/lib/use-row-selection";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "VPCs · kmc" }];
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ request }: Route.LoaderArgs) => {
   return listVpcs(clusterFromRequest(request));
-}
+});
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();

@@ -25,19 +25,20 @@ import {
 } from "~/lib/format";
 import { deleteNamespace, getNamespace } from "~/namespaces/namespaces.server";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `${params.name ?? "Namespace"} · kmc` }];
 }
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, name } = params;
   if (!cluster || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
   const ns = await getNamespace(cluster, name);
   return { ns };
-}
+});
 
 export async function action({ request, params }: Route.ActionArgs) {
   const { cluster, name } = params;

@@ -69,8 +69,9 @@ import { addressFromIpv4Annotation } from "~/lib/ipam/cidr";
 import { useRefresh } from "~/lib/refresh";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 import { useVmDetail, type VmDetailActionResult } from "~/vms/vm-detail-shared";
+import { tracedLoader } from "~/lib/request-traces.server";
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
@@ -130,7 +131,7 @@ export async function loader({ params }: Route.LoaderArgs) {
         }
       : null,
   };
-}
+});
 
 export async function action({ request, params }: Route.ActionArgs) {
   const { cluster, namespace, name } = params;

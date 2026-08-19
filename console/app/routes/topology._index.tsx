@@ -11,14 +11,15 @@ import type {
   TopologyNetworkNode,
   TopologyVmNode,
 } from "~/lib/types";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Network map · kmc" }];
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ request }: Route.LoaderArgs) => {
   return listNetworkTopology(clusterFromRequest(request));
-}
+});
 
 export default function TopologyPage({ loaderData }: Route.ComponentProps) {
   const { topology, clusters } = loaderData;

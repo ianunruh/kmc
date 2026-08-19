@@ -21,12 +21,13 @@ import {
   listFloatingIpEligibleVpcs,
   reserveFloatingIp,
 } from "~/vpcs/vpcs.server";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Floating IP · kmc" }];
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ request }: Route.LoaderArgs) => {
   const url = new URL(request.url);
   const eligible = await listFloatingIpEligibleVpcs();
   const modeParam = getSearchParam(url.searchParams, "mode");
@@ -43,7 +44,7 @@ export async function loader({ request }: Route.LoaderArgs) {
         | "reserve",
     },
   };
-}
+});
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();

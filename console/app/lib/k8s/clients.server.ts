@@ -11,6 +11,7 @@ import {
   requireClusterIdentity,
   resolveClusterToken,
 } from "./cluster-config.server";
+import { requestInfoFromUrl, timedRequest } from "~/lib/request-traces.server";
 
 export { listClusterIds, getSettingsClusterId };
 
@@ -88,59 +89,71 @@ function loadFromPlatformSa(cluster: ClusterId): k8s.KubeConfig {
 function nodeHttpLibrary(): ReturnType<typeof k8s.wrapHttpLibrary> {
   return k8s.wrapHttpLibrary({
     async send(request) {
-      const url = new URL(request.getUrl());
-      const method = request.getHttpMethod().toString();
-      const body = request.getBody();
-      const agent = request.getAgent() as http.Agent | https.Agent | undefined;
-
-      const outgoing: http.OutgoingHttpHeaders = {};
-      for (const [key, value] of Object.entries(request.getHeaders())) {
-        if (value == null) continue;
-        // Preserve string[] so Node emits repeated headers (Impersonate-Group)
-        outgoing[key] = value as string | string[] | number;
-      }
-
-      const transport = url.protocol === "https:" ? https : http;
-      const opts: https.RequestOptions = {
-        protocol: url.protocol,
-        hostname: url.hostname,
-        port: url.port || undefined,
-        path: `${url.pathname}${url.search}`,
-        method,
-        headers: outgoing,
-        agent,
-      };
-
-      const res = await new Promise<http.IncomingMessage>((resolve, reject) => {
-        const req = transport.request(opts, resolve);
-        req.on("error", reject);
-        if (body != null && body !== "") {
-          if (typeof body === "string" || Buffer.isBuffer(body)) {
-            req.write(body);
-          } else {
-            req.write(String(body));
-          }
-        }
-        req.end();
-      });
-
-      const chunks: Buffer[] = [];
-      for await (const chunk of res) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      }
-      const buf = Buffer.concat(chunks);
-
-      const headers: { [key: string]: string } = {};
-      for (const [key, value] of Object.entries(res.headers)) {
-        if (value == null) continue;
-        headers[key] = Array.isArray(value) ? value.join(", ") : value;
-      }
-
-      return new k8s.ResponseContext(res.statusCode ?? 0, headers, {
-        text: async () => buf.toString("utf8"),
-        binary: async () => buf,
-      });
+      const info = requestInfoFromUrl(
+        request.getHttpMethod().toString(),
+        request.getUrl(),
+      );
+      return timedRequest(
+        info,
+        () => sendK8sRequest(request),
+        (res) => res.httpStatusCode,
+      );
     },
+  });
+}
+
+async function sendK8sRequest(request: k8s.RequestContext): Promise<k8s.ResponseContext> {
+  const url = new URL(request.getUrl());
+  const method = request.getHttpMethod().toString();
+  const body = request.getBody();
+  const agent = request.getAgent() as http.Agent | https.Agent | undefined;
+
+  const outgoing: http.OutgoingHttpHeaders = {};
+  for (const [key, value] of Object.entries(request.getHeaders())) {
+    if (value == null) continue;
+    // Preserve string[] so Node emits repeated headers (Impersonate-Group)
+    outgoing[key] = value as string | string[] | number;
+  }
+
+  const transport = url.protocol === "https:" ? https : http;
+  const opts: https.RequestOptions = {
+    protocol: url.protocol,
+    hostname: url.hostname,
+    port: url.port || undefined,
+    path: `${url.pathname}${url.search}`,
+    method,
+    headers: outgoing,
+    agent,
+  };
+
+  const res = await new Promise<http.IncomingMessage>((resolve, reject) => {
+    const req = transport.request(opts, resolve);
+    req.on("error", reject);
+    if (body != null && body !== "") {
+      if (typeof body === "string" || Buffer.isBuffer(body)) {
+        req.write(body);
+      } else {
+        req.write(String(body));
+      }
+    }
+    req.end();
+  });
+
+  const chunks: Buffer[] = [];
+  for await (const chunk of res) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  const buf = Buffer.concat(chunks);
+
+  const headers: { [key: string]: string } = {};
+  for (const [key, value] of Object.entries(res.headers)) {
+    if (value == null) continue;
+    headers[key] = Array.isArray(value) ? value.join(", ") : value;
+  }
+
+  return new k8s.ResponseContext(res.statusCode ?? 0, headers, {
+    text: async () => buf.toString("utf8"),
+    binary: async () => buf,
   });
 }
 
@@ -318,51 +331,57 @@ export async function k8sFetch(
           : String(init.body);
 
   const transport = url.protocol === "https:" ? https : http;
+  const info = requestInfoFromUrl(String(opts.method ?? "GET"), url.toString());
 
-  return new Promise((resolve, reject) => {
-    const req = transport.request(url, opts, (res) => {
-      const chunks: Buffer[] = [];
-      res.on("data", (chunk: Buffer) => chunks.push(chunk));
-      res.on("end", () => {
-        const buf = Buffer.concat(chunks);
-        const responseHeaders = new Headers();
-        for (const [key, value] of Object.entries(res.headers)) {
-          if (value == null) continue;
-          if (Array.isArray(value)) {
-            for (const v of value) responseHeaders.append(key, v);
-          } else {
-            responseHeaders.set(key, value);
-          }
+  return timedRequest(
+    info,
+    () =>
+      new Promise<Response>((resolve, reject) => {
+        const req = transport.request(url, opts, (res) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (chunk: Buffer) => chunks.push(chunk));
+          res.on("end", () => {
+            const buf = Buffer.concat(chunks);
+            const responseHeaders = new Headers();
+            for (const [key, value] of Object.entries(res.headers)) {
+              if (value == null) continue;
+              if (Array.isArray(value)) {
+                for (const v of value) responseHeaders.append(key, v);
+              } else {
+                responseHeaders.set(key, value);
+              }
+            }
+            resolve(
+              new Response(buf, {
+                status: res.statusCode ?? 0,
+                statusText: res.statusMessage,
+                headers: responseHeaders,
+              }),
+            );
+          });
+        });
+
+        req.on("error", (err) => {
+          const cause =
+            err instanceof Error && "cause" in err
+              ? (err as Error & { cause?: unknown }).cause
+              : undefined;
+          const detail =
+            cause instanceof Error
+              ? cause.message
+              : err instanceof Error
+                ? err.message
+                : String(err);
+          reject(new Error(`Kubernetes request failed: ${detail}`, { cause: err }));
+        });
+
+        if (body != null) {
+          req.write(body);
         }
-        resolve(
-          new Response(buf, {
-            status: res.statusCode ?? 0,
-            statusText: res.statusMessage,
-            headers: responseHeaders,
-          }),
-        );
-      });
-    });
-
-    req.on("error", (err) => {
-      const cause =
-        err instanceof Error && "cause" in err
-          ? (err as Error & { cause?: unknown }).cause
-          : undefined;
-      const detail =
-        cause instanceof Error
-          ? cause.message
-          : err instanceof Error
-            ? err.message
-            : String(err);
-      reject(new Error(`Kubernetes request failed: ${detail}`, { cause: err }));
-    });
-
-    if (body != null) {
-      req.write(body);
-    }
-    req.end();
-  });
+        req.end();
+      }),
+    (res) => res.status,
+  );
 }
 
 export function httpErrorMessage(status: number, body: string): string {

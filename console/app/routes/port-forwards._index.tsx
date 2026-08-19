@@ -63,6 +63,7 @@ import { deletePortForward, listPortForwards } from "~/vpcs/vpcs.server";
 import { useRefresh } from "~/lib/refresh";
 import type { BulkActionResult, BulkActionSummary, PortForwardSummary } from "~/lib/types";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Port Forwards · kmc" }];
@@ -133,9 +134,9 @@ function parsePortForwardBulkTargets(raw: FormDataEntryValue | null): {
   }
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ request }: Route.LoaderArgs) => {
   return listPortForwards(clusterFromRequest(request));
-}
+});
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();

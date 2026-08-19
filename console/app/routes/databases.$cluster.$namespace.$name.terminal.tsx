@@ -9,6 +9,7 @@ import {
 } from "~/lib/format";
 import { StatusBadge } from "~/ui/status-badge";
 import { getDatabase } from "~/databases/databases.server";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 /** Client-only terminal props (mirrored to avoid SSR import of xterm). */
 type PsqlConsoleStatus = "connecting" | "open" | "closed" | "error";
@@ -29,14 +30,14 @@ export function meta({ params }: Route.MetaArgs) {
   return [{ title: `psql · ${params.name ?? "Database"} · kmc` }];
 }
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
   const db = await getDatabase(cluster, namespace, name);
   return { db };
-}
+});
 
 function statusColor(status: PsqlConsoleStatus): string {
   switch (status) {

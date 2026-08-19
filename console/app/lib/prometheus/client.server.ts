@@ -3,6 +3,8 @@
  * Server-only — base URL (+ optional SA JWT) comes from the cluster registry.
  */
 
+import { requestInfoFromUrl, timedRequest } from "~/lib/request-traces.server";
+
 export type PromClient = {
   url: string;
   /** Platform SA token; sent as Bearer for edge-sso JWT policies. */
@@ -57,19 +59,23 @@ async function promFetch<T>(
   try {
     // Do not follow redirects: SSO/oauth2-proxy frontends 302 to login pages,
     // and those often respond 406 to Accept: application/json (GitHub OAuth).
-    const res = await fetch(url, {
-      signal: controller.signal,
-      headers: requestHeaders(client.token),
-      redirect: "manual",
-    });
+    const res = await timedRequest(
+      requestInfoFromUrl("GET", url.toString()),
+      () =>
+        fetch(url, {
+          signal: controller.signal,
+          headers: requestHeaders(client.token),
+          redirect: "manual",
+        }),
+      (r) => r.status,
+    );
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get("location") ?? "";
-      const hint =
-        /oauth|sso|login/i.test(location)
-          ? client.token
-            ? " (SSO frontend rejected the cluster SA JWT — allowlist kmc-system/kmc on the Prom/AM SecurityPolicy)"
-            : " (SSO frontend — send the cluster SA token as Bearer, or set prometheusUrl to an in-cluster Prometheus service)"
-          : "";
+      const hint = /oauth|sso|login/i.test(location)
+        ? client.token
+          ? " (SSO frontend rejected the cluster SA JWT — allowlist kmc-system/kmc on the Prom/AM SecurityPolicy)"
+          : " (SSO frontend — send the cluster SA token as Bearer, or set prometheusUrl to an in-cluster Prometheus service)"
+        : "";
       throw new Error(
         `Prometheus redirected HTTP ${res.status}${location ? ` → ${location.slice(0, 160)}` : ""}${hint}`,
       );

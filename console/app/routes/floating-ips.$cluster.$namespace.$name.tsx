@@ -29,19 +29,20 @@ import {
   getFloatingIp,
   releaseFloatingIp,
 } from "~/vpcs/vpcs.server";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `${params.name ?? "Floating IP"} · Floating IP · kmc` }];
 }
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
   const fip = await getFloatingIp(cluster, namespace, name);
   return { fip };
-}
+});
 
 export async function action({ request, params }: Route.ActionArgs) {
   const { cluster, namespace, name } = params;

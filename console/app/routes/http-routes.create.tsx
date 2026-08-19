@@ -42,6 +42,7 @@ import type {
   GatewayOption,
   HttpRoutePathType,
 } from "~/lib/types";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 type VmOption = {
   name: string;
@@ -63,7 +64,7 @@ export function meta(_args: Route.MetaArgs) {
   return [{ title: "Create HTTP Route · kmc" }];
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ request }: Route.LoaderArgs) => {
   const url = new URL(request.url);
   const cluster = getSearchParam(url.searchParams, "cluster") ?? "";
   let existingBackends: BackendSummary[] = [];
@@ -86,7 +87,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       existingService: getSearchParam(url.searchParams, "existingService") ?? "",
     },
   };
-}
+});
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();

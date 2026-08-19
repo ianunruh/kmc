@@ -31,12 +31,13 @@ import {
 } from "~/databases/options";
 import { listClusters } from "~/vms/vms.server";
 import type { ClusterCatalog, DatabaseSizePreset } from "~/lib/types";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Create Database · kmc" }];
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ request }: Route.LoaderArgs) => {
   const url = new URL(request.url);
   return {
     clusters: await listClusters(),
@@ -46,7 +47,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       name: getSearchParam(url.searchParams, "name") ?? "",
     },
   };
-}
+});
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();

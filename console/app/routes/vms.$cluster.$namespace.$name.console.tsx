@@ -6,6 +6,7 @@ import type { Route } from "./+types/vms.$cluster.$namespace.$name.console";
 import { canOpenConsole, vmPath, vmTerminalPath } from "~/lib/format";
 import { StatusBadge } from "~/ui/status-badge";
 import { getVm } from "~/vms/vms.server";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 /** Client-only terminal props (mirrored to avoid SSR import of xterm). */
 type SerialConsoleStatus = "connecting" | "open" | "closed" | "error";
@@ -26,14 +27,14 @@ export function meta({ params }: Route.MetaArgs) {
   return [{ title: `Console · ${params.name ?? "VM"} · kmc` }];
 }
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
   const vm = await getVm(cluster, namespace, name);
   return { vm };
-}
+});
 
 function statusColor(status: SerialConsoleStatus): string {
   switch (status) {

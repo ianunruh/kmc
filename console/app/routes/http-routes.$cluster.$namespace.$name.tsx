@@ -28,19 +28,20 @@ import {
 import { deleteHttpRoute, getHttpRoute } from "~/httproutes/httproutes.server";
 import { membershipModeLabel } from "~/backends/membership";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `${params.name ?? "HTTP Route"} · kmc` }];
 }
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
   const route = await getHttpRoute(cluster, namespace, name);
   return { route };
-}
+});
 
 export async function action({ request, params }: Route.ActionArgs) {
   const { cluster, namespace, name } = params;

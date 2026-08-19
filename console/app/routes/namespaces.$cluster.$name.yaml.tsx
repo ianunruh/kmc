@@ -5,17 +5,18 @@ import { DetailSection, YamlPanel } from "~/ui";
 import { getNamespaceYaml } from "~/namespaces/namespaces.server";
 import { VM_ALLOWED_LABEL } from "~/lib/k8s/constants";
 import type { loader as detailLoader } from "./namespaces.$cluster.$name";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 const LAYOUT_ID = "routes/namespaces.$cluster.$name";
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, name } = params;
   if (!cluster || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
   const yaml = await getNamespaceYaml(cluster, name);
   return { yaml };
-}
+});
 
 export default function NamespaceYamlTab({ loaderData }: Route.ComponentProps) {
   const data = useRouteLoaderData(LAYOUT_ID) as Awaited<

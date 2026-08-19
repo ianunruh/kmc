@@ -3,8 +3,9 @@ import type { Route } from "./+types/vms.$cluster.$namespace.$name.yaml";
 import { DetailSection, YamlPanel } from "~/ui";
 import { getCustomObjectYaml } from "~/lib/k8s/yaml.server";
 import { interestingAnnotations, useVmDetail } from "~/vms/vm-detail-shared";
+import { tracedLoader } from "~/lib/request-traces.server";
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
@@ -20,7 +21,7 @@ export async function loader({ params }: Route.LoaderArgs) {
   });
 
   return { yaml };
-}
+});
 
 export default function VmYamlTab({ loaderData }: Route.ComponentProps) {
   const { vm } = useVmDetail();

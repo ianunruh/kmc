@@ -11,12 +11,13 @@ import {
   getClusterInstanceType,
   updateClusterInstanceType,
 } from "~/instancetypes/instancetypes.server";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `Edit ${params.name ?? "instance type"} · kmc` }];
 }
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, name } = params;
   if (!cluster || !name) {
     throw new Response("Missing path params", { status: 400 });
@@ -27,7 +28,7 @@ export async function loader({ params }: Route.LoaderArgs) {
     throw redirect(instanceTypePath({ cluster, name }));
   }
   return { it };
-}
+});
 
 export async function action({ request, params }: Route.ActionArgs) {
   const { cluster, name } = params;

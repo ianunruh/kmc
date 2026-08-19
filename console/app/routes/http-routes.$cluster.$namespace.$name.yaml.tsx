@@ -4,17 +4,18 @@ import type { Route } from "./+types/http-routes.$cluster.$namespace.$name.yaml"
 import { DetailSection, YamlPanel } from "~/ui";
 import { getHttpRouteYaml } from "~/httproutes/httproutes.server";
 import type { loader as detailLoader } from "./http-routes.$cluster.$namespace.$name";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 const LAYOUT_ID = "routes/http-routes.$cluster.$namespace.$name";
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
   const yaml = await getHttpRouteYaml(cluster, namespace, name);
   return { yaml };
-}
+});
 
 export default function HttpRouteYamlTab({ loaderData }: Route.ComponentProps) {
   const data = useRouteLoaderData(LAYOUT_ID) as Awaited<

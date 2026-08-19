@@ -52,6 +52,7 @@ import type {
   CreateVmRequest,
   NetworkInfo,
 } from "~/lib/types";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 const MAX_NETWORK_ATTACHMENTS = 8;
 
@@ -59,7 +60,7 @@ export function meta(_args: Route.MetaArgs) {
   return [{ title: "Launch VM · kmc" }];
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ request }: Route.LoaderArgs) => {
   const clusters = await listClusters();
   const session = getRequestSession();
   const { keys: sshKeys, error: sshKeysError } = await listSshKeysOrEmpty(
@@ -91,7 +92,7 @@ export async function loader({ request }: Route.LoaderArgs) {
         "",
     },
   };
-}
+});
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();

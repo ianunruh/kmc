@@ -37,6 +37,7 @@ import type {
   BackendMembershipMode,
   BackendPortProtocol,
 } from "~/lib/types";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 type VmOption = {
   name: string;
@@ -51,14 +52,14 @@ export function meta({ params }: Route.MetaArgs) {
   return [{ title: `Edit ${params.name ?? "load balancer"} · kmc` }];
 }
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
   const lb = await getLoadBalancer(cluster, namespace, name);
   return { lb };
-}
+});
 
 export async function action({ request, params }: Route.ActionArgs) {
   const { cluster, namespace, name } = params;

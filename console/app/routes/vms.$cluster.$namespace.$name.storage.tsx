@@ -70,8 +70,9 @@ import {
   type VmDetailActionResult,
 } from "~/vms/vm-detail-shared";
 import { attachVmDisk, detachVmDisk } from "~/vms/vms.server";
+import { tracedLoader } from "~/lib/request-traces.server";
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
@@ -92,7 +93,7 @@ export async function loader({ params }: Route.LoaderArgs) {
   }
 
   return { snapshots, schedule };
-}
+});
 
 export async function action({ request, params }: Route.ActionArgs) {
   const { cluster, namespace, name } = params;

@@ -16,19 +16,20 @@ import {
 } from "~/lib/format";
 import { deleteImage, getImage } from "~/images/images.server";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `${params.name ?? "Image"} · kmc` }];
 }
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, name } = params;
   if (!cluster || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
   const image = await getImage(cluster, name);
   return { image };
-}
+});
 
 export async function action({ request, params }: Route.ActionArgs) {
   const { cluster, name } = params;

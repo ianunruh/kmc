@@ -41,6 +41,7 @@ import type {
   BackendPortProtocol,
   ClusterCatalog,
 } from "~/lib/types";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 type VmOption = {
   name: string;
@@ -55,7 +56,7 @@ export function meta(_args: Route.MetaArgs) {
   return [{ title: "Create Load Balancer · kmc" }];
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ request }: Route.LoaderArgs) => {
   const url = new URL(request.url);
   return {
     clusters: await listClusters(),
@@ -69,7 +70,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       protocol: getSearchParam(url.searchParams, "protocol") ?? "",
     },
   };
-}
+});
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();

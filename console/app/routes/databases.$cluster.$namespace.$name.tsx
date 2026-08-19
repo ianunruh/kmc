@@ -29,12 +29,13 @@ import {
 import { deleteDatabase, getDatabase } from "~/databases/databases.server";
 import { hasClusterPrometheus } from "~/lib/k8s/cluster-config.server";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `${params.name ?? "Database"} · kmc` }];
 }
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
@@ -44,7 +45,7 @@ export async function loader({ params }: Route.LoaderArgs) {
     db,
     prometheusConfigured: hasClusterPrometheus(cluster),
   };
-}
+});
 
 export async function action({ request, params }: Route.ActionArgs) {
   const { cluster, namespace, name } = params;

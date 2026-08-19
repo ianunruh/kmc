@@ -9,12 +9,13 @@ import { logServerError } from "~/lib/errors";
 import { imagePath } from "~/lib/format";
 import { getImage, updateImagePreference } from "~/images/images.server";
 import { getClusterCatalog } from "~/lib/k8s/catalog.server";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `Edit ${params.name ?? "image"} · kmc` }];
 }
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, name } = params;
   if (!cluster || !name) {
     throw new Response("Missing path params", { status: 400 });
@@ -27,7 +28,7 @@ export async function loader({ params }: Route.LoaderArgs) {
     image,
     preferences: catalog?.preferences.map((p) => p.name) ?? [],
   };
-}
+});
 
 export async function action({ request, params }: Route.ActionArgs) {
   const { cluster, name } = params;

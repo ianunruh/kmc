@@ -4,10 +4,11 @@ import type { Route } from "./+types/images.$cluster.$name.yaml";
 import { DetailSection, YamlPanel } from "~/ui";
 import { getImageYaml } from "~/images/images.server";
 import type { loader as detailLoader } from "./images.$cluster.$name";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 const LAYOUT_ID = "routes/images.$cluster.$name";
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, name } = params;
   if (!cluster || !name) {
     throw new Response("Missing path params", { status: 400 });
@@ -15,7 +16,7 @@ export async function loader({ params }: Route.LoaderArgs) {
 
   const yaml = await getImageYaml(cluster, name);
   return { yaml };
-}
+});
 
 export default function ImageYamlTab({ loaderData }: Route.ComponentProps) {
   const data = useRouteLoaderData(LAYOUT_ID) as Awaited<ReturnType<typeof detailLoader>>;

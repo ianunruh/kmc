@@ -10,17 +10,18 @@ import { imagePath, validateDns1123Label } from "~/lib/format";
 import { createImage, getImageNamespace } from "~/images/images.server";
 import { listClusters } from "~/vms/vms.server";
 import type { ClusterCatalog, CreateImageRequest } from "~/lib/types";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Import Image · kmc" }];
 }
 
-export async function loader() {
+export const loader = tracedLoader(async () => {
   return {
     clusters: await listClusters(),
     imageNamespace: getImageNamespace(),
   };
-}
+});
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();

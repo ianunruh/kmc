@@ -18,18 +18,19 @@ import { logServerError } from "~/lib/errors";
 import { vpcPath } from "~/lib/format";
 import { getVpc, updateVpc } from "~/vpcs/vpcs.server";
 import type { UpdateVpcRequest } from "~/lib/types";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta({ params }: Route.MetaArgs) {
   return [{ title: `Edit ${params.name ?? "VPC"} · kmc` }];
 }
 
-export async function loader({ params }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ params }: Route.LoaderArgs) => {
   const { cluster, namespace, name } = params;
   if (!cluster || !namespace || !name) {
     throw new Response("Missing path params", { status: 400 });
   }
   return { vpc: await getVpc(cluster, namespace, name) };
-}
+});
 
 export async function action({ request, params }: Route.ActionArgs) {
   const { cluster, namespace, name } = params;

@@ -7,12 +7,13 @@ import { isImpersonateMode } from "~/lib/auth/mode.server";
 import { safeReturnTo } from "~/lib/auth/paths.server";
 import { getSession } from "~/lib/auth/session.server";
 import { ConsolePaper } from "~/ui";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Sign in · kmc" }];
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ request }: Route.LoaderArgs) => {
   const session = await getSession(request).catch(() => null);
   if (session?.user) {
     throw redirect("/");
@@ -30,7 +31,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     impersonateMode: isImpersonateMode(),
     allowedOrgs,
   };
-}
+});
 
 export default function LoginPage({ loaderData }: Route.ComponentProps) {
   const { error, returnTo, impersonateMode, allowedOrgs } = loaderData;

@@ -46,14 +46,15 @@ import type { BulkActionResult, RouterSummary } from "~/lib/types";
 import { resourceKey, useRowSelection } from "~/lib/use-row-selection";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
 import { deleteRouter, listRouters } from "~/vpcs/routers.server";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Routers · kmc" }];
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ request }: Route.LoaderArgs) => {
   return listRouters(clusterFromRequest(request) ?? undefined);
-}
+});
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();

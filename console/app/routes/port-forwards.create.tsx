@@ -19,12 +19,13 @@ import { logServerError } from "~/lib/errors";
 import { portForwardsListPath, vpcPath } from "~/lib/format";
 import { getSearchParam } from "~/lib/search-params";
 import { createPortForward, listPortForwardEligibleVpcs } from "~/vpcs/vpcs.server";
+import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta(_args: Route.MetaArgs) {
   return [{ title: "Create port forward · kmc" }];
 }
 
-export async function loader({ request }: Route.LoaderArgs) {
+export const loader = tracedLoader(async ({ request }: Route.LoaderArgs) => {
   const url = new URL(request.url);
   const eligible = await listPortForwardEligibleVpcs();
   return {
@@ -40,7 +41,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       protocol: getSearchParam(url.searchParams, "protocol") ?? "tcp",
     },
   };
-}
+});
 
 export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();
