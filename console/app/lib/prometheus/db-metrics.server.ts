@@ -1,8 +1,9 @@
-import { getClusterPrometheusUrl } from "~/lib/k8s/cluster-config.server";
+import { getClusterPrometheus } from "~/lib/k8s/cluster-config.server";
 import type { ClusterId } from "~/lib/types";
 import {
   promEscapeLabel,
   promQueryRange,
+  type PromClient,
   type PromRangeSample,
 } from "./client.server";
 import type {
@@ -99,24 +100,24 @@ function emptyCharts(): DatabaseMetricsSnapshot["charts"] {
 }
 
 async function queryRange(
-  promUrl: string,
+  client: PromClient,
   query: string,
   start: number,
   end: number,
   step: number,
 ): Promise<SeriesPoint[]> {
-  const samples = await promQueryRange(promUrl, query, start, end, step);
+  const samples = await promQueryRange(client, query, start, end, step);
   return sumSeries(samples);
 }
 
 async function queryRangeMax(
-  promUrl: string,
+  client: PromClient,
   query: string,
   start: number,
   end: number,
   step: number,
 ): Promise<SeriesPoint[]> {
-  const samples = await promQueryRange(promUrl, query, start, end, step);
+  const samples = await promQueryRange(client, query, start, end, step);
   return maxSeries(samples);
 }
 
@@ -146,8 +147,8 @@ export async function getDatabaseMetrics(opts: {
     charts: emptyCharts(),
   };
 
-  const promUrl = getClusterPrometheusUrl(opts.cluster);
-  if (!promUrl) {
+  const prom = getClusterPrometheus(opts.cluster);
+  if (!prom) {
     return base;
   }
   base.configured = true;
@@ -197,22 +198,22 @@ export async function getDatabaseMetrics(opts: {
       tupUpdated,
       tupDeleted,
     ] = await Promise.all([
-      queryRange(promUrl, queries.connections, start, end, cfg.stepSec),
-      queryRange(promUrl, queries.connectionsActive, start, end, cfg.stepSec),
-      queryRange(promUrl, queries.connectionsIdle, start, end, cfg.stepSec),
-      queryRange(promUrl, queries.connectionsWaiting, start, end, cfg.stepSec),
-      queryRange(promUrl, queries.commits, start, end, cfg.stepSec),
-      queryRange(promUrl, queries.rollbacks, start, end, cfg.stepSec),
-      queryRange(promUrl, queries.size, start, end, cfg.stepSec),
-      queryRangeMax(promUrl, queries.lag, start, end, cfg.stepSec),
-      queryRange(promUrl, queries.cpu, start, end, cfg.stepSec),
-      queryRange(promUrl, queries.memory, start, end, cfg.stepSec),
-      queryRange(promUrl, queries.blksHit, start, end, cfg.stepSec),
-      queryRange(promUrl, queries.blksRead, start, end, cfg.stepSec),
-      queryRange(promUrl, queries.tupFetched, start, end, cfg.stepSec),
-      queryRange(promUrl, queries.tupInserted, start, end, cfg.stepSec),
-      queryRange(promUrl, queries.tupUpdated, start, end, cfg.stepSec),
-      queryRange(promUrl, queries.tupDeleted, start, end, cfg.stepSec),
+      queryRange(prom, queries.connections, start, end, cfg.stepSec),
+      queryRange(prom, queries.connectionsActive, start, end, cfg.stepSec),
+      queryRange(prom, queries.connectionsIdle, start, end, cfg.stepSec),
+      queryRange(prom, queries.connectionsWaiting, start, end, cfg.stepSec),
+      queryRange(prom, queries.commits, start, end, cfg.stepSec),
+      queryRange(prom, queries.rollbacks, start, end, cfg.stepSec),
+      queryRange(prom, queries.size, start, end, cfg.stepSec),
+      queryRangeMax(prom, queries.lag, start, end, cfg.stepSec),
+      queryRange(prom, queries.cpu, start, end, cfg.stepSec),
+      queryRange(prom, queries.memory, start, end, cfg.stepSec),
+      queryRange(prom, queries.blksHit, start, end, cfg.stepSec),
+      queryRange(prom, queries.blksRead, start, end, cfg.stepSec),
+      queryRange(prom, queries.tupFetched, start, end, cfg.stepSec),
+      queryRange(prom, queries.tupInserted, start, end, cfg.stepSec),
+      queryRange(prom, queries.tupUpdated, start, end, cfg.stepSec),
+      queryRange(prom, queries.tupDeleted, start, end, cfg.stepSec),
     ]);
 
     // Cache hit ratio as a derived series (hit / (hit + read)).

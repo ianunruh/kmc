@@ -218,8 +218,10 @@ clusters:
     caData: LS0t...
     tokenFile: config/secrets/homelab.token
     # Optional — enables VM/database metrics graphs (KubeVirt / CNPG)
-    # Prefer in-cluster URLs when the public hostname is SSO-gated:
+    # Prefer in-cluster URLs when kmc runs in the same cluster:
     #   http://kube-prometheus-stack-prometheus.monitoring.svc:9090
+    # Cross-cluster: the edge-sso hostname works if kmc sends this cluster's
+    # SA token as Bearer (allowlist kmc-system/kmc on the Prom/AM SecurityPolicy).
     prometheusUrl: https://prometheus.example.com
     # Optional — public S3 API for Object Storage (ObjectBucketClaim) UI
     # e.g. https://s3.kcloud.zone (homelab), https://s3.kcloud.io (prod)

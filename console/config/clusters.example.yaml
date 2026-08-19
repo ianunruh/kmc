@@ -27,9 +27,10 @@ clusters:
     caData: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUMvakNDQWVhZ0F3SUJBZ0lCQURBTkJna3Foa2lHOXcwQkFRc0ZBREFWTVJNd0VRWURWUVFERXdwcmRXSmwKY201bGRHVnpNQjRYRFRJek1Ea3lOakF5TVRJMU4xb1hEVE16TURreU16QXlNVEkxTjFvd0ZURVRNQkVHQTFVRQpBeE1LYTNWaVpYSnVaWFJsY3pDQ0FTSXdEUVlKS29aSWh2Y05BUUVCQlFBRGdnRVBBRENDQVFvQ2dnRUJBSjRPCitqT0lnYUxQLzhQQWYrbXlFdGlMa3ZWMW0zU3Q3TWE4NTA2Z0VhSEo2bllIZElVaFBMTnluSHUwMkljQ3lWYUMKY0dTZVc2c1FUMmhUeVBFME5BMnd0c0Q1a3JVbXRwclhSaVFQWHpKN3BQSSs3cmZrRFNaSVRHeEdHbiswUE1oTQptQXdZOElkTEo0cytXZHlERVVqOUk0REUrNThxank4Zk9KWTR2WHp0dklMaW1RQThrQUk3UFliVG11V2Q1VFRHCmhEcG9wdW1BL3hoRnZCbThBQXM5TVBUK2FEcWNuUFk0eE9pcDIzT0kwaTNmVFZUdXJFbG44RFNKTFlORm95T3MKOFRPY1ZDVGIwcko1c1FXbHUzWEhDL1RqV1FBWFo0blJ3S2lQdUtQRFdTVkNXL2V2SHlROEFvekFROExZS253QgpDYlkwdjJsQjl5RXFGdDNXVmdFQ0F3RUFBYU5aTUZjd0RnWURWUjBQQVFIL0JBUURBZ0trTUE4R0ExVWRFd0VCCi93UUZNQU1CQWY4d0hRWURWUjBPQkJZRUZERDd5bUtDK0JjTVYzdUQ5SUk3dWZGdWpMTEJNQlVHQTFVZEVRUU8KTUF5Q0NtdDFZbVZ5Ym1WMFpYTXdEUVlKS29aSWh2Y05BUUVMQlFBRGdnRUJBQ0xDcjl6UE8wMHptZlVLcW1sRwprNEhOUWVQd292aGN6N3prWG9IWjJQZVlJSkJaVVhCSFBTNWdxamhWZ0RqOUNHd2YyOCt4OEwyVCsyWll6VGlOCkpqUi9Ya2VTR3VhMVV5MDMrRzFBRDhVOE1LNjkxZTQ3WFVvaTFlc2twb0RGcjJ2T1pIN1dpYjNQT3h6N1EwTkkKVHltS1did3pDVFBMMzV0dTQ4WlpISFhFWHYvMU9pb21GSmZRWjNBUkhhc0JKMnZ5VDRxWElFSFpDWThLamh0VQpaS0MxYVZsWkZaZmFVZEtKb1dEck5BdTlHTmdlaHhnMnlIandSVkVva3VzcXJnV1cvb25GRS9KalpweVhKYjBFCnJVUUlscjJJLzcyTkpvZUJwVFZKK25pSTZ1Tk5vaTIzR2dpdXp3ODVPbW43Y0swVHVlajRLdXJ5NDdXWlJ0SE8KY3p3PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==
     tokenFile: config/secrets/homelab.token
     # Optional: enables VM/database metrics graphs on detail pages.
-    # Prefer an in-cluster URL when the external hostname is behind SSO
-    # (oauth2-proxy cannot serve the Prometheus HTTP API for kmc).
-    # e.g. http://kube-prometheus-stack-prometheus.monitoring.svc:9090
+    # Prefer an in-cluster URL when kmc runs in the same cluster:
+    #   http://kube-prometheus-stack-prometheus.monitoring.svc:9090
+    # Cross-cluster: the edge-sso hostname works if kmc sends this cluster's
+    # SA token as Bearer (allowlist kmc-system/kmc on the Prom/AM SecurityPolicy).
     prometheusUrl: https://prometheus.k8s.kcloud.zone
     # Optional: public S3 API base URL for Object Storage (ObjectBucketClaim) UI
     objectStorageEndpoint: https://s3.kcloud.zone

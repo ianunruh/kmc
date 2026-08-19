@@ -94,7 +94,11 @@ export type ClusterIdentity = {
   token?: string;
   tokenFile?: string;
   tokenEnv?: string;
-  /** Base URL for Prometheus HTTP API (e.g. https://prometheus.example.com). */
+  /**
+   * Base URL for Prometheus HTTP API (e.g. https://prometheus.example.com).
+   * When the hostname is behind edge-sso, kmc sends the platform SA token as
+   * Bearer (allowlist `kmc-system/kmc` on the SecurityPolicy).
+   */
   prometheusUrl?: string;
   /**
    * Public S3 API base URL for ObjectBucketClaim access
@@ -245,10 +249,30 @@ export function clusterNetworkCidrList(network: ClusterNetworkConfig): {
   return { podCIDRs, serviceCIDRs };
 }
 
+export type ClusterPrometheus = {
+  url: string;
+  /** Platform SA token for edge-sso JWT; omitted in kubeconfig-only mode. */
+  token?: string;
+};
+
+/** Prometheus client config for a cluster, if configured. */
+export function getClusterPrometheus(id: ClusterId): ClusterPrometheus | null {
+  const identity = getClusterIdentity(id);
+  if (!identity) return null;
+  const url = identity.prometheusUrl?.trim();
+  if (!url) return null;
+  let token: string | undefined;
+  try {
+    token = resolveClusterToken(identity);
+  } catch {
+    // kubeconfig mode with no token/tokenFile/tokenEnv
+  }
+  return { url, token };
+}
+
 /** Prometheus base URL for a cluster, if configured. */
 export function getClusterPrometheusUrl(id: ClusterId): string | null {
-  const url = getClusterIdentity(id)?.prometheusUrl?.trim();
-  return url || null;
+  return getClusterPrometheus(id)?.url ?? null;
 }
 
 export function hasClusterPrometheus(id: ClusterId): boolean {

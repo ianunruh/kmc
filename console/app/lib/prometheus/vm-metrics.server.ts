@@ -1,4 +1,4 @@
-import { getClusterPrometheusUrl } from "~/lib/k8s/cluster-config.server";
+import { getClusterPrometheus } from "~/lib/k8s/cluster-config.server";
 import type { ClusterId } from "~/lib/types";
 import {
   promEscapeLabel,
@@ -86,8 +86,8 @@ export async function getVmMetrics(opts: {
     charts: emptyCharts(),
   };
 
-  const promUrl = getClusterPrometheusUrl(opts.cluster);
-  if (!promUrl) {
+  const prom = getClusterPrometheus(opts.cluster);
+  if (!prom) {
     return base;
   }
   base.configured = true;
@@ -124,7 +124,7 @@ export async function getVmMetrics(opts: {
     const rangeResults = await Promise.all(
       keys.map(async (key) => {
         const result = await promQueryRange(
-          promUrl,
+          prom,
           queries[key],
           start,
           end,
@@ -161,7 +161,7 @@ export async function getVmMetrics(opts: {
     let node: string | undefined = byKey.memResident[0]?.metric?.node;
     if (!node) {
       try {
-        const instant = await promQuery(promUrl, queries.node);
+        const instant = await promQuery(prom, queries.node);
         node = instant[0]?.metric?.node;
       } catch {
         // node is optional

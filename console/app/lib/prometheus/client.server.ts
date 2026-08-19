@@ -1,7 +1,13 @@
 /**
  * Minimal Prometheus HTTP API client (instant + range queries).
- * Server-only — base URL comes from the cluster registry.
+ * Server-only — base URL (+ optional SA JWT) comes from the cluster registry.
  */
+
+export type PromClient = {
+  url: string;
+  /** Platform SA token; sent as Bearer for edge-sso JWT policies. */
+  token?: string;
+};
 
 export type PromMetric = Record<string, string>;
 
@@ -29,13 +35,19 @@ function joinUrl(base: string, path: string): string {
   return `${b}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
+function requestHeaders(token?: string): Record<string, string> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
 async function promFetch<T>(
-  baseUrl: string,
+  client: PromClient,
   path: string,
   params: Record<string, string>,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<T> {
-  const url = new URL(joinUrl(baseUrl, path));
+  const url = new URL(joinUrl(client.url, path));
   for (const [k, v] of Object.entries(params)) {
     url.searchParams.set(k, v);
   }
@@ -47,14 +59,16 @@ async function promFetch<T>(
     // and those often respond 406 to Accept: application/json (GitHub OAuth).
     const res = await fetch(url, {
       signal: controller.signal,
-      headers: { Accept: "application/json" },
+      headers: requestHeaders(client.token),
       redirect: "manual",
     });
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers.get("location") ?? "";
       const hint =
         /oauth|sso|login/i.test(location)
-          ? " (SSO frontend — set prometheusUrl to an in-cluster Prometheus service instead)"
+          ? client.token
+            ? " (SSO frontend rejected the cluster SA JWT — allowlist kmc-system/kmc on the Prom/AM SecurityPolicy)"
+            : " (SSO frontend — send the cluster SA token as Bearer, or set prometheusUrl to an in-cluster Prometheus service)"
           : "";
       throw new Error(
         `Prometheus redirected HTTP ${res.status}${location ? ` → ${location.slice(0, 160)}` : ""}${hint}`,
@@ -82,14 +96,14 @@ async function promFetch<T>(
 }
 
 export async function promQuery(
-  baseUrl: string,
+  client: PromClient,
   query: string,
   time?: number,
 ): Promise<PromInstantSample[]> {
   const params: Record<string, string> = { query };
   if (time != null) params.time = String(time);
   const data = await promFetch<{ resultType: string; result: PromInstantSample[] }>(
-    baseUrl,
+    client,
     "/api/v1/query",
     params,
   );
@@ -97,14 +111,14 @@ export async function promQuery(
 }
 
 export async function promQueryRange(
-  baseUrl: string,
+  client: PromClient,
   query: string,
   start: number,
   end: number,
   step: number,
 ): Promise<PromRangeSample[]> {
   const data = await promFetch<{ resultType: string; result: PromRangeSample[] }>(
-    baseUrl,
+    client,
     "/api/v1/query_range",
     {
       query,
