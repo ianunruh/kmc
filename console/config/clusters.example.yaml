@@ -23,7 +23,7 @@ clusters:
       serviceCIDR: 10.96.0.0/12
       dnsIP: 10.96.0.10
     # Dev Boxes: Tailscale-reachable MetalLB SSH VIP + public Envoy OIDC IDE.
-    # IDE hosts attach to Gateway external listener https-public (*.kcloud.io).
+    # IDE hosts attach to Gateway external listener https (*.k8s.kcloud.io).
     # Each IDE box mints a Dex OAuth2Client CR (default namespace dex) and a
     # Secret in the VM namespace. Callers need create/delete on
     # oauth2clients.dex.coreos.com in that namespace
@@ -34,8 +34,8 @@ clusters:
     #   envoy:
     #     gatewayName: external
     #     gatewayNamespace: envoy-gateway-system
-    #     sectionName: https-public
-    #     hostTemplate: "%name%-%namespace%.kcloud.io"
+    #     sectionName: https
+    #     hostTemplate: "%name%-%namespace%.k8s.kcloud.io"
     #     oidc:
     #       issuer: https://dex.k8s.kcloud.io
     #       cookieDomain: kcloud.io
