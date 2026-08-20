@@ -76,6 +76,44 @@ export const KMC_MAX_BACKEND_GROUP_VMS = 32;
 /** Value of kmc.ianunruh.com/resource for CloudNativePG Cluster databases. */
 export const KMC_RESOURCE_DATABASE = "database";
 
+/** Value of kmc.ianunruh.com/resource for Dev Box VMs. */
+export const KMC_RESOURCE_DEVBOX = "devbox";
+/** SSH LoadBalancer companion for a Dev Box. */
+export const KMC_RESOURCE_DEVBOX_SSH = "devbox-ssh";
+/** HTTPRoute / SecurityPolicy companion for a Dev Box IDE. */
+export const KMC_RESOURCE_DEVBOX_IDE = "devbox-ide";
+
+/** Tenant namespace, used on objects that live outside it (Dex OAuth2Client). */
+export const KMC_LABEL_TENANT_NS = `${KMC_LABEL_NAMESPACE}/namespace`;
+
+/** Dev Box template id (ubuntu | ubuntu-docker | ubuntu-docker-code). */
+export const KMC_LABEL_TEMPLATE = `${KMC_LABEL_NAMESPACE}/template`;
+
+export const KMC_DEVBOX_LABEL_SELECTOR = `${MANAGED_BY_LABEL}=${KMC_MANAGED_BY},${KMC_LABEL_RESOURCE}=${KMC_RESOURCE_DEVBOX}`;
+
+/** Optional git clone URL stamped on a Dev Box. */
+export const KMC_ANN_REPO = `${KMC_LABEL_NAMESPACE}/repo`;
+/** Guest workspace path for VS Code / Cursor (e.g. /home/ubuntu/src/repo). */
+export const KMC_ANN_WORKSPACE_PATH = `${KMC_LABEL_NAMESPACE}/workspace-path`;
+
+/** Default MetalLB pool annotation key (override per cluster in clusters.yaml). */
+export const METALLB_ADDRESS_POOL_ANNOTATION = "metallb.io/address-pool";
+
+/** Envoy Gateway SecurityPolicy API. */
+export const ENVOY_GATEWAY_GROUP = "gateway.envoyproxy.io";
+export const ENVOY_GATEWAY_VERSION = "v1alpha1";
+export const SECURITY_POLICY_PLURAL = "securitypolicies";
+
+/** Dex kubernetes storage (OAuth2Client CRs). */
+export const DEX_API_GROUP = "dex.coreos.com";
+export const DEX_API_VERSION = "v1";
+export const DEX_OAUTH2CLIENT_PLURAL = "oauth2clients";
+export const DEX_OAUTH2CLIENT_KIND = "OAuth2Client";
+/** Default namespace Dex inCluster storage watches. */
+export const DEX_DEFAULT_NAMESPACE = "dex";
+/** Envoy Gateway OIDC client secret key. */
+export const ENVOY_OIDC_CLIENT_SECRET_KEY = "client-secret";
+
 /** Size preset stamped on kmc-managed databases (`small` | `medium` | `large`). */
 export const KMC_LABEL_SIZE = `${KMC_LABEL_NAMESPACE}/size`;
 

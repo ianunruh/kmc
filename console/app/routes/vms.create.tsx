@@ -2,6 +2,7 @@ import {
   ActionIcon,
   Alert,
   Button,
+  Code,
   Group,
   NumberInput,
   SegmentedControl,
@@ -77,6 +78,7 @@ export const loader = tracedLoader(async ({ request }: Route.LoaderArgs) => {
     })),
     sshKeysError: sshKeysError ?? null,
     signedIn: Boolean(session?.user),
+    ownerLogin: session?.user?.githubLogin ?? null,
     prefill: {
       cluster: url.searchParams.get("cluster")?.trim() || "",
       namespace: url.searchParams.get("namespace")?.trim() || "",
@@ -310,7 +312,7 @@ type DataVolumesFetcherData = {
 };
 
 export default function CreateVmPage({ loaderData, actionData }: Route.ComponentProps) {
-  const { clusters, sshKeys, sshKeysError, signedIn, prefill } = loaderData;
+  const { clusters, sshKeys, sshKeysError, signedIn, ownerLogin, prefill } = loaderData;
   const navigation = useNavigation();
   const submit = useSubmit();
   const [searchParams] = useSearchParams();
@@ -689,6 +691,15 @@ export default function CreateVmPage({ loaderData, actionData }: Route.Component
       <form onSubmit={onSubmit}>
         <Stack gap="md">
           <FormSection title="Placement">
+            {ownerLogin ? (
+              <Text size="sm" c="dimmed">
+                Owner: <Code>{ownerLogin}</Code> (stamped on create)
+              </Text>
+            ) : (
+              <Text size="sm" c="dimmed">
+                No signed-in GitHub user — this VM will have no owner annotation.
+              </Text>
+            )}
             <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
               <Select
                 label="Cluster"

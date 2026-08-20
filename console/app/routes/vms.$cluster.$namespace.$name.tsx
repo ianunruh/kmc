@@ -63,8 +63,10 @@ import {
   vmsListPath,
 } from "~/lib/format";
 import { hasClusterPrometheus } from "~/lib/k8s/cluster-config.server";
+import { getRequestSession } from "~/lib/auth/middleware.server";
 import type { VmLifecycleIntent } from "~/lib/types";
 import {
+  claimVmOwner,
   deleteVm,
   getVm,
   pauseVm,
@@ -77,10 +79,7 @@ import {
 import { createVmSnapshot } from "~/snapshots/snapshots.server";
 import { useRefresh } from "~/lib/refresh";
 import { useFetcherResult } from "~/lib/use-fetcher-result";
-import {
-  intentSuccessLabel,
-  type VmDetailActionResult,
-} from "~/vms/vm-detail-shared";
+import { intentSuccessLabel, type VmDetailActionResult } from "~/vms/vm-detail-shared";
 import { tracedLoader } from "~/lib/request-traces.server";
 
 export function meta({ params }: Route.MetaArgs) {
@@ -142,6 +141,14 @@ export async function action({ request, params }: Route.ActionArgs) {
         retainDisks,
         retainedDisks: result.retainedDisks,
       };
+    }
+    if (intent === "claim-owner") {
+      const login = getRequestSession()?.user?.githubLogin?.trim();
+      if (!login) {
+        return { ok: false, error: "Sign in to claim this VM", intent };
+      }
+      await claimVmOwner({ cluster, namespace, name, owner: login });
+      return { ok: true, intent };
     }
     if (intent === "create-snapshot") {
       const snapshotName = String(form.get("snapshotName") ?? "").trim() || undefined;
@@ -276,8 +283,7 @@ export default function VmDetailLayout({ loaderData }: Route.ComponentProps) {
 
   const vpcPrefill = vm.networks.find((n) => n.vpc)?.vpc;
   const hasPodNetwork =
-    vm.networks.length === 0 ||
-    vm.networks.some((n) => n.pod && !n.multusNetworkName);
+    vm.networks.length === 0 || vm.networks.some((n) => n.pod && !n.multusNetworkName);
 
   return (
     <Stack gap="md">
@@ -383,9 +389,7 @@ export default function VmDetailLayout({ loaderData }: Route.ComponentProps) {
                 leftSection={<IconPlayerStop size={14} />}
                 disabled={!canStop(vm) || busy}
                 title={
-                  vm.status === "Paused"
-                    ? "Unpause the VM before stopping"
-                    : undefined
+                  vm.status === "Paused" ? "Unpause the VM before stopping" : undefined
                 }
                 onClick={() => setConfirmIntent("stop")}
               >
@@ -591,6 +595,7 @@ export default function VmDetailLayout({ loaderData }: Route.ComponentProps) {
       <DetailTabs
         items={[
           { label: "Overview", to: vmTabPath(vm, "overview"), end: true },
+          { label: "Access", to: vmTabPath(vm, "access") },
           { label: "Networking", to: vmTabPath(vm, "networking") },
           { label: "Storage", to: vmTabPath(vm, "storage") },
           { label: "Events", to: vmTabPath(vm, "events") },

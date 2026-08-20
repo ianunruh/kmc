@@ -9,6 +9,9 @@ export default [
   route("me", "routes/me.tsx"),
   route("ssh-keys", "routes/ssh-keys.tsx"),
 
+  route("dev-boxes", "routes/dev-boxes._index.tsx"),
+  route("dev-boxes/create", "routes/dev-boxes.create.tsx"),
+
   route("vms/create", "routes/vms.create.tsx"),
   route(
     "vms/:cluster/:namespace/:name/edit",
@@ -24,6 +27,7 @@ export default [
   ),
   route("vms/:cluster/:namespace/:name", "routes/vms.$cluster.$namespace.$name.tsx", [
     index("routes/vms.$cluster.$namespace.$name._index.tsx"),
+    route("access", "routes/vms.$cluster.$namespace.$name.access.tsx"),
     route("networking", "routes/vms.$cluster.$namespace.$name.networking.tsx"),
     route("storage", "routes/vms.$cluster.$namespace.$name.storage.tsx"),
     route("events", "routes/vms.$cluster.$namespace.$name.events.tsx"),

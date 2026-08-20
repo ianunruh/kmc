@@ -11,6 +11,26 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
+/** Multiline copyable snippet (SSH config, one-liners). */
+export function CopyableBlock({
+  value,
+  label = "Copy",
+}: {
+  value: string;
+  label?: string;
+}) {
+  const text = value.trim();
+  if (!text) return null;
+  return (
+    <Group gap="xs" align="flex-start" wrap="nowrap">
+      <Code block style={{ flex: 1, whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
+        {text}
+      </Code>
+      <CopyButton value={text} label={label} />
+    </Group>
+  );
+}
+
 /** Compact copy button for addresses, hosts, VIP values. */
 export function CopyButton({
   value,
@@ -77,7 +97,11 @@ export function CopyableValue({
       {code ? (
         <Code style={{ wordBreak: "break-all" }}>{display ?? text}</Code>
       ) : (
-        <Text size={size} c={dimmed ? "dimmed" : undefined} style={{ wordBreak: "break-all" }}>
+        <Text
+          size={size}
+          c={dimmed ? "dimmed" : undefined}
+          style={{ wordBreak: "break-all" }}
+        >
           {display ?? text}
         </Text>
       )}

@@ -163,7 +163,8 @@ export function detailTabPath(base: string, tab: string = "overview"): string {
   return `${base}/${tab}`;
 }
 
-export type VmDetailTab = "overview" | "networking" | "storage" | "events" | "yaml";
+export type VmDetailTab =
+  "overview" | "access" | "networking" | "storage" | "events" | "yaml";
 
 /** Tab subpages under the VM detail layout (overview is the index URL). */
 export function vmTabPath(
@@ -317,9 +318,33 @@ export function vmsListPath(
     namespace?: string | null;
     status?: string | null;
     instancetype?: string | null;
+    owner?: string | null;
   } = {},
 ): string {
   return withSearch("/", filters);
+}
+
+export function devBoxesListPath(
+  filters: {
+    q?: string | null;
+    cluster?: string | null;
+    namespace?: string | null;
+    status?: string | null;
+    owner?: string | null;
+    template?: string | null;
+  } = {},
+): string {
+  return withSearch("/dev-boxes", filters);
+}
+
+export function devBoxCreatePath(
+  prefill: {
+    cluster?: string | null;
+    namespace?: string | null;
+    name?: string | null;
+  } = {},
+): string {
+  return withSearch("/dev-boxes/create", prefill);
 }
 
 export function dataVolumesListPath(

@@ -13,7 +13,7 @@ import {
 
 /** Ownership + membership labels for a kmc backend Service. */
 export function backendOwnershipLabels(
-  input: Pick<CreateBackendRequest, "membership" | "extraLabels">,
+  input: Pick<CreateBackendRequest, "membership" | "extraLabels" | "extraAnnotations">,
 ): Record<string, string> {
   return {
     [MANAGED_BY_LABEL]: KMC_MANAGED_BY,
@@ -27,7 +27,10 @@ export function buildServiceManifest(input: CreateBackendRequest) {
   const serviceType = input.serviceType ?? "ClusterIP";
   const selector = resolveServiceSelector(input.membership);
   const labels = backendOwnershipLabels(input);
-  const annotations = membershipAnnotations(input.membership);
+  const annotations = {
+    ...membershipAnnotations(input.membership),
+    ...(input.extraAnnotations ?? {}),
+  };
 
   if (!input.ports.length) {
     throw new Error("backend requires at least one port");

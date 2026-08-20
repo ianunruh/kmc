@@ -112,22 +112,24 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
 
   const visibleKeys = useMemo(() => vms.map(resourceKey), [vms]);
   const selection = useRowSelection(visibleKeys);
-  const { selected, selectedCount, clear, isSelected, toggle, toggleAllVisible, allSelected, someSelected } =
-    selection;
+  const {
+    selected,
+    selectedCount,
+    clear,
+    isSelected,
+    toggle,
+    toggleAllVisible,
+    allSelected,
+    someSelected,
+  } = selection;
 
   const selectedVms = useMemo(() => {
     if (selectedCount === 0) return [] as VmSummary[];
     return vms.filter((vm) => selected.has(resourceKey(vm)));
   }, [vms, selected, selectedCount]);
 
-  const startableSelected = useMemo(
-    () => selectedVms.filter(canStart),
-    [selectedVms],
-  );
-  const stoppableSelected = useMemo(
-    () => selectedVms.filter(canStop),
-    [selectedVms],
-  );
+  const startableSelected = useMemo(() => selectedVms.filter(canStart), [selectedVms]);
+  const stoppableSelected = useMemo(() => selectedVms.filter(canStop), [selectedVms]);
 
   useFetcherResult(fetcher, (data) => {
     if (isBulkActionResult(data)) {
@@ -256,11 +258,7 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
   return (
     <>
       <Stack gap="sm">
-        <BulkActionBar
-          selectedCount={selectedCount}
-          onClear={clear}
-          disabled={busy}
-        >
+        <BulkActionBar selectedCount={selectedCount} onClear={clear} disabled={busy}>
           <Tooltip
             label={
               startableSelected.length === 0
@@ -348,6 +346,7 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                 <Table.Th>Name</Table.Th>
                 <Table.Th>Cluster</Table.Th>
                 <Table.Th>Namespace</Table.Th>
+                <Table.Th>Owner</Table.Th>
                 <Table.Th>Status</Table.Th>
                 <Table.Th>IPv4</Table.Th>
                 <Table.Th>Instance type</Table.Th>
@@ -361,10 +360,7 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                 const key = resourceKey(vm);
                 const ipv4 = displayAllocatedIpv4(vm.allocatedIpv4);
                 return (
-                  <Table.Tr
-                    key={key}
-                    bg={isSelected(key) ? "dark.7" : undefined}
-                  >
+                  <Table.Tr key={key} bg={isSelected(key) ? "dark.7" : undefined}>
                     <Table.Td>
                       <Checkbox
                         aria-label={`Select ${vm.name}`}
@@ -398,6 +394,23 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                       </ResourceLink>
                     </Table.Td>
                     <Table.Td>
+                      {vm.owner ? (
+                        <ResourceLink
+                          to={vmsListPath({
+                            cluster: vm.cluster,
+                            owner: vm.owner,
+                          })}
+                          dimmed
+                        >
+                          {vm.owner}
+                        </ResourceLink>
+                      ) : (
+                        <Text size="sm" c="dimmed">
+                          —
+                        </Text>
+                      )}
+                    </Table.Td>
+                    <Table.Td>
                       <Group gap={6} wrap="nowrap">
                         <ResourceLink
                           to={vmsListPath({
@@ -424,11 +437,7 @@ export function VmTable({ vms }: { vms: VmSummary[] }) {
                     </Table.Td>
                     <Table.Td>
                       <Stack gap={2}>
-                        <Text
-                          size="sm"
-                          ff="monospace"
-                          c={ipv4 ? undefined : "dimmed"}
-                        >
+                        <Text size="sm" ff="monospace" c={ipv4 ? undefined : "dimmed"}>
                           {ipv4 ?? "—"}
                         </Text>
                         {vm.floatingIpv4 && vm.floatingIpv4.length > 0 ? (

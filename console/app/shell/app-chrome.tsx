@@ -23,6 +23,7 @@ import {
   IconRoute,
   IconRouter,
   IconServer,
+  IconTerminal2,
   IconTopologyStar3,
   IconUser,
   IconArrowsRightLeft,
@@ -56,6 +57,12 @@ const NAV_SECTIONS: NavSection[] = [
   {
     label: "Compute",
     items: [
+      {
+        to: "/dev-boxes",
+        label: "Dev Boxes",
+        icon: IconTerminal2,
+        match: (path: string) => path.startsWith("/dev-boxes"),
+      },
       {
         to: "/",
         label: "Virtual Machines",
@@ -123,7 +130,7 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    label: "VPC",
+    label: "Private Network",
     items: [
       {
         to: "/vpcs",

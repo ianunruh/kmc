@@ -1,5 +1,6 @@
 import {
   Badge,
+  Button,
   Code,
   Group,
   SimpleGrid,
@@ -7,25 +8,40 @@ import {
   Table,
   Text,
 } from "@mantine/core";
-import {
-  ClampedText,
-  DetailField,
-  DetailSection,
-  ResourceLink,
-} from "~/ui";
+import { useFetcher, useRouteLoaderData } from "react-router";
+import { ClampedText, DetailField, DetailSection, ResourceLink } from "~/ui";
+import type { RootLoaderData } from "~/root";
 import { StatusBadge } from "~/ui/status-badge";
 import {
   formatAge,
   formatDateTime,
   instanceTypePath,
   sizeLabel,
+  vmPath,
   vmsListPath,
 } from "~/lib/format";
+import { notifyActionError, notifyActionSuccess } from "~/lib/action-feedback";
+import { useRefresh } from "~/lib/refresh";
+import { useFetcherResult } from "~/lib/use-fetcher-result";
 import { VmMetricsPanel } from "~/vms/vm-metrics-panel";
-import { useVmDetail, volumeHref } from "~/vms/vm-detail-shared";
+import { intentSuccessLabel, useVmDetail, volumeHref } from "~/vms/vm-detail-shared";
 
 export default function VmOverviewTab() {
   const { vm, prometheusConfigured } = useVmDetail();
+  const claimFetcher = useFetcher<{ ok?: boolean; error?: string; intent?: string }>();
+  const { refreshNow } = useRefresh();
+  const root = useRouteLoaderData("root") as RootLoaderData | undefined;
+  const canClaim = Boolean(root?.user?.githubLogin) && !vm.owner;
+  const claiming = claimFetcher.state !== "idle";
+
+  useFetcherResult(claimFetcher, (data) => {
+    if (data.error) {
+      notifyActionError("Action failed", data.error, { intent: data.intent });
+    } else if (data.ok) {
+      notifyActionSuccess("Done", `VM ${intentSuccessLabel(data.intent)} succeeded`);
+      refreshNow();
+    }
+  });
 
   const rootVolume =
     vm.volumes.find((v) => v.kind === "DataVolume" && v.linkName) ?? null;
@@ -77,6 +93,37 @@ export default function VmOverviewTab() {
                 </ResourceLink>
               }
             />
+            <DetailField
+              label="Owner"
+              value={
+                vm.owner ? (
+                  <ResourceLink
+                    to={vmsListPath({ cluster: vm.cluster, owner: vm.owner })}
+                  >
+                    <Code>{vm.owner}</Code>
+                  </ResourceLink>
+                ) : canClaim ? (
+                  <Group gap="xs">
+                    <Text size="sm" c="dimmed">
+                      —
+                    </Text>
+                    <Button
+                      size="compact-xs"
+                      variant="light"
+                      loading={claiming}
+                      onClick={() =>
+                        claimFetcher.submit(
+                          { intent: "claim-owner" },
+                          { method: "post", action: vmPath(vm) },
+                        )
+                      }
+                    >
+                      Claim
+                    </Button>
+                  </Group>
+                ) : undefined
+              }
+            />
             <DetailField label="Node" value={vm.nodeName} />
             <DetailField label="Size" value={sizeLabel(vm)} />
             <DetailField
@@ -126,10 +173,7 @@ export default function VmOverviewTab() {
                 ) : undefined
               }
             />
-            <DetailField
-              label="UID"
-              value={vm.uid ? <Code>{vm.uid}</Code> : undefined}
-            />
+            <DetailField label="UID" value={vm.uid ? <Code>{vm.uid}</Code> : undefined} />
           </SimpleGrid>
         </DetailSection>
 

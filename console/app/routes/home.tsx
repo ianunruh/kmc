@@ -1,7 +1,7 @@
 import { Alert, Button, Select, Stack, TextInput } from "@mantine/core";
 import { IconPlus, IconSearch } from "@tabler/icons-react";
 import { useMemo } from "react";
-import { Link } from "react-router";
+import { Link, useRouteLoaderData } from "react-router";
 import type { Route } from "./+types/home";
 import { VmTable } from "~/vms/vm-table";
 import { ConsolePaper, FilterBar, PageHeader } from "~/ui";
@@ -13,6 +13,7 @@ import {
 import { actionFailure } from "~/lib/errors";
 import { clusterFromRequest } from "~/lib/search-params";
 import { matchesQuery, useListFilters } from "~/lib/use-list-filters";
+import type { RootLoaderData } from "~/root";
 import {
   deleteVm,
   listVms,
@@ -40,11 +41,7 @@ export async function action({ request }: Route.ActionArgs) {
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
 
-  if (
-    intent === "bulk-start" ||
-    intent === "bulk-stop" ||
-    intent === "bulk-delete"
-  ) {
+  if (intent === "bulk-start" || intent === "bulk-stop" || intent === "bulk-delete") {
     const { targets, error } = parseNamespacedBulkTargets(form.get("targets"));
     if (error || !targets) {
       return {
@@ -128,6 +125,8 @@ export async function action({ request }: Route.ActionArgs) {
 export default function Home({ loaderData }: Route.ComponentProps) {
   const { items, clusters } = loaderData;
   const { filters, qDraft, setQ, setFilter } = useListFilters();
+  const root = useRouteLoaderData("root") as RootLoaderData | undefined;
+  const currentOwner = root?.user?.githubLogin;
 
   const namespaces = useMemo(() => {
     const set = new Set(items.map((v) => v.namespace));
@@ -146,6 +145,12 @@ export default function Home({ loaderData }: Route.ComponentProps) {
     return Array.from(set).sort();
   }, [items]);
 
+  const owners = useMemo(() => {
+    const set = new Set(items.map((v) => v.owner).filter((v): v is string => Boolean(v)));
+    if (currentOwner) set.add(currentOwner);
+    return Array.from(set).sort();
+  }, [items, currentOwner]);
+
   const filtered = useMemo(() => {
     return items.filter((vm) => {
       if (filters.cluster && vm.cluster !== filters.cluster) return false;
@@ -154,6 +159,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
       if (filters.instancetype && vm.instanceType !== filters.instancetype) {
         return false;
       }
+      if (filters.owner && (vm.owner ?? "") !== filters.owner) return false;
       return matchesQuery(qDraft, [
         vm.name,
         vm.namespace,
@@ -164,6 +170,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
         vm.memory,
         vm.disk,
         vm.instanceType,
+        vm.owner,
       ]);
     });
   }, [
@@ -172,6 +179,7 @@ export default function Home({ loaderData }: Route.ComponentProps) {
     filters.namespace,
     filters.status,
     filters.instancetype,
+    filters.owner,
     qDraft,
   ]);
 
@@ -238,6 +246,17 @@ export default function Home({ loaderData }: Route.ComponentProps) {
               value={filters.instancetype}
               onChange={(v) => setFilter("instancetype", v)}
               w={200}
+            />
+          )}
+          {owners.length > 0 && (
+            <Select
+              placeholder="Owner"
+              clearable
+              searchable
+              data={owners}
+              value={filters.owner}
+              onChange={(v) => setFilter("owner", v)}
+              w={180}
             />
           )}
         </FilterBar>

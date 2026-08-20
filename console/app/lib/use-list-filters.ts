@@ -4,7 +4,14 @@ import { getSearchParam, patchSearchParams } from "./search-params";
 
 /** Standard list filter keys used across resource index pages. */
 export type ListFilterKey =
-  "q" | "cluster" | "namespace" | "status" | "phase" | "instancetype";
+  | "q"
+  | "cluster"
+  | "namespace"
+  | "status"
+  | "phase"
+  | "instancetype"
+  | "owner"
+  | "template";
 
 export interface ListFilters {
   /** Free-text search (URL `q`) */
@@ -15,13 +22,17 @@ export interface ListFilters {
   phase: string | null;
   /** Exact match on VM cluster instance type name */
   instancetype: string | null;
+  /** Exact match on kmc.ianunruh.com/owner (GitHub login) */
+  owner: string | null;
+  /** Exact match on kmc.ianunruh.com/template */
+  template: string | null;
 }
 
 const DEFAULT_DEBOUNCE_MS = 250;
 
 /**
  * URL-backed list filters
- * (`?q=&cluster=&namespace=&status=&phase=&instancetype=`).
+ * (`?q=&cluster=&namespace=&status=&phase=&instancetype=&owner=&template=`).
  *
  * - Discrete filters write immediately.
  * - Search uses a local draft + debounced URL update so typing stays smooth
@@ -40,6 +51,8 @@ export function useListFilters(options?: { debounceMs?: number }) {
       status: getSearchParam(searchParams, "status"),
       phase: getSearchParam(searchParams, "phase"),
       instancetype: getSearchParam(searchParams, "instancetype"),
+      owner: getSearchParam(searchParams, "owner"),
+      template: getSearchParam(searchParams, "template"),
     }),
     [searchParams],
   );
@@ -92,6 +105,8 @@ export function useListFilters(options?: { debounceMs?: number }) {
           status: null,
           phase: null,
           instancetype: null,
+          owner: null,
+          template: null,
         }),
       { replace: true },
     );

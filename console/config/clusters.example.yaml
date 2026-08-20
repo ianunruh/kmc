@@ -22,6 +22,28 @@ clusters:
       podCIDR: 10.95.0.0/16
       serviceCIDR: 10.96.0.0/12
       dnsIP: 10.96.0.10
+    # Dev Boxes: Tailscale-reachable MetalLB VIP + Envoy OIDC.
+    # Hosts attach to a Gateway listener covering *.k8s.kcloud.io (or similar).
+    # Each IDE box mints a Dex OAuth2Client CR (default namespace dex) and a
+    # Secret in the VM namespace. Callers need create/delete on
+    # oauth2clients.dex.coreos.com in that namespace
+    # (see deploy/controller/rbac/user-devbox-oidc-example.yaml).
+    # devbox:
+    #   metallb:
+    #     addressPool: internal
+    #   envoy:
+    #     gatewayName: internal
+    #     gatewayNamespace: envoy-gateway-system
+    #     sectionName: https
+    #     hostTemplate: "%name%-%namespace%.k8s.kcloud.io"
+    #     oidc:
+    #       issuer: https://dex.k8s.kcloud.io
+    #       cookieDomain: kcloud.io
+    #       scopes:
+    #         - openid
+    #         - profile
+    #         - email
+    #         - groups
   - id: homelab
     displayName: homelab
     apiServer: https://kubernetes.den1.kcloud.zone:6443
@@ -41,3 +63,25 @@ clusters:
       podCIDR: 10.19.0.0/16
       serviceCIDR: 10.20.0.0/16
       dnsIP: 10.20.0.10
+    # Dev Boxes: Tailscale-reachable MetalLB VIP + Envoy OIDC.
+    # Hosts attach to Gateway listener https (*.k8s.kcloud.zone).
+    # Each IDE box mints a Dex OAuth2Client CR (default namespace dex) and a
+    # Secret in the VM namespace. Callers need create/delete on
+    # oauth2clients.dex.coreos.com in that namespace
+    # (see deploy/controller/rbac/user-devbox-oidc-example.yaml).
+    # devbox:
+    #   metallb:
+    #     addressPool: internal
+    #   envoy:
+    #     gatewayName: internal
+    #     gatewayNamespace: envoy-gateway-system
+    #     sectionName: https
+    #     hostTemplate: "%name%-%namespace%.k8s.kcloud.zone"
+    #     oidc:
+    #       issuer: https://dex.k8s.kcloud.zone
+    #       cookieDomain: kcloud.zone
+    #       scopes:
+    #         - openid
+    #         - profile
+    #         - email
+    #         - groups

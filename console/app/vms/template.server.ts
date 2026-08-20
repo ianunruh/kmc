@@ -1,6 +1,7 @@
 import type { CreateVmRequest } from "~/lib/types";
 import { createVmDiskSource } from "~/lib/types";
 import { KMC_ANN_DISK_SIZE } from "~/lib/k8s/constants";
+import { buildSshUserData } from "./cloud-init";
 import {
   buildNetworkData,
   buildRouterNetworkData,
@@ -237,42 +238,7 @@ export function normalizeAuthorizedKeys(
   return out;
 }
 
-/**
- * Minimal cloud-config that installs SSH public key(s) on the image default user.
- * Optional qemu-guest-agent package + enable (soft reboot, guest OS info).
- * Explicit `users: [default]` is more reliable across Ubuntu cloud images than
- * top-level ssh_authorized_keys alone on some releases.
- *
- * Pass the user's key plus the platform console key so browser Terminal works.
- */
-export function buildSshUserData(
-  sshPublicKey: string | string[],
-  opts?: { installGuestAgent?: boolean },
-): string {
-  const keys = normalizeAuthorizedKeys(sshPublicKey);
-  if (keys.length === 0) {
-    throw new Error("At least one SSH public key is required for cloud-init");
-  }
-  const lines = [
-    "#cloud-config",
-    "users:",
-    "  - default",
-    "ssh_authorized_keys:",
-    ...keys.map((k) => `  - ${k}`),
-  ];
-  if (opts?.installGuestAgent) {
-    // Packages need egress (apt). Only install when guest agent is requested —
-    // that path assumes the guest can reach external repos.
-    lines.push(
-      "packages:",
-      "  - qemu-guest-agent",
-      "  - traceroute",
-      "runcmd:",
-      "  - systemctl enable --now qemu-guest-agent",
-    );
-  }
-  return lines.join("\n");
-}
+export { buildSshUserData } from "./cloud-init";
 
 export function buildVirtualMachineManifest(
   input: CreateVmRequest,
@@ -284,9 +250,7 @@ export function buildVirtualMachineManifest(
   const multusNames = multusNetworksFromRequest(input);
   const includePodNetwork = opts?.includePodNetwork === true;
   // Stable MAC for dual-home masquerade so netplan matches by MAC (not en*).
-  const podMacAddress = includePodNetwork
-    ? generateLocalMacAddress()
-    : undefined;
+  const podMacAddress = includePodNetwork ? generateLocalMacAddress() : undefined;
   const { interfaces, networks } = buildNetworkSpec(multusNames, allocations, {
     includePodNetwork,
     podMacAddress,

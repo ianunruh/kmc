@@ -107,6 +107,30 @@ export type ClusterIdentity = {
   objectStorageEndpoint?: string;
   /** Optional underlay CIDRs for dual-home Multus guests (pod NIC routes). */
   network?: ClusterNetworkConfig;
+  /** Dev Box access (internal MetalLB + optional Envoy OIDC). */
+  devbox?: ClusterDevboxConfig;
+};
+
+export type ClusterDevboxConfig = {
+  metallb?: {
+    addressPool?: string;
+    /** Default metallb.io/address-pool */
+    annotationKey?: string;
+  };
+  envoy?: {
+    gatewayName: string;
+    gatewayNamespace?: string;
+    sectionName?: string;
+    /** `%name%` and `%namespace%` replaced. */
+    hostTemplate: string;
+    oidc: {
+      issuer: string;
+      /** Namespace Dex watches for OAuth2Client CRs (default `dex`). */
+      clientNamespace?: string;
+      cookieDomain?: string;
+      scopes?: string[];
+    };
+  };
 };
 
 type ClustersFile = {
@@ -132,6 +156,7 @@ type ClustersFile = {
       serviceCIDR?: string | string[];
       dnsIP?: string;
     };
+    devbox?: ClusterDevboxConfig;
   }>;
 };
 
@@ -177,6 +202,7 @@ function loadFromYaml(path: string): {
         "objectStorageEndpoint",
       ),
       network: parseClusterNetwork(raw.network, raw.id),
+      devbox: parseDevboxConfig(raw.devbox, raw.id),
     });
   }
   const settingsCluster = doc.settingsCluster?.trim() || undefined;
@@ -232,6 +258,51 @@ function parseClusterNetwork(
   };
 }
 
+function parseDevboxConfig(
+  raw: ClusterDevboxConfig | undefined,
+  clusterId: string,
+): ClusterDevboxConfig | undefined {
+  if (raw == null) return undefined;
+  const addressPool = raw.metallb?.addressPool?.trim();
+  const annotationKey = raw.metallb?.annotationKey?.trim();
+  const envoyRaw = raw.envoy;
+  let envoy: ClusterDevboxConfig["envoy"] | undefined;
+  if (envoyRaw) {
+    const gatewayName = envoyRaw.gatewayName?.trim();
+    const hostTemplate = envoyRaw.hostTemplate?.trim();
+    const issuer = envoyRaw.oidc?.issuer?.trim();
+    if (!gatewayName || !hostTemplate || !issuer) {
+      throw new Error(
+        `Cluster "${clusterId}": devbox.envoy requires gatewayName, hostTemplate, and oidc.issuer`,
+      );
+    }
+    envoy = {
+      gatewayName,
+      gatewayNamespace: envoyRaw.gatewayNamespace?.trim() || undefined,
+      sectionName: envoyRaw.sectionName?.trim() || undefined,
+      hostTemplate,
+      oidc: {
+        issuer,
+        clientNamespace: envoyRaw.oidc?.clientNamespace?.trim() || undefined,
+        cookieDomain: envoyRaw.oidc?.cookieDomain?.trim() || undefined,
+        scopes: envoyRaw.oidc?.scopes?.map((s) => s.trim()).filter(Boolean),
+      },
+    };
+  }
+  if (!addressPool && !envoy) return undefined;
+  return {
+    metallb: addressPool
+      ? { addressPool, annotationKey: annotationKey || undefined }
+      : undefined,
+    envoy,
+  };
+}
+
+/** Dev Box access config for a cluster, if configured. */
+export function getClusterDevboxConfig(id: ClusterId): ClusterDevboxConfig | null {
+  return getClusterIdentity(id)?.devbox ?? null;
+}
+
 /** Underlay CIDRs for a cluster, if configured. */
 export function getClusterNetwork(id: ClusterId): ClusterNetworkConfig | null {
   return getClusterIdentity(id)?.network ?? null;
@@ -283,9 +354,7 @@ export function hasClusterPrometheus(id: ClusterId): boolean {
  * Public S3 endpoint for Object Storage UI (from clusters.yaml).
  * Does not include a trailing slash.
  */
-export function getClusterObjectStorageEndpoint(
-  id: ClusterId,
-): string | null {
+export function getClusterObjectStorageEndpoint(id: ClusterId): string | null {
   const url = getClusterIdentity(id)?.objectStorageEndpoint?.trim();
   return url || null;
 }
@@ -302,14 +371,10 @@ function normalizeHttpEndpoint(
   try {
     url = new URL(v);
   } catch {
-    throw new Error(
-      `Cluster "${clusterId}": ${field} "${v}" is not a valid URL`,
-    );
+    throw new Error(`Cluster "${clusterId}": ${field} "${v}" is not a valid URL`);
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error(
-      `Cluster "${clusterId}": ${field} must be http(s) (got "${v}")`,
-    );
+    throw new Error(`Cluster "${clusterId}": ${field} must be http(s) (got "${v}")`);
   }
   // Drop trailing slash for consistent --endpoint-url usage
   return v.replace(/\/+$/, "");

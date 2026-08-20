@@ -61,6 +61,8 @@ export function intentSuccessLabel(intent?: string): string {
       return "disk attach";
     case "detach-disk":
       return "disk detach";
+    case "claim-owner":
+      return "owner claim";
     default:
       return intent ?? "action";
   }

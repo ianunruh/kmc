@@ -57,6 +57,12 @@ export interface VmSummary {
    */
   restartRequired?: boolean;
   restartRequiredMessage?: string;
+  /** GitHub login from kmc.ianunruh.com/owner (console-created VMs). */
+  owner?: string;
+  /** kmc.ianunruh.com/resource (e.g. devbox). */
+  resource?: string;
+  /** kmc.ianunruh.com/template on Dev Boxes. */
+  template?: string;
 }
 
 export interface VmCondition {
@@ -220,6 +226,15 @@ export interface CreateVmRequest {
    * Root remains the primary boot disk; these are hotpluggable for later detach.
    */
   extraDisks?: CreateVmExtraDisk[];
+  /** Extra labels merged onto the VM and pod template. */
+  labels?: Record<string, string>;
+  /** Extra annotations merged onto the VM (after IPAM / disk-size / owner). */
+  annotations?: Record<string, string>;
+  /**
+   * Existing Secret in the VM namespace with key `userdata`.
+   * Used for composed cloud-init (Dev Boxes) over the 2048-byte inline cap.
+   */
+  userDataSecretName?: string;
 }
 
 /** How a secondary disk obtains its backing DataVolume. */
@@ -785,6 +800,8 @@ export interface CreateBackendRequest {
    * created as a companion to an HTTPRoute).
    */
   extraLabels?: Record<string, string>;
+  /** Extra Service annotations (e.g. MetalLB address pool). */
+  extraAnnotations?: Record<string, string>;
 }
 
 /** Patch an existing kmc backend Service (ports and/or membership). */
@@ -941,6 +958,8 @@ export interface CreateHttpRouteRequest {
    * When set, membership/targetPort are not used for create.
    */
   existingServiceName?: string;
+  /** Extra labels merged onto the HTTPRoute (e.g. Dev Box IDE). */
+  extraLabels?: Record<string, string>;
 }
 
 /** Patch host/path/parent and optionally companion Service ports. */
@@ -1426,12 +1445,7 @@ export interface UpdateVpcRequest {
  * Raw CNPG phase stays on `phase` for detail.
  */
 export type DatabaseStatus =
-  | "Ready"
-  | "Provisioning"
-  | "NotReady"
-  | "Failed"
-  | "Unknown"
-  | string;
+  "Ready" | "Provisioning" | "NotReady" | "Failed" | "Unknown" | string;
 
 /** Create-form size tiers → fixed CPU/memory/storage (see databases/options.ts). */
 export type DatabaseSizePreset = "small" | "medium" | "large";
@@ -1540,12 +1554,7 @@ export interface CreateDatabaseRequest {
  * Common values: Bound, Pending, Released, Failed.
  */
 export type ObjectBucketStatus =
-  | "Bound"
-  | "Pending"
-  | "Released"
-  | "Failed"
-  | "Unknown"
-  | string;
+  "Bound" | "Pending" | "Released" | "Failed" | "Unknown" | string;
 
 export interface ObjectBucketSummary {
   cluster: ClusterId;
@@ -1617,12 +1626,7 @@ export interface CreateObjectBucketRequest {
 
 // --- Network topology (VPCs / Multus NADs ↔ VMs) ---
 
-export type TopologyNetworkKind =
-  | "vpc"
-  | "multus"
-  | "pod"
-  | "httproute"
-  | "loadbalancer";
+export type TopologyNetworkKind = "vpc" | "multus" | "pod" | "httproute" | "loadbalancer";
 
 export interface TopologyNetworkNode {
   /**

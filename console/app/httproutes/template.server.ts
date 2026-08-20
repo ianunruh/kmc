@@ -37,14 +37,15 @@ export function buildHttpRouteManifest(
   const servicePort = input.servicePort ?? 80;
   const path = input.path?.trim() || "/";
   const pathType = input.pathType ?? "PathPrefix";
-  const labels = ownershipLabels({
-    name: input.name,
-    membership: input.membership,
-  });
+  const labels = {
+    ...ownershipLabels({
+      name: input.name,
+      membership: input.membership,
+    }),
+    ...(input.extraLabels ?? {}),
+  };
   const backendService =
-    serviceName?.trim() ||
-    input.existingServiceName?.trim() ||
-    input.name;
+    serviceName?.trim() || input.existingServiceName?.trim() || input.name;
   const host = input.host.trim();
   const gatewayName = input.gatewayName.trim();
   const gatewayNamespace = input.gatewayNamespace?.trim();
@@ -92,9 +93,7 @@ export function buildHttpRouteManifest(
 }
 
 /** Human-readable membership label for HTTPRoute list/detail. */
-export function membershipModeDisplay(
-  kind: string | undefined,
-): string | undefined {
+export function membershipModeDisplay(kind: string | undefined): string | undefined {
   if (kind === KMC_TARGET_KIND_VM) return "Single VM";
   if (kind === KMC_TARGET_KIND_LABELS) return "Label selector";
   if (kind === KMC_TARGET_KIND_GROUP) return "VM group";

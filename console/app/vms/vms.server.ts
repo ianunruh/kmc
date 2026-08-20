@@ -47,8 +47,10 @@ import {
   releaseIpAddressClaims,
 } from "~/lib/ipam/ipaddress-cr.server";
 import { getPlatformConsolePublicKey } from "~/vms/console-ssh-key.server";
+import { getRequestSession } from "~/lib/auth/middleware.server";
 import {
   KMC_ANN_DISK_SIZE,
+  KMC_ANN_OWNER,
   KMC_ANN_RETAINED_AT,
   KMC_BACKEND_LABEL_SELECTOR,
   GATEWAY_API_GROUP,
@@ -56,6 +58,7 @@ import {
   HTTP_ROUTE_PLURAL,
   KMC_HTTP_ROUTE_LABEL_SELECTOR,
   KMC_LABEL_RESOURCE,
+  KMC_LABEL_TEMPLATE,
   KMC_LABEL_RETAINED_FROM_VM,
   KMC_LABEL_TARGET_KIND,
   KMC_LABEL_VM,
@@ -73,6 +76,7 @@ import { DNS1123_LABEL } from "~/lib/format";
 import { addressFromIpv4Annotation } from "~/lib/ipam/cidr";
 import {
   getNamespacedCustomObject,
+  ownerAnnotation,
   PLURAL_VPCS,
   type VpcCr,
 } from "~/lib/k8s/networking-cr.server";
@@ -80,6 +84,7 @@ import { listFloatingIps } from "~/vpcs/vpcs.server";
 import {
   bindAllocationsToNetworks,
   buildVirtualMachineManifest,
+  cloudInitUserDataSecretName,
   multusNetworksFromRequest,
   type ResolvedExtraDisk,
 } from "./template.server";
@@ -297,6 +302,9 @@ function mapVm(
   );
 
   const allocatedIpv4 = vm.metadata?.annotations?.[IPAM_ANNOTATION_IPV4];
+  const owner = vm.metadata?.annotations?.[KMC_ANN_OWNER]?.trim();
+  const resource = vm.metadata?.labels?.[KMC_LABEL_RESOURCE]?.trim();
+  const template = vm.metadata?.labels?.[KMC_LABEL_TEMPLATE]?.trim();
 
   return {
     cluster,
@@ -315,8 +323,10 @@ function mapVm(
     nodeName: vm.status?.nodeName,
     message: notReady?.message ?? notReady?.reason,
     restartRequired: restartRequiredCond != null,
-    restartRequiredMessage:
-      restartRequiredCond?.message ?? restartRequiredCond?.reason,
+    restartRequiredMessage: restartRequiredCond?.message ?? restartRequiredCond?.reason,
+    owner: owner || undefined,
+    resource: resource || undefined,
+    template: template || undefined,
   };
 }
 
@@ -410,21 +420,23 @@ async function loadClusterDataVolumeDiskIndex(
     })) as {
       items?: Array<{
         metadata?: { name?: string; namespace?: string };
-        spec?: DataVolumeDiskInfo extends never ? never : {
-          storage?: {
-            storageClassName?: string;
-            resources?: { requests?: { storage?: string } };
-          };
-          pvc?: {
-            storageClassName?: string;
-            resources?: { requests?: { storage?: string } };
-          };
-          source?: {
-            pvc?: { name?: string; namespace?: string };
-            http?: { url?: string };
-            blank?: unknown;
-          };
-        };
+        spec?: DataVolumeDiskInfo extends never
+          ? never
+          : {
+              storage?: {
+                storageClassName?: string;
+                resources?: { requests?: { storage?: string } };
+              };
+              pvc?: {
+                storageClassName?: string;
+                resources?: { requests?: { storage?: string } };
+              };
+              source?: {
+                pvc?: { name?: string; namespace?: string };
+                http?: { url?: string };
+                blank?: unknown;
+              };
+            };
       }>;
     };
     for (const dv of res.items ?? []) {
@@ -601,9 +613,7 @@ function isVpcNadLabels(labels: Record<string, string>): boolean {
   if (resource === KMC_RESOURCE_VPC) return true;
   if (resource === KMC_RESOURCE_NETWORK) return false;
   // Legacy: managed VPC NAD before resource label was always set.
-  return (
-    labels[MANAGED_BY_LABEL] === KMC_MANAGED_BY && labels[KMC_LABEL_VLAN] != null
-  );
+  return labels[MANAGED_BY_LABEL] === KMC_MANAGED_BY && labels[KMC_LABEL_VLAN] != null;
 }
 
 /** Attach VPC detail coords for Multus networks that resolve to kmc VPC NADs. */
@@ -852,19 +862,8 @@ export async function getVm(
     loadInstanceTypeSizes(cluster),
     agentConnected ? fetchGuestOsInfo(kc, namespace, name) : Promise.resolve(null),
   ]);
-  const detail = mapVmDetail(
-    cluster,
-    vm,
-    vmi,
-    instanceTypes,
-    guestOsInfo,
-    dvIndex,
-  );
-  const networks = await resolveNetworkVpcs(
-    cluster,
-    namespace,
-    detail.networks,
-  );
+  const detail = mapVmDetail(cluster, vm, vmi, instanceTypes, guestOsInfo, dvIndex);
+  const networks = await resolveNetworkVpcs(cluster, namespace, detail.networks);
   return { ...detail, networks };
 }
 
@@ -923,9 +922,7 @@ async function probeCluster(id: ClusterId): Promise<ClusterInfo> {
 
   const inflight = probeClusterUncached(id)
     .then((value) => {
-      const ttl = value.reachable
-        ? PROBE_CACHE_TTL_MS
-        : PROBE_CACHE_FAILURE_TTL_MS;
+      const ttl = value.reachable ? PROBE_CACHE_TTL_MS : PROBE_CACHE_FAILURE_TTL_MS;
       probeCache.set(id, { expiresAt: Date.now() + ttl, value });
       return value;
     })
@@ -977,7 +974,9 @@ export async function listVms(clusterFilter?: ClusterId): Promise<{
               plural: "virtualmachines",
             }) as Promise<{ items?: KubeVm[] }>,
             loadInstanceTypeSizes(id),
-            listFloatingIps(id).then((r) => r.items).catch(() => []),
+            listFloatingIps(id)
+              .then((r) => r.items)
+              .catch(() => []),
             loadClusterDataVolumeDiskIndex(id),
             core
               .listServiceForAllNamespaces({
@@ -1011,8 +1010,7 @@ export async function listVms(clusterFilter?: ClusterId): Promise<{
         }
         for (const f of floats) {
           if (f.state !== "associated") continue;
-          const publicAddr =
-            addressFromIpv4Annotation(f.public) ?? f.public.trim();
+          const publicAddr = addressFromIpv4Annotation(f.public) ?? f.public.trim();
           if (!publicAddr) continue;
           let key: string | undefined;
           if (f.targetVm?.trim()) {
@@ -1038,7 +1036,10 @@ export async function listVms(clusterFilter?: ClusterId): Promise<{
             spec?: { hostnames?: string[] };
           };
           const labels = route.metadata?.labels ?? {};
-          if (labels[KMC_LABEL_TARGET_KIND] && labels[KMC_LABEL_TARGET_KIND] !== KMC_TARGET_KIND_VM) {
+          if (
+            labels[KMC_LABEL_TARGET_KIND] &&
+            labels[KMC_LABEL_TARGET_KIND] !== KMC_TARGET_KIND_VM
+          ) {
             continue;
           }
           const vmName = labels[KMC_LABEL_VM];
@@ -1220,9 +1221,7 @@ export async function ensureRootDataVolumeFromImage(opts: {
                 storage: opts.diskSize.trim(),
               },
             },
-            ...(opts.storageClass
-              ? { storageClassName: opts.storageClass }
-              : {}),
+            ...(opts.storageClass ? { storageClassName: opts.storageClass } : {}),
           },
         },
       },
@@ -1292,9 +1291,7 @@ export async function ensureBlankDataVolume(opts: {
                 storage: opts.size.trim(),
               },
             },
-            ...(opts.storageClass
-              ? { storageClassName: opts.storageClass }
-              : {}),
+            ...(opts.storageClass ? { storageClassName: opts.storageClass } : {}),
           },
         },
       },
@@ -1306,10 +1303,7 @@ export async function ensureBlankDataVolume(opts: {
 }
 
 /** Stable DV name for a secondary volume: `{vm}-{volume}`, ≤63 chars. */
-export function secondaryDataVolumeName(
-  vmName: string,
-  volumeName: string,
-): string {
+export function secondaryDataVolumeName(vmName: string, volumeName: string): string {
   const vm = vmName.trim();
   const vol = volumeName.trim();
   const combined = `${vm}-${vol}`;
@@ -1372,9 +1366,7 @@ function allocateVolumeName(vm: KubeVm, preferred?: string): string {
   throw new Error("Could not allocate a free volume name");
 }
 
-function resolveExtraDiskSource(
-  disk: CreateVmExtraDisk,
-): VmDiskSourceMode {
+function resolveExtraDiskSource(disk: CreateVmExtraDisk): VmDiskSourceMode {
   return disk.source === "existingDataVolume" ? "existingDataVolume" : "blank";
 }
 
@@ -1393,9 +1385,7 @@ async function materializeExtraDisks(opts: {
   const { cluster, namespace, vmName, extraDisks } = opts;
   if (extraDisks.length === 0) return { resolved: [], createdDvNames: [] };
   if (extraDisks.length > KMC_MAX_EXTRA_DISKS) {
-    throw new Error(
-      `At most ${KMC_MAX_EXTRA_DISKS} secondary disks are supported`,
-    );
+    throw new Error(`At most ${KMC_MAX_EXTRA_DISKS} secondary disks are supported`);
   }
 
   const used = new Set(opts.reservedNames);
@@ -1442,9 +1432,7 @@ async function materializeExtraDisks(opts: {
         }
         validateVolumeName(dataVolumeName); // DNS-1123 for DV names
         if (usedDvNames.has(dataVolumeName)) {
-          throw new Error(
-            `DataVolume ${dataVolumeName} is listed more than once`,
-          );
+          throw new Error(`DataVolume ${dataVolumeName} is listed more than once`);
         }
         await assertDataVolumeReusable({
           cluster,
@@ -1609,10 +1597,7 @@ async function detachVolumeDeclarative(opts: {
     const disks = beforeDisks.filter((d) => d.name !== opts.volumeName);
     const volumes = beforeVolumes.filter((v) => v.name !== opts.volumeName);
 
-    if (
-      volumes.length === beforeVolumes.length &&
-      disks.length === beforeDisks.length
-    ) {
+    if (volumes.length === beforeVolumes.length && disks.length === beforeDisks.length) {
       throw new Error(`Volume "${opts.volumeName}" not found on the VM`);
     }
 
@@ -1667,9 +1652,7 @@ export async function attachVmDisk(
 
   const vm = await fetchVmRaw(cluster, namespace, vmName);
   if (countSecondaryDataDisks(vm) >= KMC_MAX_EXTRA_DISKS) {
-    throw new Error(
-      `At most ${KMC_MAX_EXTRA_DISKS} secondary disks are supported`,
-    );
+    throw new Error(`At most ${KMC_MAX_EXTRA_DISKS} secondary disks are supported`);
   }
 
   const volumeName = allocateVolumeName(vm, input.name);
@@ -1692,9 +1675,7 @@ export async function attachVmDisk(
       (v) => v.dataVolume?.name === dataVolumeName,
     );
     if (already) {
-      throw new Error(
-        `DataVolume ${dataVolumeName} is already attached to this VM`,
-      );
+      throw new Error(`DataVolume ${dataVolumeName} is already attached to this VM`);
     }
     await assertDataVolumeReusable({
       cluster,
@@ -1783,9 +1764,7 @@ export async function detachVmDisk(
   }
 
   const vm = await fetchVmRaw(cluster, namespace, vmName);
-  const vol = (vm.spec?.template?.spec?.volumes ?? []).find(
-    (v) => v.name === volumeName,
-  );
+  const vol = (vm.spec?.template?.spec?.volumes ?? []).find((v) => v.name === volumeName);
   if (!vol) {
     throw new Error(`Volume "${volumeName}" not found on the VM`);
   }
@@ -1886,11 +1865,7 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
   const claimedAddresses: string[] = [];
   const releaseClaims = async () => {
     if (claimedAddresses.length === 0) return;
-    await releaseIpAddressClaims(
-      input.cluster,
-      input.namespace,
-      claimedAddresses,
-    );
+    await releaseIpAddressClaims(input.cluster, input.namespace, claimedAddresses);
   };
 
   try {
@@ -1899,8 +1874,7 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
     // Router-backed VPCs: skip console claim — guest uses DHCP; VirtualMachineIPAM
     // controller allocates IPAddress after create (MAC already stamped on the iface).
     // Static Multus (IPPool / VPC without router): still pre-claim for cloud-init netplan.
-    const dualHome =
-      multusNames.length > 0 && input.includePodNetwork !== false;
+    const dualHome = multusNames.length > 0 && input.includePodNetwork !== false;
     const rawAllocations: Array<
       Awaited<ReturnType<typeof allocateIpv4ForMultus>> | AllocatedIp
     > = [];
@@ -1920,16 +1894,11 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
         }
       }
 
-      const alloc = await allocateIpv4ForMultus(
-        input.cluster,
-        name,
-        input.namespace,
-        {
-          extraUsed,
-          claim: { name: vmName, namespace: input.namespace },
-          interface: { mac, hostname: vmName },
-        },
-      );
+      const alloc = await allocateIpv4ForMultus(input.cluster, name, input.namespace, {
+        extraUsed,
+        claim: { name: vmName, namespace: input.namespace },
+        interface: { mac, hostname: vmName },
+      });
       if (alloc) {
         alloc.macAddress = mac;
         extraUsed.push(alloc.address);
@@ -1939,8 +1908,7 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
     }
     const allocations = bindAllocationsToNetworks(multusNames, rawAllocations, {
       // Always MAC-match Multus when dual-home or any DHCP NIC (router path).
-      forceMac:
-        dualHome || rawAllocations.some((a) => a != null && a.dhcp4 === true),
+      forceMac: dualHome || rawAllocations.some((a) => a != null && a.dhcp4 === true),
     });
 
     // Standalone root disk (not dataVolumeTemplates) so DV outlives the VM by default.
@@ -1960,10 +1928,9 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
         });
         if (result.created) createdRootDv = result.name;
       } catch (err) {
-        throw new Error(
-          `Failed to create root DataVolume: ${formatError(err)}`,
-          { cause: err },
-        );
+        throw new Error(`Failed to create root DataVolume: ${formatError(err)}`, {
+          cause: err,
+        });
       }
     }
 
@@ -1996,13 +1963,23 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
           .filter(Boolean);
       }
     }
+    const ownerAnn = ownerAnnotation(getRequestSession()?.user?.githubLogin);
     const body = buildVirtualMachineManifest(input, allocations, {
       extraAuthorizedKeys: platformPub ? [platformPub] : [],
       includePodNetwork: dualHome,
       clusterCidrs,
       extraDisks: resolvedExtraDisks,
+      labels: input.labels,
+      annotations: {
+        ...ownerAnn,
+        ...(input.annotations ?? {}),
+      },
+      userDataSecretName: input.userDataSecretName,
     }) as {
-      metadata?: { annotations?: Record<string, string> };
+      metadata?: {
+        labels?: Record<string, string>;
+        annotations?: Record<string, string>;
+      };
       [key: string]: unknown;
     };
     if (rootDiskSizeAnn) {
@@ -2016,11 +1993,7 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
     const rollbackCreatedDisks = async () => {
       if (createdRootDv) {
         try {
-          await deleteDataVolumeRaw(
-            input.cluster,
-            input.namespace,
-            createdRootDv,
-          );
+          await deleteDataVolumeRaw(input.cluster, input.namespace, createdRootDv);
         } catch {
           /* ignore */
         }
@@ -2056,6 +2029,64 @@ export async function createVm(input: CreateVmRequest): Promise<VmSummary> {
   } catch (err) {
     await releaseClaims();
     throw err;
+  }
+}
+
+/**
+ * Stamp kmc.ianunruh.com/owner when missing. Refuses to overwrite an existing owner.
+ */
+export async function claimVmOwner(input: {
+  cluster: ClusterId;
+  namespace: string;
+  name: string;
+  owner: string;
+}): Promise<void> {
+  const login = input.owner.trim();
+  if (!login) throw new Error("owner is required");
+
+  const { custom } = getClusterClients(input.cluster);
+  let existing: KubeVm;
+  try {
+    existing = (await custom.getNamespacedCustomObject({
+      group: "kubevirt.io",
+      version: "v1",
+      namespace: input.namespace,
+      plural: "virtualmachines",
+      name: input.name,
+    })) as KubeVm;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("404") || message.toLowerCase().includes("not found")) {
+      throw new Error(`Virtual machine not found: ${input.namespace}/${input.name}`);
+    }
+    throw err;
+  }
+
+  const current = existing.metadata?.annotations?.[KMC_ANN_OWNER]?.trim();
+  if (current) {
+    throw new Error(`VM already owned by ${current}`);
+  }
+
+  const body = structuredClone(existing) as KubeVm & {
+    metadata: NonNullable<KubeVm["metadata"]>;
+  };
+  body.metadata = body.metadata ?? {};
+  body.metadata.annotations = {
+    ...(body.metadata.annotations ?? {}),
+    ...ownerAnnotation(login),
+  };
+
+  try {
+    await custom.replaceNamespacedCustomObject({
+      group: "kubevirt.io",
+      version: "v1",
+      namespace: input.namespace,
+      plural: "virtualmachines",
+      name: input.name,
+      body,
+    });
+  } catch (err) {
+    throw new Error(formatError(err), { cause: err });
   }
 }
 
@@ -2626,9 +2657,7 @@ export async function assertDataVolumeReusable(opts: {
         plural: "virtualmachines",
         name: o.name,
       });
-      throw new Error(
-        `DataVolume is still owned by VirtualMachine ${o.name}`,
-      );
+      throw new Error(`DataVolume is still owned by VirtualMachine ${o.name}`);
     } catch (err) {
       if (err instanceof Error && err.message.includes("still owned")) throw err;
       if (!isNotFoundError(err)) {
@@ -2824,6 +2853,22 @@ export async function deleteVm(
       );
     }
     throw new Error(formatError(err), { cause: err });
+  }
+
+  try {
+    const { deleteDevBoxCompanions } = await import("~/devboxes/access.server");
+    await deleteDevBoxCompanions(cluster, namespace, name);
+  } catch (err) {
+    console.error("deleteVm companions:", formatError(err));
+  }
+  try {
+    const { core } = getClusterClients(cluster);
+    await core.deleteNamespacedSecret({
+      name: cloudInitUserDataSecretName(name),
+      namespace,
+    });
+  } catch {
+    /* not a Dev Box / already gone */
   }
 
   // Destroy disks: standalone DVs do not cascade with the VM — delete explicitly.

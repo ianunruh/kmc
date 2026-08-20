@@ -37,10 +37,7 @@ import {
   readServiceOptional,
   updateBackend,
 } from "~/backends/backends.server";
-import {
-  labelsMatchSelector,
-  membershipFromServiceMeta,
-} from "~/backends/membership";
+import { labelsMatchSelector, membershipFromServiceMeta } from "~/backends/membership";
 import { listClusters } from "~/vms/vms.server";
 import {
   buildHttpRouteManifest,
@@ -126,9 +123,7 @@ function parentAccepted(route: KubeHttpRoute): boolean | undefined {
   const parents = route.status?.parents ?? [];
   if (parents.length === 0) return undefined;
   return parents.some((p) =>
-    (p.conditions ?? []).some(
-      (c) => c.type === "Accepted" && c.status === "True",
-    ),
+    (p.conditions ?? []).some((c) => c.type === "Accepted" && c.status === "True"),
   );
 }
 
@@ -137,9 +132,7 @@ function mapRules(route: KubeHttpRoute): HttpRouteRuleInfo[] {
     const backend = rule.backendRefs?.[0];
     const matches = rule.matches ?? [];
     const rows =
-      matches.length > 0
-        ? matches
-        : [{ path: { type: "PathPrefix", value: "/" } }];
+      matches.length > 0 ? matches : [{ path: { type: "PathPrefix", value: "/" } }];
     return {
       matches: rows.map((m) => ({
         path: m.path?.value ?? "/",
@@ -174,10 +167,7 @@ function gatewayKey(namespace: string, name: string): string {
   return `${namespace}/${name}`;
 }
 
-function parentGatewayKey(
-  routeNs: string,
-  parent: HttpRouteParentRef,
-): string {
+function parentGatewayKey(routeNs: string, parent: HttpRouteParentRef): string {
   return gatewayKey(parent.namespace || routeNs, parent.name);
 }
 
@@ -230,9 +220,7 @@ function mapSummary(
   const kind = labels?.[KMC_LABEL_TARGET_KIND];
   const membershipMode = membershipModeFromKind(kind);
   const vmName =
-    membershipMode === "single-vm"
-      ? vmNameFromHttpRouteLabels(labels)
-      : undefined;
+    membershipMode === "single-vm" ? vmNameFromHttpRouteLabels(labels) : undefined;
   return {
     cluster,
     namespace: route.metadata?.namespace ?? "default",
@@ -304,9 +292,7 @@ async function readHttpRoute(
   })) as KubeHttpRoute;
 }
 
-async function listClusterGateways(
-  cluster: ClusterId,
-): Promise<KubeGateway[]> {
+async function listClusterGateways(cluster: ClusterId): Promise<KubeGateway[]> {
   const { custom } = gatewayApi(cluster);
   const res = (await custom.listClusterCustomObject({
     group: GATEWAY_API_GROUP,
@@ -337,8 +323,9 @@ function mapGatewayOption(cluster: ClusterId, gw: KubeGateway): GatewayOption | 
     name,
     gatewayClassName: gw.spec?.gatewayClassName,
     listeners: (gw.spec?.listeners ?? [])
-      .filter((l): l is { name: string; protocol: string; port: number; hostname?: string } =>
-        Boolean(l.name && l.protocol && l.port != null),
+      .filter(
+        (l): l is { name: string; protocol: string; port: number; hostname?: string } =>
+          Boolean(l.name && l.protocol && l.port != null),
       )
       .map((l) => ({
         name: l.name,
@@ -393,8 +380,7 @@ async function vmBindingInfo(
     };
     const networks = vm.spec?.template?.spec?.networks ?? [];
     const podNetwork =
-      networks.length === 0 ||
-      networks.some((n) => n.pod != null && n.multus == null);
+      networks.length === 0 || networks.some((n) => n.pod != null && n.multus == null);
     return { name: vmName, exists: true, podNetwork };
   } catch (err) {
     if (isNotFound(err)) {
@@ -427,11 +413,7 @@ export async function listHttpRoutes(clusterFilter?: ClusterId): Promise<{
           routes.map(async (route) => {
             const s = mapSummary(id, route, gwMap);
             const svcName = s.serviceName ?? s.name;
-            const endpoints = await readEndpointsCounts(
-              id,
-              s.namespace,
-              svcName,
-            );
+            const endpoints = await readEndpointsCounts(id, s.namespace, svcName);
             if (endpoints) {
               s.endpointsReady = endpoints.ready;
               s.endpointsTotal = endpoints.total;
@@ -555,8 +537,7 @@ export async function getHttpRoute(
     service?.metadata?.annotations,
   );
   const selector = service?.spec?.selector ?? {};
-  const backendVmName =
-    membership.mode === "single-vm" ? membership.vmName : undefined;
+  const backendVmName = membership.mode === "single-vm" ? membership.vmName : undefined;
   const targetVmName = summary.vmName ?? backendVmName;
 
   const [vm, matchedVms] = await Promise.all([
@@ -655,9 +636,7 @@ export async function createHttpRoute(
 
   try {
     await readHttpRoute(input.cluster, input.namespace, input.name);
-    throw new Error(
-      `HTTPRoute "${input.namespace}/${input.name}" already exists`,
-    );
+    throw new Error(`HTTPRoute "${input.namespace}/${input.name}" already exists`);
   } catch (err) {
     if (err instanceof Error && err.message.includes("already exists")) {
       throw err;
@@ -680,9 +659,7 @@ export async function createHttpRoute(
       });
     } catch (err) {
       if (isNotFound(err)) {
-        throw new Error(
-          `Service "${input.namespace}/${existingService}" not found`,
-        );
+        throw new Error(`Service "${input.namespace}/${existingService}" not found`);
       }
       throw new Error(formatError(err), { cause: err });
     }
@@ -703,15 +680,13 @@ export async function createHttpRoute(
       serviceType: "ClusterIP",
       extraLabels: {
         [KMC_LABEL_HTTP_ROUTE]: input.name,
+        ...(input.extraLabels ?? {}),
       },
     });
     createdCompanion = true;
   }
 
-  const body = buildHttpRouteManifest(
-    payload,
-    existingService || input.name,
-  );
+  const body = buildHttpRouteManifest(payload, existingService || input.name);
 
   try {
     const created = (await custom.createNamespacedCustomObject({
@@ -780,11 +755,9 @@ export async function updateHttpRoute(
   const pathType: HttpRoutePathType =
     input.pathType ??
     ((currentMatch?.path?.type as HttpRoutePathType | undefined) || "PathPrefix");
-  const serviceName =
-    currentRule?.backendRefs?.[0]?.name || name;
+  const serviceName = currentRule?.backendRefs?.[0]?.name || name;
   const currentPort = currentRule?.backendRefs?.[0]?.port ?? 80;
-  const servicePort =
-    input.servicePort !== undefined ? input.servicePort : currentPort;
+  const servicePort = input.servicePort !== undefined ? input.servicePort : currentPort;
 
   if (input.membership) {
     const owned = ownershipLabels({ name, membership: input.membership });
@@ -852,8 +825,9 @@ export async function updateHttpRoute(
 
   const ownsCompanion =
     serviceName === name ||
-    (await readServiceOptional(cluster, namespace, serviceName))?.metadata
-      ?.labels?.[KMC_LABEL_HTTP_ROUTE] === name;
+    (await readServiceOptional(cluster, namespace, serviceName))?.metadata?.labels?.[
+      KMC_LABEL_HTTP_ROUTE
+    ] === name;
 
   if (
     ownsCompanion &&
@@ -862,9 +836,7 @@ export async function updateHttpRoute(
       input.servicePort !== undefined)
   ) {
     const svc = await readServiceOptional(cluster, namespace, serviceName);
-    if (
-      svc?.metadata?.labels?.[KMC_LABEL_RESOURCE] === KMC_RESOURCE_BACKEND
-    ) {
+    if (svc?.metadata?.labels?.[KMC_LABEL_RESOURCE] === KMC_RESOURCE_BACKEND) {
       const ports =
         input.targetPort !== undefined || input.servicePort !== undefined
           ? [
@@ -926,8 +898,7 @@ export async function deleteHttpRoute(
   if (!svc) return;
   const labels = svc.metadata?.labels ?? {};
   const isBackend = labels[KMC_LABEL_RESOURCE] === KMC_RESOURCE_BACKEND;
-  const ownedByRoute =
-    labels[KMC_LABEL_HTTP_ROUTE] === name || serviceName === name;
+  const ownedByRoute = labels[KMC_LABEL_HTTP_ROUTE] === name || serviceName === name;
   if (!isBackend || !ownedByRoute) return;
   if (
     labels[KMC_LABEL_HTTP_ROUTE] !== name &&
@@ -952,9 +923,7 @@ export async function deleteHttpRoute(
 export async function listVmOptionsForNamespace(
   cluster: ClusterId,
   namespace: string,
-): Promise<
-  Array<{ name: string; status: string; podNetwork: boolean; ready: boolean }>
-> {
+): Promise<Array<{ name: string; status: string; podNetwork: boolean; ready: boolean }>> {
   const { custom } = getClusterClients(cluster);
   const res = (await custom.listNamespacedCustomObject({
     group: "kubevirt.io",
@@ -979,8 +948,7 @@ export async function listVmOptionsForNamespace(
     .map((vm) => {
       const networks = vm.spec?.template?.spec?.networks ?? [];
       const podNetwork =
-        networks.length === 0 ||
-        networks.some((n) => n.pod != null && n.multus == null);
+        networks.length === 0 || networks.some((n) => n.pod != null && n.multus == null);
       const status = vm.status?.printableStatus ?? "Unknown";
       return {
         name: vm.metadata?.name ?? "unknown",
